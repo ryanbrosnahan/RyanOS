@@ -245,6 +245,8 @@ Current implementation status:
 - `/v1/webhooks/telegram` and `/v1/inbound/telegram` normalize Telegram updates
   into `IncomingMessage`.
 - Postgres-backed runs persist sessions/messages before AI interpretation.
+- Assistant response text is persisted as an outbound message with an
+  idempotent `response:<source-message-id>` provider message ID.
 - Provider redelivery reuses the stored message row instead of duplicating it.
 - Intent interpretation is still behind the AI provider abstraction; the current
   provider is `none`, so no natural-language parser has been added.

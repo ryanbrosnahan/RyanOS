@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import type { JsonObject, UUID } from "@ryanos/shared";
 import { isUuid, resolveUserId, type RyanDb } from "./identity.js";
 import * as schema from "./schema.js";
@@ -23,12 +24,24 @@ export type PersistIncomingMessageInput = {
   metadata: Record<string, unknown>;
 };
 
+export type PersistOutgoingMessageInput = {
+  provider: "telegram" | "whatsapp" | "web" | "system";
+  chatId: string;
+  userId: string;
+  text: string;
+  timestamp?: string;
+  providerMessageId?: string;
+  replyToMessageId?: string;
+  metadata: Record<string, unknown>;
+};
+
 export type StoredMessage = {
   id: UUID;
   sessionId: UUID;
   userId: UUID;
   provider: string;
   providerMessageId?: string;
+  direction: string;
   text: string;
   occurredAt: string;
   duplicate: boolean;
@@ -47,6 +60,7 @@ function messageFromRow(
     sessionId: row.sessionId,
     userId: row.userId,
     provider: row.provider,
+    direction: row.direction,
     text: row.text,
     occurredAt: row.occurredAt.toISOString(),
     duplicate
@@ -59,6 +73,62 @@ export class PostgresMessageStore {
   constructor(private readonly db: RyanDb) {}
 
   async saveIncomingMessage(input: PersistIncomingMessageInput): Promise<StoredMessage> {
+    const messageInput: Parameters<PostgresMessageStore["saveMessage"]>[0] = {
+      userId: input.userId,
+      provider: input.provider,
+      chatId: input.chatId,
+      direction: "inbound",
+      text: input.text,
+      timestamp: input.timestamp,
+      providerMessageId: input.id,
+      id: input.id,
+      metadata: {
+        ...input.metadata,
+        accountId: input.accountId,
+        username: input.username,
+        externalMessageId: input.id,
+        attachments: input.attachments
+      }
+    };
+    if (input.displayName !== undefined) messageInput.displayName = input.displayName;
+    if (input.replyToMessageId !== undefined) {
+      messageInput.replyToMessageId = input.replyToMessageId;
+    }
+    if (input.accountId !== undefined) messageInput.accountId = input.accountId;
+    return this.saveMessage(messageInput);
+  }
+
+  async saveOutgoingMessage(input: PersistOutgoingMessageInput): Promise<StoredMessage> {
+    const messageInput: Parameters<PostgresMessageStore["saveMessage"]>[0] = {
+      userId: input.userId,
+      provider: input.provider,
+      chatId: input.chatId,
+      direction: "outbound",
+      text: input.text,
+      timestamp: input.timestamp ?? new Date().toISOString(),
+      providerMessageId: input.providerMessageId ?? `local:${randomUUID()}`,
+      metadata: input.metadata
+    };
+    if (input.replyToMessageId !== undefined) {
+      messageInput.replyToMessageId = input.replyToMessageId;
+    }
+    return this.saveMessage(messageInput);
+  }
+
+  private async saveMessage(input: {
+    userId: string;
+    provider: "telegram" | "whatsapp" | "web" | "system";
+    chatId: string;
+    direction: "inbound" | "outbound" | "system";
+    text: string;
+    timestamp: string;
+    providerMessageId: string;
+    id?: string;
+    displayName?: string;
+    replyToMessageId?: string;
+    accountId?: string;
+    metadata: Record<string, unknown>;
+  }): Promise<StoredMessage> {
     const userId = await resolveUserId(this.db, input.userId);
     const occurredAt = new Date(input.timestamp);
     const sessionInput: {
@@ -76,23 +146,15 @@ export class PostgresMessageStore {
     if (input.accountId !== undefined) sessionInput.accountId = input.accountId;
     const session = await this.upsertSession(sessionInput);
 
-    const metadata = asJsonObject({
-      ...input.metadata,
-      accountId: input.accountId,
-      username: input.username,
-      externalMessageId: input.id,
-      attachments: input.attachments
-    });
-
     const values: typeof schema.messages.$inferInsert = {
       sessionId: session.id,
       userId,
       provider: input.provider,
-      providerMessageId: input.id,
-      direction: "inbound",
+      providerMessageId: input.providerMessageId,
+      direction: input.direction,
       text: input.text,
       occurredAt,
-      metadata
+      metadata: asJsonObject(input.metadata)
     };
     if (input.displayName !== undefined) values.senderDisplayName = input.displayName;
     if (isUuid(input.replyToMessageId)) values.replyToMessageId = input.replyToMessageId;
@@ -116,7 +178,7 @@ export class PostgresMessageStore {
       where: and(
         eq(schema.messages.provider, input.provider),
         eq(schema.messages.sessionId, session.id),
-        eq(schema.messages.providerMessageId, input.id)
+        eq(schema.messages.providerMessageId, input.providerMessageId)
       )
     });
     if (!existing) throw new Error("Message insert conflicted but existing row was not found");

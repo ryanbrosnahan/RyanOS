@@ -671,6 +671,8 @@ Status:
   are implemented.
 - `/v1/messages` persists chat turns and can execute typed item, recurrence,
   and notification-policy tool calls in deterministic test mode.
+- Assistant response text is persisted as outbound message history, with
+  redelivery-safe response IDs.
 - Telegram webhook ingestion normalizes provider messages without interpreting
   intent and is idempotent across redelivery.
 - Remaining in this slice: real AI provider/Codex bridge selection, outbound

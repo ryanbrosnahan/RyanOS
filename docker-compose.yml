@@ -48,6 +48,13 @@ services:
     volumes:
       - ./:/app
       - api-node-modules:/app/node_modules
+      - api-app-node-modules:/app/apps/api/node_modules
+      - web-app-node-modules:/app/apps/web/node_modules
+      - worker-app-node-modules:/app/apps/worker/node_modules
+      - ai-package-node-modules:/app/packages/ai/node_modules
+      - core-package-node-modules:/app/packages/core/node_modules
+      - db-package-node-modules:/app/packages/db/node_modules
+      - shared-package-node-modules:/app/packages/shared/node_modules
       - pnpm-store:/app/.pnpm-store
     depends_on:
       postgres:
@@ -69,6 +76,13 @@ services:
     volumes:
       - ./:/app
       - web-node-modules:/app/node_modules
+      - api-app-node-modules:/app/apps/api/node_modules
+      - web-app-node-modules:/app/apps/web/node_modules
+      - worker-app-node-modules:/app/apps/worker/node_modules
+      - ai-package-node-modules:/app/packages/ai/node_modules
+      - core-package-node-modules:/app/packages/core/node_modules
+      - db-package-node-modules:/app/packages/db/node_modules
+      - shared-package-node-modules:/app/packages/shared/node_modules
       - pnpm-store:/app/.pnpm-store
       - /app/apps/web/.next
     depends_on:
@@ -90,6 +104,13 @@ services:
     volumes:
       - ./:/app
       - worker-node-modules:/app/node_modules
+      - api-app-node-modules:/app/apps/api/node_modules
+      - web-app-node-modules:/app/apps/web/node_modules
+      - worker-app-node-modules:/app/apps/worker/node_modules
+      - ai-package-node-modules:/app/packages/ai/node_modules
+      - core-package-node-modules:/app/packages/core/node_modules
+      - db-package-node-modules:/app/packages/db/node_modules
+      - shared-package-node-modules:/app/packages/shared/node_modules
       - pnpm-store:/app/.pnpm-store
     depends_on:
       postgres:
@@ -101,7 +122,14 @@ services:
 
 volumes:
   api-node-modules:
+  api-app-node-modules:
+  ai-package-node-modules:
+  core-package-node-modules:
+  db-package-node-modules:
   web-node-modules:
+  web-app-node-modules:
   worker-node-modules:
+  worker-app-node-modules:
+  shared-package-node-modules:
   pnpm-store:
   postgres-data:

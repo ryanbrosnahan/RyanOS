@@ -22,7 +22,7 @@ Implementation has started. The repo contains the initial Node/TypeScript
 workspace, Docker/Postgres setup, Drizzle schema and migration, Fastify API
 shell, Graphile Worker shell, Next.js dashboard shell, first typed tool
 contracts, a Postgres-backed store adapter with in-memory fallback, persisted
-message sessions, and Telegram webhook normalization with redelivery
+inbound/outbound message sessions, and Telegram webhook normalization with redelivery
 idempotency. The current typed tool surface includes item search, create,
 update, complete, and snooze; recurrence policy/event recording; notification
 policy persistence; and state explain placeholders.
@@ -38,9 +38,16 @@ like `filemytro` and `NoxJury`.
 4. API health: `http://localhost:4000/health`
 
 The Compose setup binds host ports to `127.0.0.1`, keeps Postgres on a
-non-default host port by default, mounts source into containers, and stores
-container `node_modules` in named volumes so host installs do not fight Docker
-installs.
+non-default host port by default, mounts source into containers, and stores root
+and workspace package `node_modules` in named volumes so host installs do not
+fight Docker installs.
+
+While Docker services are running, treat dependencies as Docker-owned. To switch
+back to direct host development, stop the services and run:
+
+```bash
+pnpm install --force --store-dir /Users/ryan/Library/pnpm/store/v10
+```
 
 For direct host development, use Node `20.20.0` from `.node-version`, then run:
 

@@ -25,7 +25,7 @@ const successCriteria = [
 const buildSlices = [
   {
     title: "Current slice",
-    body: "Workspace, API, worker, database schema, AI tool registry, item tools, recurrence core, persisted policies, dashboard shell, Docker dev environment, Postgres store adapter, and persisted inbound messages."
+    body: "Workspace, API, worker, database schema, AI tool registry, item tools, recurrence core, persisted policies, dashboard shell, Docker dev environment, Postgres store adapter, and persisted inbound/outbound messages."
   },
   {
     title: "Next slice",

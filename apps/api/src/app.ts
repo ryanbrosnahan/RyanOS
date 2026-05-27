@@ -1,4 +1,4 @@
-import { NoopAiProvider, type IncomingMessage } from "@ryanos/ai";
+import { NoopAiProvider, type IncomingMessage, type ToolResult } from "@ryanos/ai";
 import { createCoreToolRegistry, InMemoryRyanStore } from "@ryanos/core";
 import { createDb, PostgresMessageStore, PostgresRyanStore, type StoredMessage } from "@ryanos/db";
 import { nowIso } from "@ryanos/shared";
@@ -48,6 +48,21 @@ function enrichToolInput(input: unknown, message: IncomingMessage, toolName: str
     enriched.idempotencyKey = `${message.provider}:${message.chatId}:${message.id}:${toolName}`;
   }
   return enriched;
+}
+
+function toolResultResponseText(result: ToolResult): string | undefined {
+  return result.messageForUser ?? result.clarificationPrompt ?? result.confirmationPrompt;
+}
+
+function aiTurnResponseText(
+  interpretedText: string | undefined,
+  toolResults: Array<{ name: string; result: ToolResult }>
+): string | undefined {
+  const toolMessages = toolResults
+    .map((toolResult) => toolResultResponseText(toolResult.result))
+    .filter((value): value is string => value !== undefined && value.trim().length > 0);
+  if (toolMessages.length > 0) return toolMessages.join("\n");
+  return interpretedText;
 }
 
 function telegramAuthorization(message: IncomingMessage): {
@@ -144,7 +159,7 @@ export function buildApp() {
     warnings: string[] = []
   ) {
     const interpreted = await ai.interpret(message, tools.list());
-    const toolResults = [];
+    const toolResults: Array<{ name: string; result: ToolResult }> = [];
     for (const toolCall of interpreted.toolCalls) {
       const result = await tools.execute(
         toolCall.name,
@@ -152,6 +167,15 @@ export function buildApp() {
       );
       toolResults.push({ name: toolCall.name, result });
     }
+    const response = await persistAssistantResponse(
+      message,
+      aiTurnResponseText(interpreted.text, toolResults),
+      {
+        mode: "ai-provider",
+        aiProvider: ai.name,
+        toolCallCount: toolResults.length
+      }
+    );
     return {
       mode: "ai-provider",
       provider: ai.name,
@@ -159,6 +183,7 @@ export function buildApp() {
       ...(storedMessage ? { storedMessage } : {}),
       interpreted,
       toolResults,
+      ...(response ? { response } : {}),
       ...(warnings.length > 0 ? { warnings } : {})
     };
   }
@@ -191,6 +216,15 @@ export function buildApp() {
         body.toolCall.name,
         enrichToolInput(body.toolCall.input, message, body.toolCall.name)
       );
+      const response = await persistAssistantResponse(
+        message,
+        toolResultResponseText(result),
+        {
+          mode: "typed-tool-call",
+          toolName: body.toolCall.name,
+          resultStatus: result.status
+        }
+      );
       if (result.status === "failed" || result.status === "rejected") {
         reply.code(400);
       }
@@ -198,6 +232,7 @@ export function buildApp() {
         mode: "typed-tool-call",
         message,
         ...(persisted.storedMessage ? { storedMessage: persisted.storedMessage } : {}),
+        ...(response ? { response } : {}),
         result
       };
     }
@@ -230,6 +265,28 @@ export function buildApp() {
 
   app.post("/v1/webhooks/telegram", handleTelegramWebhook);
   app.post("/v1/inbound/telegram", handleTelegramWebhook);
+
+  async function persistAssistantResponse(
+    message: IncomingMessage,
+    text: string | undefined,
+    metadata: Record<string, unknown>
+  ): Promise<{ text: string; storedMessage?: StoredMessage } | undefined> {
+    if (!text || text.trim().length === 0) return undefined;
+    if (!messageStore) return { text };
+    const storedMessage = await messageStore.saveOutgoingMessage({
+      provider: message.provider,
+      chatId: message.chatId,
+      userId: message.userId,
+      text,
+      providerMessageId: `response:${message.id}`,
+      replyToMessageId: message.id,
+      metadata: {
+        ...metadata,
+        sourceMessageId: message.id
+      }
+    });
+    return { text, storedMessage };
+  }
 
   app.get("/v1/dev/snapshot", async () => ({
     store: store.snapshot ? await store.snapshot() : { storeType: "unknown" },
