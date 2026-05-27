@@ -234,7 +234,7 @@ export function ChatPanel() {
       style={{ height: panelHeight }}
     >
       <div className="flex items-center gap-2 px-4 pt-4">
-        <MessageSquare className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+        <MessageSquare className="h-5 w-5 text-sky-700" aria-hidden="true" />
         <h2 className="text-lg font-semibold text-stone-950">Assistant intake</h2>
       </div>
 
@@ -266,14 +266,14 @@ export function ChatPanel() {
         <textarea
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          className="min-h-12 flex-1 resize-y rounded-md border border-stone-300 bg-white px-3 py-2 text-sm leading-6 text-stone-950 outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100"
+          className="min-h-12 flex-1 resize-y rounded-md border border-stone-300 bg-white px-3 py-2 text-sm leading-6 text-stone-950 outline-none focus:border-sky-700 focus:ring-2 focus:ring-sky-100"
           placeholder="Message RyanOS"
           rows={2}
         />
         <button
           type="submit"
           disabled={sending || input.trim().length === 0}
-          className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-md border border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:border-stone-300 disabled:bg-stone-200 disabled:text-stone-500"
+          className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-md border border-sky-700 bg-sky-700 text-white hover:bg-sky-800 disabled:cursor-not-allowed disabled:border-stone-300 disabled:bg-stone-200 disabled:text-stone-500"
           aria-label="Send message"
           title="Send message"
         >
@@ -288,7 +288,7 @@ export function ChatPanel() {
       <button
         ref={resizeHandleRef}
         type="button"
-        className="mt-3 flex h-5 shrink-0 cursor-ns-resize touch-none items-center justify-center rounded-b-md border-t border-stone-200 text-stone-400 hover:bg-stone-50 hover:text-stone-700 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-200"
+        className="mt-3 flex h-5 shrink-0 cursor-ns-resize touch-none items-center justify-center rounded-b-md border-t border-stone-200 text-stone-400 hover:bg-stone-50 hover:text-stone-700 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-sky-200"
         title="Resize chat panel"
         aria-label="Resize chat panel"
         aria-orientation="horizontal"

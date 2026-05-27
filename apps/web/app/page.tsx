@@ -27,7 +27,7 @@ export default function Home() {
         <div className="mx-auto flex max-w-7xl flex-col gap-5 px-5 py-6 sm:px-8 lg:px-10">
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <p className="text-sm font-medium text-emerald-700">RyanOS</p>
+              <p className="text-sm font-medium text-sky-700">RyanOS</p>
               <h1 className="mt-1 text-3xl font-semibold tracking-normal text-stone-950">
                 Personal operations dashboard
               </h1>
@@ -90,7 +90,7 @@ export default function Home() {
 
           <div className="rounded-md border border-stone-300 bg-white p-4 shadow-sm">
             <div className="flex items-center gap-2">
-              <Bell className="h-5 w-5 text-rose-700" aria-hidden="true" />
+              <Bell className="h-5 w-5 text-sky-700" aria-hidden="true" />
               <h2 className="text-lg font-semibold text-stone-950">Notification stance</h2>
             </div>
             <p className="mt-3 text-sm leading-6 text-stone-700">

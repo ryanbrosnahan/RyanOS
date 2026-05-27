@@ -21,20 +21,20 @@ function cleanLabel(value: string): string {
 }
 
 const areaVisualDefaults: Record<string, { icon: string; color: string }> = {
-  health: { icon: "heart-pulse", color: "emerald" },
-  fitness: { icon: "heart-pulse", color: "emerald" },
+  health: { icon: "heart-pulse", color: "cyan" },
+  fitness: { icon: "heart-pulse", color: "cyan" },
   work: { icon: "briefcase-business", color: "sky" },
   career: { icon: "briefcase-business", color: "sky" },
-  family: { icon: "users", color: "rose" },
-  relationships: { icon: "users", color: "rose" },
-  social: { icon: "users", color: "rose" },
+  family: { icon: "users", color: "violet" },
+  relationships: { icon: "users", color: "violet" },
+  social: { icon: "users", color: "violet" },
   home: { icon: "home", color: "amber" },
   finance: { icon: "landmark", color: "indigo" },
   investments: { icon: "landmark", color: "indigo" },
   learning: { icon: "book-open", color: "violet" },
   hobbies: { icon: "sparkles", color: "fuchsia" },
   travel: { icon: "plane", color: "cyan" },
-  pets: { icon: "paw-print", color: "lime" },
+  pets: { icon: "paw-print", color: "sky" },
   errands: { icon: "clipboard-list", color: "stone" },
   admin: { icon: "clipboard-list", color: "stone" },
   "side projects": { icon: "code-2", color: "blue" }

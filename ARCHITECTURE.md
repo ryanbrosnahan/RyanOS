@@ -44,6 +44,22 @@ public core.
 - AI may propose new powers, but it may not grant those powers to itself.
 - Optimize for migration, backup, restore, and future public-auth deployment.
 
+### Dashboard UX Principles
+
+- Avoid stacking cards inside cards. Use borders for primary panels, repeated
+  items, controls, and modals; otherwise prefer spacing, section headings,
+  subtle separators, and chips.
+- Hide low-frequency controls by default. Area/project reassignment and similar
+  metadata edits should show the current value first, then reveal inputs through
+  an explicit edit icon or edit mode.
+- Reserve green and red for semantic status. Green means success, completion, or
+  healthy state; red means error, missed, destructive, or negative state.
+  Taxonomy colors for areas and projects must use non-semantic tones such as
+  blue, sky, cyan, indigo, violet, fuchsia, amber, or stone.
+- Dashboard content should emphasize the user's live operating state. Avoid
+  surfacing implementation scaffolding unless the user is actively working on
+  RyanOS itself.
+
 ## 3. Deployment Model
 
 ### Accepted Direction

@@ -14,6 +14,7 @@ import {
   Home,
   Landmark,
   PawPrint,
+  Pencil,
   Plane,
   RefreshCw,
   RotateCcw,
@@ -136,11 +137,13 @@ function scopeTone(color: string | undefined, variant: "area" | "project"): stri
   }
   switch (color) {
     case "emerald":
-      return "border-emerald-200 bg-emerald-50 text-emerald-900";
+      return "border-cyan-200 bg-cyan-50 text-cyan-900";
+    case "rose":
+      return "border-violet-200 bg-violet-50 text-violet-900";
+    case "lime":
+      return "border-sky-200 bg-sky-50 text-sky-900";
     case "sky":
       return "border-sky-200 bg-sky-50 text-sky-900";
-    case "rose":
-      return "border-rose-200 bg-rose-50 text-rose-900";
     case "amber":
       return "border-amber-200 bg-amber-50 text-amber-900";
     case "indigo":
@@ -151,8 +154,6 @@ function scopeTone(color: string | undefined, variant: "area" | "project"): stri
       return "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-900";
     case "cyan":
       return "border-cyan-200 bg-cyan-50 text-cyan-900";
-    case "lime":
-      return "border-lime-200 bg-lime-50 text-lime-900";
     case "blue":
       return "border-blue-200 bg-blue-50 text-blue-900";
     default:
@@ -211,6 +212,7 @@ export function ItemsPanel() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
+  const [editingScopeItemId, setEditingScopeItemId] = useState<string | null>(null);
   const timezone = useMemo(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago",
     []
@@ -378,6 +380,7 @@ export function ItemsPanel() {
       const payload = (await response.json()) as ToolResultResponse;
       if (!response.ok) throw new Error(updateErrorMessage(payload, `Classification returned ${response.status}`));
       await loadDashboard({ background: true });
+      setEditingScopeItemId(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -399,7 +402,7 @@ export function ItemsPanel() {
     <div className="rounded-md border border-stone-300 bg-white p-4 shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <CheckCircle2 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
+          <CheckCircle2 className="h-5 w-5 text-sky-700" aria-hidden="true" />
           <h2 className="text-lg font-semibold text-stone-950">Open items</h2>
         </div>
         <button
@@ -428,7 +431,7 @@ export function ItemsPanel() {
       ) : null}
 
       {areas.length > 0 || projects.length > 0 || unscopedCount > 0 ? (
-        <div className="mt-4 rounded-md border border-stone-200 bg-stone-50 p-3">
+        <div className="mt-4 border-t border-stone-200 pt-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <FolderKanban className="h-4 w-4 text-sky-700" aria-hidden="true" />
@@ -445,7 +448,7 @@ export function ItemsPanel() {
             {areas.map((area) => {
               const areaProjects = projects.filter((project) => project.areaId === area.id);
               return (
-                <div key={area.id} className="rounded-md border border-stone-200 bg-white p-3">
+                <div key={area.id} className="rounded-md bg-stone-50 px-3 py-2">
                   <div className="flex items-center justify-between gap-2">
                     <ScopeChip scope={area} variant="area" />
                     <span className="text-xs font-medium text-stone-500">
@@ -455,7 +458,7 @@ export function ItemsPanel() {
                   {areaProjects.length > 0 ? (
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {areaProjects.map((project) => (
-                        <span key={project.id} className="inline-flex items-center gap-1 rounded-md border border-stone-200 bg-stone-50 px-2 py-0.5 text-xs text-stone-700">
+                        <span key={project.id} className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-0.5 text-xs text-stone-700 ring-1 ring-stone-200">
                           <FolderKanban className="h-3 w-3" aria-hidden="true" />
                           <span>{project.name}</span>
                           <span className="text-stone-400">{projectCounts.get(project.id) ?? 0}</span>
@@ -490,6 +493,7 @@ export function ItemsPanel() {
               if (!selectedAreaId) return true;
               return project.areaId === undefined || project.areaId === selectedAreaId;
             });
+            const editingScope = editingScopeItemId === item.id;
             return (
               <div key={item.id} className="py-3 first:pt-0 last:pb-0">
                 <div className="flex items-start justify-between gap-4">
@@ -519,93 +523,112 @@ export function ItemsPanel() {
                       </button>
                     )}
                     <div className="min-w-0">
-                      <p
-                        className={`truncate text-sm font-medium ${
-                          completed ? "text-stone-500 line-through" : "text-stone-950"
-                        }`}
-                      >
-                        {item.title}
-                      </p>
-                      {item.scope?.area || item.scope?.project ? (
-                        <div className="mt-1 flex min-w-0 flex-wrap gap-1.5">
-                          {item.scope.area ? (
-                            <ScopeChip scope={item.scope.area} variant="area" />
-                          ) : null}
-                          {item.scope.project ? (
-                            <ScopeChip scope={item.scope.project} variant="project" />
-                          ) : null}
-                        </div>
-                      ) : null}
+                      <div className="flex min-w-0 items-start gap-2">
+                        <p
+                          className={`min-w-0 flex-1 truncate text-sm font-medium ${
+                            completed ? "text-stone-500 line-through" : "text-stone-950"
+                          }`}
+                        >
+                          {item.title}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setEditingScopeItemId(editingScope ? null : item.id)}
+                          className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900 ${
+                            editingScope ? "bg-stone-100 text-stone-900" : ""
+                          }`}
+                          aria-label={`Edit area and project for ${item.title}`}
+                          aria-pressed={editingScope}
+                          title="Edit area and project"
+                        >
+                          <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
+                      </div>
+                      <div className="mt-1 flex min-w-0 flex-wrap gap-1.5">
+                        {item.scope?.area ? (
+                          <ScopeChip scope={item.scope.area} variant="area" />
+                        ) : null}
+                        {item.scope?.project ? (
+                          <ScopeChip scope={item.scope.project} variant="project" />
+                        ) : null}
+                        {!item.scope?.area && !item.scope?.project ? (
+                          <span className="inline-flex items-center rounded-md bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-600">
+                            Unscoped
+                          </span>
+                        ) : null}
+                      </div>
                       <p className="mt-1 text-xs text-stone-600">
                         {item.kind} / {item.priority} / {completed ? "done today" : item.status}
                       </p>
-                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                        <label className="sr-only" htmlFor={`area-${item.id}`}>
-                          Area for {item.title}
-                        </label>
-                        <select
-                          id={`area-${item.id}`}
-                          value={selectedAreaId}
-                          disabled={pendingKey === `${item.id}:classify`}
-                          onChange={(event) => {
-                            const areaId = event.target.value;
-                            if (!areaId) {
-                              void classifyItem(item, { clearArea: true, clearProject: true });
-                              return;
-                            }
-                            const currentProject = projects.find((project) => project.id === selectedProjectId);
-                            void classifyItem(item, {
-                              areaId,
-                              clearProject:
-                                currentProject?.areaId !== undefined && currentProject.areaId !== areaId
-                            });
-                          }}
-                          className="h-8 min-w-0 rounded-md border border-stone-300 bg-white px-2 text-xs text-stone-800 outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100 disabled:cursor-wait disabled:opacity-60"
-                        >
-                          <option value="">No area</option>
-                          {areas.map((area) => (
-                            <option key={area.id} value={area.id}>
-                              {area.name}
-                            </option>
-                          ))}
-                        </select>
+                      {editingScope ? (
+                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                          <label className="sr-only" htmlFor={`area-${item.id}`}>
+                            Area for {item.title}
+                          </label>
+                          <select
+                            id={`area-${item.id}`}
+                            value={selectedAreaId}
+                            disabled={pendingKey === `${item.id}:classify`}
+                            onChange={(event) => {
+                              const areaId = event.target.value;
+                              if (!areaId) {
+                                void classifyItem(item, { clearArea: true, clearProject: true });
+                                return;
+                              }
+                              const currentProject = projects.find((project) => project.id === selectedProjectId);
+                              void classifyItem(item, {
+                                areaId,
+                                clearProject:
+                                  currentProject?.areaId !== undefined && currentProject.areaId !== areaId
+                              });
+                            }}
+                            className="h-8 min-w-0 rounded-md border border-stone-300 bg-white px-2 text-xs text-stone-800 outline-none focus:border-sky-700 focus:ring-2 focus:ring-sky-100 disabled:cursor-wait disabled:opacity-60"
+                          >
+                            <option value="">No area</option>
+                            {areas.map((area) => (
+                              <option key={area.id} value={area.id}>
+                                {area.name}
+                              </option>
+                            ))}
+                          </select>
 
-                        <label className="sr-only" htmlFor={`project-${item.id}`}>
-                          Project for {item.title}
-                        </label>
-                        <select
-                          id={`project-${item.id}`}
-                          value={selectedProjectId}
-                          disabled={pendingKey === `${item.id}:classify` || projects.length === 0}
-                          onChange={(event) => {
-                            const projectId = event.target.value;
-                            if (!projectId) {
-                              void classifyItem(item, { clearProject: true });
-                              return;
-                            }
-                            const project = projects.find((candidate) => candidate.id === projectId);
-                            void classifyItem(
-                              item,
-                              project?.areaId === undefined
-                                ? { projectId }
-                                : { projectId, areaId: project.areaId }
-                            );
-                          }}
-                          className="h-8 min-w-0 rounded-md border border-stone-300 bg-white px-2 text-xs text-stone-800 outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100 disabled:cursor-wait disabled:opacity-60"
-                        >
-                          <option value="">No project</option>
-                          {visibleProjects.map((project) => (
-                            <option key={project.id} value={project.id}>
-                              {project.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                          <label className="sr-only" htmlFor={`project-${item.id}`}>
+                            Project for {item.title}
+                          </label>
+                          <select
+                            id={`project-${item.id}`}
+                            value={selectedProjectId}
+                            disabled={pendingKey === `${item.id}:classify` || projects.length === 0}
+                            onChange={(event) => {
+                              const projectId = event.target.value;
+                              if (!projectId) {
+                                void classifyItem(item, { clearProject: true });
+                                return;
+                              }
+                              const project = projects.find((candidate) => candidate.id === projectId);
+                              void classifyItem(
+                                item,
+                                project?.areaId === undefined
+                                  ? { projectId }
+                                  : { projectId, areaId: project.areaId }
+                              );
+                            }}
+                            className="h-8 min-w-0 rounded-md border border-stone-300 bg-white px-2 text-xs text-stone-800 outline-none focus:border-sky-700 focus:ring-2 focus:ring-sky-100 disabled:cursor-wait disabled:opacity-60"
+                          >
+                            <option value="">No project</option>
+                            {visibleProjects.map((project) => (
+                              <option key={project.id} value={project.id}>
+                                {project.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     {item.recurrence ? (
-                      <span className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-900">
+                      <span className="rounded-md bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-900">
                         {recurrenceSummary(item.recurrence)}
                       </span>
                     ) : null}
