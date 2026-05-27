@@ -10,9 +10,9 @@ The system should reduce mental load rather than become another inbox. It should
 know what matters, remember what has been done, reset recurrence based on real
 completion events, and proactively ask for clarification or action when useful.
 
-The product should be generic enough to become open source. Personal areas,
-projects, credentials, private skills, and private data must live outside the
-public core.
+The product should be generic enough to publish as source-available Fair Source
+software. Personal areas, projects, credentials, private skills, and private data
+must live outside the public core.
 
 ### Companion Documents
 
@@ -594,7 +594,7 @@ Examples:
 - "Actually I called Grandpa on Sunday."
 - "Do not treat this RFP as important anymore."
 
-## 16. OSS Boundary
+## 16. Public Source Boundary
 
 The public project should contain:
 
@@ -614,6 +614,10 @@ The private deployment should contain:
 - Private integration configuration.
 - Private notification policies.
 - Private backups.
+
+The public project is licensed under FSL-1.1-ALv2 by default. Describe RyanOS
+as source-available or Fair Source, not open source, unless referring to a
+specific version after its Apache 2.0 future-license conversion date.
 
 ## 17. V1 Scope
 

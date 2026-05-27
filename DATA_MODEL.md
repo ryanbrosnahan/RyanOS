@@ -751,5 +751,5 @@ in early V1 migrations if they are needed before the dashboard.
 - Use Drizzle migrations.
 - Avoid destructive migrations until backup/restore is working.
 - Include seed/demo data separate from private user data.
-- Keep private deployment data out of the OSS repo.
+- Keep private deployment data out of the public source repo.
 - Build restore tests before relying on the system for real reminders.

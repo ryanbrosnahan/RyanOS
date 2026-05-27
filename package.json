@@ -2,6 +2,12 @@
   "name": "ryanos",
   "version": "0.0.0",
   "private": true,
+  "author": "Ryan Brosnahan",
+  "license": "FSL-1.1-ALv2",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/ryanbrosnahan/RyanOS.git"
+  },
   "type": "module",
   "packageManager": "pnpm@10.11.0",
   "engines": {

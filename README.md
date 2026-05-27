@@ -130,6 +130,21 @@ pnpm build
 pnpm test
 ```
 
+## License
+
+RyanOS is source-available under the Functional Source License 1.1 with an
+Apache 2.0 future license. You can inspect, self-deploy, modify, and contribute
+to the project, but competing commercial products and hosted services require a
+separate commercial license.
+
+- [LICENSE.md](./LICENSE.md): controlling public license.
+- [COMMERCIAL.md](./COMMERCIAL.md): practical commercial-use guidance.
+- [TRADEMARKS.md](./TRADEMARKS.md): RyanOS brand usage rules.
+- [CONTRIBUTING.md](./CONTRIBUTING.md): contribution terms.
+
+RyanOS should be described as source-available or Fair Source, not open source,
+until a specific version converts to Apache 2.0 under the future-license grant.
+
 ## Next Build Step
 
 Connect the Codex-login bridge to the typed tool runtime, then add scheduled

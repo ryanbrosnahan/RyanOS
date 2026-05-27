@@ -20,7 +20,7 @@ skills, deeper integrations, self-improvement, and stronger autonomy controls.
   approve billing, create a connector, paste a token, or configure an external
   account, ask for that exact action and wait instead of inventing a workaround.
 - Make every mutation auditable.
-- Keep user-specific configuration/data outside the OSS boundary.
+- Keep user-specific configuration/data outside the public source boundary.
 - Prefer small vertical slices over broad unfinished surfaces.
 
 ## Ash-Inspired Patterns To Adopt
