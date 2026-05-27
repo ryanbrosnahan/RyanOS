@@ -271,6 +271,54 @@ describe("setup status", () => {
     await app.close();
   });
 
+  it("returns dashboard taxonomy labels for classified items", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Review Method cash forecast",
+          kind: "task",
+          areaRef: "Finance",
+          projectRef: "Method"
+        }
+      }
+    });
+    expect(created.statusCode).toBe(200);
+
+    const taxonomy = await app.inject({
+      method: "GET",
+      url: "/v1/taxonomy?userId=local-owner"
+    });
+    expect(taxonomy.statusCode).toBe(200);
+    expect(taxonomy.json()).toMatchObject({
+      areas: [expect.objectContaining({ name: "Finance", icon: "landmark" })],
+      projects: [expect.objectContaining({ name: "Method", areaId: expect.any(String) })]
+    });
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner"
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: "Review Method cash forecast",
+          scope: expect.objectContaining({
+            area: expect.objectContaining({ name: "Finance", icon: "landmark" }),
+            project: expect.objectContaining({ name: "Method" })
+          })
+        })
+      ])
+    );
+    await app.close();
+  });
+
   it("keeps one-off tasks completed today visible until end of day", async () => {
     vi.stubEnv("DATABASE_URL", "");
 

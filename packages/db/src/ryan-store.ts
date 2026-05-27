@@ -2,17 +2,21 @@ import { and, asc, count, desc, eq, ilike, inArray, isNull, or, sql } from "driz
 import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
   AuditLog,
+  Area,
   Item,
   ItemEvent,
   Policy,
+  Project,
   RecurrenceEvent,
   RecurrencePolicy,
   RecurrenceState,
   RyanStore,
+  AreaUpsertData,
   ItemCreateData,
   ItemListFilters,
   ItemPatch,
   PolicyUpsertData,
+  ProjectUpsertData,
   SearchMatch
 } from "@ryanos/core";
 import { isUuid, resolveUserId, type RyanDb } from "./identity.js";
@@ -64,6 +68,45 @@ function itemFromRow(row: typeof schema.items.$inferSelect): Item {
   const deletedAt = toIso(row.deletedAt);
   if (deletedAt !== undefined) item.deletedAt = deletedAt;
   return item;
+}
+
+function areaFromRow(row: typeof schema.areas.$inferSelect): Area {
+  const area: Area = {
+    id: row.id,
+    userId: row.userId,
+    name: row.name,
+    status: row.status,
+    sortOrder: row.sortOrder,
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.description !== null) area.description = row.description;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) area.deletedAt = deletedAt;
+  return area;
+}
+
+function projectFromRow(row: typeof schema.projects.$inferSelect): Project {
+  const project: Project = {
+    id: row.id,
+    userId: row.userId,
+    name: row.name,
+    status: row.status,
+    priority: row.priority,
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.areaId !== null) project.areaId = row.areaId;
+  if (row.description !== null) project.description = row.description;
+  const dueAt = toIso(row.dueAt);
+  if (dueAt !== undefined) project.dueAt = dueAt;
+  const reviewAfter = toIso(row.reviewAfter);
+  if (reviewAfter !== undefined) project.reviewAfter = reviewAfter;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) project.deletedAt = deletedAt;
+  return project;
 }
 
 function itemEventFromRow(row: typeof schema.itemEvents.$inferSelect): ItemEvent {
@@ -198,6 +241,233 @@ export class PostgresRyanStore implements RyanStore {
     return resolveUserId(this.db, userId);
   }
 
+  async upsertArea(data: AreaUpsertData): Promise<Area> {
+    const userId = await this.resolveUserId(data.userId);
+    const normalizedName = cleanQuery(data.name);
+    const existing = await this.db.query.areas.findFirst({
+      where: and(
+        eq(schema.areas.userId, userId),
+        sql`lower(${schema.areas.name}) = ${normalizedName}`,
+        isNull(schema.areas.deletedAt)
+      )
+    });
+
+    const values: typeof schema.areas.$inferInsert = {
+      userId,
+      name: data.name,
+      status: data.status ?? existing?.status ?? "active",
+      sortOrder: data.sortOrder ?? existing?.sortOrder ?? 0,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      updatedAt: new Date()
+    };
+    if (data.description !== undefined) values.description = data.description;
+    else if (existing?.description !== null && existing?.description !== undefined) {
+      values.description = existing.description;
+    }
+
+    if (existing) {
+      const [row] = await this.db
+        .update(schema.areas)
+        .set(values)
+        .where(eq(schema.areas.id, existing.id))
+        .returning();
+      if (!row) throw new Error(`Area not found: ${existing.id}`);
+      return areaFromRow(row);
+    }
+
+    const [row] = await this.db.insert(schema.areas).values(values).returning();
+    if (!row) throw new Error("Failed to upsert area");
+    return areaFromRow(row);
+  }
+
+  async listAreas(userId: UUID): Promise<Area[]> {
+    const resolvedUserId = await this.resolveUserId(userId);
+    const rows = await this.db
+      .select()
+      .from(schema.areas)
+      .where(and(eq(schema.areas.userId, resolvedUserId), isNull(schema.areas.deletedAt)))
+      .orderBy(asc(schema.areas.sortOrder), asc(schema.areas.name));
+    return rows.map(areaFromRow);
+  }
+
+  async searchAreas(
+    userId: UUID,
+    query: string,
+    limit = 5
+  ): Promise<Array<SearchMatch<Area>>> {
+    const resolvedUserId = await this.resolveUserId(userId);
+    const needle = cleanQuery(query);
+    const rows = await this.db
+      .select()
+      .from(schema.areas)
+      .where(
+        isUuid(query)
+          ? and(
+              eq(schema.areas.userId, resolvedUserId),
+              isNull(schema.areas.deletedAt),
+              or(eq(schema.areas.id, query), ilike(schema.areas.name, `%${needle}%`))
+            )
+          : and(
+              eq(schema.areas.userId, resolvedUserId),
+              isNull(schema.areas.deletedAt),
+              ilike(schema.areas.name, `%${needle}%`)
+            )
+      )
+      .limit(Math.max(limit * 4, 20));
+
+    return rows
+      .map((row) => {
+        const area = areaFromRow(row);
+        const name = cleanQuery(area.name);
+        let confidence = 0;
+        let reason = "No match";
+        if (area.id === query) {
+          confidence = 1;
+          reason = "Exact id match";
+        } else if (name === needle) {
+          confidence = 0.98;
+          reason = "Exact name match";
+        } else if (name.includes(needle) || needle.includes(name)) {
+          confidence = 0.82;
+          reason = "Name contains query";
+        }
+        return { record: area, confidence, reason };
+      })
+      .filter((match) => match.confidence > 0)
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, limit);
+  }
+
+  async getArea(areaId: UUID): Promise<Area | undefined> {
+    const row = await this.db.query.areas.findFirst({
+      where: eq(schema.areas.id, areaId)
+    });
+    return row ? areaFromRow(row) : undefined;
+  }
+
+  async upsertProject(data: ProjectUpsertData): Promise<Project> {
+    const userId = await this.resolveUserId(data.userId);
+    const normalizedName = cleanQuery(data.name);
+    const areaCondition =
+      data.areaId === undefined
+        ? isNull(schema.projects.areaId)
+        : or(eq(schema.projects.areaId, data.areaId), isNull(schema.projects.areaId));
+    const existing = await this.db.query.projects.findFirst({
+      where: and(
+        eq(schema.projects.userId, userId),
+        areaCondition,
+        sql`lower(${schema.projects.name}) = ${normalizedName}`,
+        isNull(schema.projects.deletedAt)
+      )
+    });
+
+    const values: typeof schema.projects.$inferInsert = {
+      userId,
+      name: data.name,
+      status: data.status ?? existing?.status ?? "active",
+      priority: data.priority ?? existing?.priority ?? "normal",
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      updatedAt: new Date()
+    };
+    if (data.areaId !== undefined) values.areaId = data.areaId;
+    else if (existing?.areaId !== null && existing?.areaId !== undefined) values.areaId = existing.areaId;
+    if (data.description !== undefined) values.description = data.description;
+    else if (existing?.description !== null && existing?.description !== undefined) {
+      values.description = existing.description;
+    }
+    if (data.dueAt !== undefined) values.dueAt = toDate(data.dueAt);
+    else if (existing?.dueAt !== null && existing?.dueAt !== undefined) values.dueAt = existing.dueAt;
+    if (data.reviewAfter !== undefined) values.reviewAfter = toDate(data.reviewAfter);
+    else if (existing?.reviewAfter !== null && existing?.reviewAfter !== undefined) {
+      values.reviewAfter = existing.reviewAfter;
+    }
+
+    if (existing) {
+      const [row] = await this.db
+        .update(schema.projects)
+        .set(values)
+        .where(eq(schema.projects.id, existing.id))
+        .returning();
+      if (!row) throw new Error(`Project not found: ${existing.id}`);
+      return projectFromRow(row);
+    }
+
+    const [row] = await this.db.insert(schema.projects).values(values).returning();
+    if (!row) throw new Error("Failed to upsert project");
+    return projectFromRow(row);
+  }
+
+  async listProjects(filters: { userId: UUID; areaId?: UUID; limit?: number }): Promise<Project[]> {
+    const resolvedUserId = await this.resolveUserId(filters.userId);
+    const conditions = [
+      eq(schema.projects.userId, resolvedUserId),
+      isNull(schema.projects.deletedAt)
+    ];
+    if (filters.areaId !== undefined) conditions.push(eq(schema.projects.areaId, filters.areaId));
+    const rows = await this.db
+      .select()
+      .from(schema.projects)
+      .where(and(...conditions))
+      .orderBy(asc(schema.projects.name))
+      .limit(Math.min(Math.max(filters.limit ?? 100, 1), 200));
+    return rows.map(projectFromRow);
+  }
+
+  async searchProjects(
+    userId: UUID,
+    query: string,
+    limit = 5
+  ): Promise<Array<SearchMatch<Project>>> {
+    const resolvedUserId = await this.resolveUserId(userId);
+    const needle = cleanQuery(query);
+    const rows = await this.db
+      .select()
+      .from(schema.projects)
+      .where(
+        isUuid(query)
+          ? and(
+              eq(schema.projects.userId, resolvedUserId),
+              isNull(schema.projects.deletedAt),
+              or(eq(schema.projects.id, query), ilike(schema.projects.name, `%${needle}%`))
+            )
+          : and(
+              eq(schema.projects.userId, resolvedUserId),
+              isNull(schema.projects.deletedAt),
+              ilike(schema.projects.name, `%${needle}%`)
+            )
+      )
+      .limit(Math.max(limit * 4, 20));
+
+    return rows
+      .map((row) => {
+        const project = projectFromRow(row);
+        const name = cleanQuery(project.name);
+        let confidence = 0;
+        let reason = "No match";
+        if (project.id === query) {
+          confidence = 1;
+          reason = "Exact id match";
+        } else if (name === needle) {
+          confidence = 0.98;
+          reason = "Exact name match";
+        } else if (name.includes(needle) || needle.includes(name)) {
+          confidence = 0.82;
+          reason = "Name contains query";
+        }
+        return { record: project, confidence, reason };
+      })
+      .filter((match) => match.confidence > 0)
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, limit);
+  }
+
+  async getProject(projectId: UUID): Promise<Project | undefined> {
+    const row = await this.db.query.projects.findFirst({
+      where: eq(schema.projects.id, projectId)
+    });
+    return row ? projectFromRow(row) : undefined;
+  }
+
   async createItem(data: ItemCreateData): Promise<Item> {
     const userId = await this.resolveUserId(data.userId);
     const values: typeof schema.items.$inferInsert = {
@@ -229,6 +499,8 @@ export class PostgresRyanStore implements RyanStore {
     if (patch.body !== undefined) values.body = patch.body;
     if (patch.status !== undefined) values.status = patch.status;
     if (patch.priority !== undefined) values.priority = patch.priority;
+    if (patch.areaId !== undefined) values.areaId = patch.areaId;
+    if (patch.projectId !== undefined) values.projectId = patch.projectId;
     if (patch.dueAt !== undefined) values.dueAt = patch.dueAt === null ? null : toDate(patch.dueAt);
     if (patch.startAt !== undefined) values.startAt = patch.startAt === null ? null : toDate(patch.startAt);
     if (patch.snoozedUntil !== undefined) {

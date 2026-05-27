@@ -21,6 +21,35 @@ export type PolicyType =
   | "other";
 export type PolicyStatus = "active" | "paused" | "archived" | "disabled";
 
+export type Area = {
+  id: UUID;
+  userId: UUID;
+  name: string;
+  description?: string;
+  status: string;
+  sortOrder: number;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type Project = {
+  id: UUID;
+  userId: UUID;
+  areaId?: UUID;
+  name: string;
+  description?: string;
+  status: string;
+  priority: Priority;
+  dueAt?: ISODateString;
+  reviewAfter?: ISODateString;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
 export type Item = {
   id: UUID;
   userId: UUID;

@@ -2,7 +2,9 @@ import { createAiProviderFromEnv, type AiProviderStatus, type IncomingMessage, t
 import {
   createCoreToolRegistry,
   InMemoryRyanStore,
+  type Area,
   type Item,
+  type Project,
   type RecurrenceEvent,
   type RecurrencePolicy,
   type RecurrenceState
@@ -45,6 +47,10 @@ const listItemsQuerySchema = z.object({
   timezone: z.string().default("America/Chicago"),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(30)
+});
+
+const taxonomyQuerySchema = z.object({
+  userId: z.string().default("local-owner")
 });
 
 const itemActionParamsSchema = z.object({
@@ -255,6 +261,32 @@ function recurrenceProgress(
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   return value as Record<string, unknown>;
+}
+
+function metadataString(metadata: Record<string, unknown>, key: string): string | undefined {
+  const value = metadata[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function areaForDashboard(area: Area) {
+  return {
+    id: area.id,
+    name: area.name,
+    description: area.description,
+    icon: metadataString(area.metadata, "icon") ?? "folder",
+    color: metadataString(area.metadata, "color") ?? "stone"
+  };
+}
+
+function projectForDashboard(project: Project) {
+  return {
+    id: project.id,
+    name: project.name,
+    areaId: project.areaId,
+    description: project.description,
+    icon: metadataString(project.metadata, "icon") ?? "folder-kanban",
+    color: metadataString(project.metadata, "color") ?? "stone"
+  };
 }
 
 function enrichToolInput(input: unknown, message: IncomingMessage, toolName: string): unknown {
@@ -536,18 +568,33 @@ export function buildApp() {
   });
 
   async function itemForDashboard(item: Item, timeZone: string, referenceDateKey: string) {
-    const policy = await store.findRecurrencePolicyForItem(item.id);
+    const [policy, itemArea, itemProject] = await Promise.all([
+      store.findRecurrencePolicyForItem(item.id),
+      item.areaId === undefined ? Promise.resolve(undefined) : store.getArea(item.areaId),
+      item.projectId === undefined ? Promise.resolve(undefined) : store.getProject(item.projectId)
+    ]);
+    const projectArea =
+      itemArea === undefined && itemProject?.areaId !== undefined
+        ? await store.getArea(itemProject.areaId)
+        : undefined;
+    const area = itemArea ?? projectArea;
+    const scope = {
+      area: area === undefined ? undefined : areaForDashboard(area),
+      project: itemProject === undefined ? undefined : projectForDashboard(itemProject)
+    };
+    const dayBounds = localDayBounds(referenceDateKey, timeZone);
     const completion = {
       completedToday:
         item.status === "done" &&
         item.completedAt !== undefined &&
-        item.completedAt >= localDayBounds(referenceDateKey, timeZone).start &&
-        item.completedAt < localDayBounds(referenceDateKey, timeZone).end,
+        item.completedAt >= dayBounds.start &&
+        item.completedAt < dayBounds.end,
       completedAt: item.completedAt
     };
     if (!policy) {
       return {
         ...item,
+        scope,
         completion
       };
     }
@@ -558,10 +605,23 @@ export function buildApp() {
     ]);
     return {
       ...item,
+      scope,
       completion,
       recurrence: recurrenceProgress(policy, state, events, timeZone, referenceDateKey)
     };
   }
+
+  app.get("/v1/taxonomy", async (request) => {
+    const query = taxonomyQuerySchema.parse(request.query);
+    const [areas, projects] = await Promise.all([
+      store.listAreas(query.userId),
+      store.listProjects({ userId: query.userId, limit: 200 })
+    ]);
+    return {
+      areas: areas.map(areaForDashboard),
+      projects: projects.map(projectForDashboard)
+    };
+  });
 
   app.get("/v1/items", async (request) => {
     const query = listItemsQuerySchema.parse(request.query);

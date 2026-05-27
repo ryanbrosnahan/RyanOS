@@ -1,18 +1,22 @@
 import { createId, nowIso } from "@ryanos/shared";
 import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
+  AreaUpsertData,
   ItemCreateData,
   ItemListFilters,
   ItemPatch,
   PolicyUpsertData,
+  ProjectUpsertData,
   RyanStore,
   SearchMatch
 } from "./store.js";
 import type {
   AuditLog,
+  Area,
   Item,
   ItemEvent,
   Policy,
+  Project,
   RecurrenceEvent,
   RecurrencePolicy,
   RecurrenceState
@@ -23,6 +27,8 @@ function cleanQuery(value: string): string {
 }
 
 export class InMemoryRyanStore implements RyanStore {
+  readonly areas = new Map<UUID, Area>();
+  readonly projects = new Map<UUID, Project>();
   readonly items = new Map<UUID, Item>();
   readonly itemEvents: ItemEvent[] = [];
   readonly recurrencePolicies = new Map<UUID, RecurrencePolicy>();
@@ -30,6 +36,148 @@ export class InMemoryRyanStore implements RyanStore {
   readonly recurrenceStates = new Map<UUID, RecurrenceState>();
   readonly policies = new Map<UUID, Policy>();
   readonly auditLogs: AuditLog[] = [];
+
+  async upsertArea(data: AreaUpsertData): Promise<Area> {
+    const timestamp = nowIso();
+    const existing = [...this.areas.values()].find(
+      (area) =>
+        area.userId === data.userId &&
+        cleanQuery(area.name) === cleanQuery(data.name) &&
+        !area.deletedAt
+    );
+    const area: Area = {
+      ...existing,
+      id: existing?.id ?? createId("area"),
+      userId: data.userId,
+      name: data.name,
+      status: data.status ?? existing?.status ?? "active",
+      sortOrder: data.sortOrder ?? existing?.sortOrder ?? 0,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    if (data.description !== undefined) area.description = data.description;
+    else if (existing?.description !== undefined) area.description = existing.description;
+    this.areas.set(area.id, area);
+    return area;
+  }
+
+  async listAreas(userId: UUID): Promise<Area[]> {
+    return [...this.areas.values()]
+      .filter((area) => area.userId === userId && !area.deletedAt)
+      .sort((a, b) => {
+        if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+        return a.name.localeCompare(b.name);
+      });
+  }
+
+  async searchAreas(
+    userId: UUID,
+    query: string,
+    limit = 5
+  ): Promise<Array<SearchMatch<Area>>> {
+    const needle = cleanQuery(query);
+    return [...this.areas.values()]
+      .filter((area) => area.userId === userId && !area.deletedAt)
+      .map((area) => {
+        const name = cleanQuery(area.name);
+        let confidence = 0;
+        let reason = "No match";
+        if (area.id === query) {
+          confidence = 1;
+          reason = "Exact id match";
+        } else if (name === needle) {
+          confidence = 0.98;
+          reason = "Exact name match";
+        } else if (name.includes(needle) || needle.includes(name)) {
+          confidence = 0.82;
+          reason = "Name contains query";
+        }
+        return { record: area, confidence, reason };
+      })
+      .filter((match) => match.confidence > 0)
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, limit);
+  }
+
+  async getArea(areaId: UUID): Promise<Area | undefined> {
+    return this.areas.get(areaId);
+  }
+
+  async upsertProject(data: ProjectUpsertData): Promise<Project> {
+    const timestamp = nowIso();
+    const existing = [...this.projects.values()].find(
+      (project) =>
+        project.userId === data.userId &&
+        cleanQuery(project.name) === cleanQuery(data.name) &&
+        (data.areaId === undefined || project.areaId === undefined || project.areaId === data.areaId) &&
+        !project.deletedAt
+    );
+    const project: Project = {
+      ...existing,
+      id: existing?.id ?? createId("project"),
+      userId: data.userId,
+      name: data.name,
+      status: data.status ?? existing?.status ?? "active",
+      priority: data.priority ?? existing?.priority ?? "normal",
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    if (data.areaId !== undefined) project.areaId = data.areaId;
+    else if (existing?.areaId !== undefined) project.areaId = existing.areaId;
+    if (data.description !== undefined) project.description = data.description;
+    else if (existing?.description !== undefined) project.description = existing.description;
+    if (data.dueAt !== undefined) project.dueAt = data.dueAt;
+    else if (existing?.dueAt !== undefined) project.dueAt = existing.dueAt;
+    if (data.reviewAfter !== undefined) project.reviewAfter = data.reviewAfter;
+    else if (existing?.reviewAfter !== undefined) project.reviewAfter = existing.reviewAfter;
+    this.projects.set(project.id, project);
+    return project;
+  }
+
+  async listProjects(filters: { userId: UUID; areaId?: UUID; limit?: number }): Promise<Project[]> {
+    return [...this.projects.values()]
+      .filter((project) => {
+        if (project.userId !== filters.userId || project.deletedAt) return false;
+        return filters.areaId === undefined || project.areaId === filters.areaId;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .slice(0, Math.min(Math.max(filters.limit ?? 100, 1), 200));
+  }
+
+  async searchProjects(
+    userId: UUID,
+    query: string,
+    limit = 5
+  ): Promise<Array<SearchMatch<Project>>> {
+    const needle = cleanQuery(query);
+    return [...this.projects.values()]
+      .filter((project) => project.userId === userId && !project.deletedAt)
+      .map((project) => {
+        const name = cleanQuery(project.name);
+        let confidence = 0;
+        let reason = "No match";
+        if (project.id === query) {
+          confidence = 1;
+          reason = "Exact id match";
+        } else if (name === needle) {
+          confidence = 0.98;
+          reason = "Exact name match";
+        } else if (name.includes(needle) || needle.includes(name)) {
+          confidence = 0.82;
+          reason = "Name contains query";
+        }
+        return { record: project, confidence, reason };
+      })
+      .filter((match) => match.confidence > 0)
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, limit);
+  }
+
+  async getProject(projectId: UUID): Promise<Project | undefined> {
+    return this.projects.get(projectId);
+  }
 
   async createItem(data: ItemCreateData): Promise<Item> {
     const timestamp = nowIso();
@@ -71,6 +219,14 @@ export class InMemoryRyanStore implements RyanStore {
     if (patch.status !== undefined) updated.status = patch.status;
     if (patch.priority !== undefined) updated.priority = patch.priority;
     if (patch.estimateMinutes !== undefined) updated.estimateMinutes = patch.estimateMinutes;
+    if (patch.areaId !== undefined) {
+      if (patch.areaId === null) delete updated.areaId;
+      else updated.areaId = patch.areaId;
+    }
+    if (patch.projectId !== undefined) {
+      if (patch.projectId === null) delete updated.projectId;
+      else updated.projectId = patch.projectId;
+    }
     if (patch.dueAt !== undefined) {
       if (patch.dueAt === null) delete updated.dueAt;
       else updated.dueAt = patch.dueAt;
@@ -254,6 +410,8 @@ export class InMemoryRyanStore implements RyanStore {
 
   snapshot(): JsonObject {
     return {
+      areaCount: this.areas.size,
+      projectCount: this.projects.size,
       itemCount: this.items.size,
       itemEventCount: this.itemEvents.length,
       recurrencePolicyCount: this.recurrencePolicies.size,

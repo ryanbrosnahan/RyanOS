@@ -1,13 +1,36 @@
 import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
   AuditLog,
+  Area,
   Item,
   ItemEvent,
   Policy,
+  Project,
   RecurrenceEvent,
   RecurrencePolicy,
   RecurrenceState
 } from "./types.js";
+
+export type AreaUpsertData = {
+  userId: UUID;
+  name: string;
+  description?: string;
+  status?: string;
+  sortOrder?: number;
+  metadata?: JsonObject;
+};
+
+export type ProjectUpsertData = {
+  userId: UUID;
+  areaId?: UUID;
+  name: string;
+  description?: string;
+  status?: string;
+  priority?: Project["priority"];
+  dueAt?: string;
+  reviewAfter?: string;
+  metadata?: JsonObject;
+};
 
 export type ItemCreateData = {
   userId: UUID;
@@ -26,6 +49,8 @@ export type ItemCreateData = {
 export type ItemPatch = Partial<
   Pick<Item, "kind" | "title" | "body" | "status" | "priority" | "estimateMinutes">
 > & {
+  areaId?: UUID | null;
+  projectId?: UUID | null;
   dueAt?: string | null;
   startAt?: string | null;
   snoozedUntil?: string | null;
@@ -53,6 +78,20 @@ export type PolicyUpsertData = Omit<
 >;
 
 export interface RyanStore {
+  upsertArea(area: AreaUpsertData): Promise<Area>;
+  listAreas(userId: UUID): Promise<Area[]>;
+  searchAreas(userId: UUID, query: string, limit?: number): Promise<Array<SearchMatch<Area>>>;
+  getArea(areaId: UUID): Promise<Area | undefined>;
+
+  upsertProject(project: ProjectUpsertData): Promise<Project>;
+  listProjects(filters: { userId: UUID; areaId?: UUID; limit?: number }): Promise<Project[]>;
+  searchProjects(
+    userId: UUID,
+    query: string,
+    limit?: number
+  ): Promise<Array<SearchMatch<Project>>>;
+  getProject(projectId: UUID): Promise<Project | undefined>;
+
   createItem(data: ItemCreateData): Promise<Item>;
   updateItem(itemId: UUID, patch: ItemPatch): Promise<Item>;
   listItems(filters: ItemListFilters): Promise<Item[]>;

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { calculateRecurrenceState, isBeforeMinimumInterval } from "./recurrence.js";
 import type { ItemCreateData, ItemPatch, RyanStore } from "./store.js";
 import type { JsonObject } from "@ryanos/shared";
+import type { Area, Project } from "./types.js";
 
 const userIdSchema = z.string().min(1).default("local-owner");
 const recurrenceTypeSchema = z.preprocess(
@@ -13,6 +14,102 @@ const recurrenceTypeSchema = z.preprocess(
 
 function asJsonObject(value: unknown): JsonObject {
   return JSON.parse(JSON.stringify(value ?? {})) as JsonObject;
+}
+
+function cleanLabel(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+const areaVisualDefaults: Record<string, { icon: string; color: string }> = {
+  health: { icon: "heart-pulse", color: "emerald" },
+  fitness: { icon: "heart-pulse", color: "emerald" },
+  work: { icon: "briefcase-business", color: "sky" },
+  career: { icon: "briefcase-business", color: "sky" },
+  family: { icon: "users", color: "rose" },
+  relationships: { icon: "users", color: "rose" },
+  social: { icon: "users", color: "rose" },
+  home: { icon: "home", color: "amber" },
+  finance: { icon: "landmark", color: "indigo" },
+  investments: { icon: "landmark", color: "indigo" },
+  learning: { icon: "book-open", color: "violet" },
+  hobbies: { icon: "sparkles", color: "fuchsia" },
+  travel: { icon: "plane", color: "cyan" },
+  pets: { icon: "paw-print", color: "lime" },
+  errands: { icon: "clipboard-list", color: "stone" },
+  admin: { icon: "clipboard-list", color: "stone" },
+  "side projects": { icon: "code-2", color: "blue" }
+};
+
+function defaultAreaVisual(name: string): { icon: string; color: string } {
+  const normalized = cleanLabel(name);
+  return areaVisualDefaults[normalized] ?? { icon: "folder", color: "stone" };
+}
+
+function visualMetadata(
+  name: string,
+  input: { icon?: string | undefined; color?: string | undefined; metadata?: Record<string, unknown> | undefined },
+  defaults: { icon: string; color: string }
+): JsonObject {
+  return asJsonObject({
+    ...input.metadata,
+    icon: input.icon ?? (typeof input.metadata?.icon === "string" ? input.metadata.icon : defaults.icon),
+    color: input.color ?? (typeof input.metadata?.color === "string" ? input.metadata.color : defaults.color),
+    label: name
+  });
+}
+
+async function resolveArea(
+  store: RyanStore,
+  input: {
+    userId: string;
+    areaRef?: string | undefined;
+    createMissing?: boolean | undefined;
+    icon?: string | undefined;
+    color?: string | undefined;
+  }
+): Promise<Area | undefined> {
+  if (input.areaRef === undefined || input.areaRef.trim().length === 0) return undefined;
+  const matches = await store.searchAreas(input.userId, input.areaRef, 3);
+  const best = matches[0];
+  if (best && best.confidence >= 0.75) return best.record;
+  if (input.createMissing === false) return undefined;
+  const defaults = defaultAreaVisual(input.areaRef);
+  return store.upsertArea({
+    userId: input.userId,
+    name: input.areaRef,
+    metadata: visualMetadata(input.areaRef, input, defaults)
+  });
+}
+
+async function resolveProject(
+  store: RyanStore,
+  input: {
+    userId: string;
+    projectRef?: string | undefined;
+    area?: Area | undefined;
+    createMissing?: boolean | undefined;
+    icon?: string | undefined;
+    color?: string | undefined;
+  }
+): Promise<Project | undefined> {
+  if (input.projectRef === undefined || input.projectRef.trim().length === 0) return undefined;
+  const matches = await store.searchProjects(input.userId, input.projectRef, 5);
+  const best = matches.find(
+    (match) => input.area === undefined || match.record.areaId === undefined || match.record.areaId === input.area.id
+  );
+  if (best && best.confidence >= 0.75) return best.record;
+  if (input.createMissing === false) return undefined;
+  const metadata = visualMetadata(input.projectRef, input, {
+    icon: input.icon ?? "folder-kanban",
+    color: input.color ?? "stone"
+  });
+  const createData: Parameters<RyanStore["upsertProject"]>[0] = {
+    userId: input.userId,
+    name: input.projectRef,
+    metadata
+  };
+  if (input.area !== undefined) createData.areaId = input.area.id;
+  return store.upsertProject(createData);
 }
 
 type RecurrencePolicyToolInput = {
@@ -72,6 +169,113 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
   const registry = new ToolRegistry();
 
   registry.register({
+    name: "area.upsert",
+    description: "Create or update a broad life/work area such as Health, Work, Family, Finance, Home, or Hobbies.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "not_required",
+      retrySafety: "safe_with_idempotency_key",
+      descriptionForModel:
+        "Use to define or refine top-level taxonomy buckets. Areas are broad domains of life, not one-off tasks."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      name: z.string().min(1),
+      description: z.string().optional(),
+      icon: z.string().optional(),
+      color: z.string().optional(),
+      sortOrder: z.number().int().optional(),
+      metadata: z.record(z.string(), z.unknown()).optional()
+    }),
+    handler: async (input) => {
+      const defaults = defaultAreaVisual(input.name);
+      const areaInput: Parameters<RyanStore["upsertArea"]>[0] = {
+        userId: input.userId,
+        name: input.name,
+        metadata: visualMetadata(input.name, input, defaults)
+      };
+      if (input.description !== undefined) areaInput.description = input.description;
+      if (input.sortOrder !== undefined) areaInput.sortOrder = input.sortOrder;
+      const area = await store.upsertArea(areaInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "area.upsert",
+        toolName: "area.upsert",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { areaId: area.id }
+      });
+      return {
+        status: "applied",
+        data: { area },
+        auditId: auditLog.id,
+        messageForUser: `Saved area "${area.name}".`
+      };
+    }
+  });
+
+  registry.register({
+    name: "project.upsert",
+    description: "Create or update a specific project, silo, company, property, investment, or initiative under an optional area.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "not_required",
+      retrySafety: "safe_with_idempotency_key",
+      descriptionForModel:
+        "Use when the user names a specific silo like a company, property, client pipeline, wedding, investment, or software product. If an area is implied, include `areaRef`."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      name: z.string().min(1),
+      areaRef: z.string().optional(),
+      description: z.string().optional(),
+      priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
+      dueAt: z.string().optional(),
+      reviewAfter: z.string().optional(),
+      icon: z.string().optional(),
+      color: z.string().optional(),
+      metadata: z.record(z.string(), z.unknown()).optional()
+    }),
+    handler: async (input) => {
+      const area = await resolveArea(store, {
+        userId: input.userId,
+        areaRef: input.areaRef,
+        createMissing: true
+      });
+      const projectInput: Parameters<RyanStore["upsertProject"]>[0] = {
+        userId: input.userId,
+        name: input.name,
+        priority: input.priority,
+        metadata: visualMetadata(input.name, input, {
+          icon: input.icon ?? "folder-kanban",
+          color: input.color ?? "stone"
+        })
+      };
+      if (area !== undefined) projectInput.areaId = area.id;
+      if (input.description !== undefined) projectInput.description = input.description;
+      if (input.dueAt !== undefined) projectInput.dueAt = input.dueAt;
+      if (input.reviewAfter !== undefined) projectInput.reviewAfter = input.reviewAfter;
+      const project = await store.upsertProject(projectInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "project.upsert",
+        toolName: "project.upsert",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { projectId: project.id, areaId: project.areaId }
+      });
+      return {
+        status: "applied",
+        data: { area, project },
+        auditId: auditLog.id,
+        messageForUser: area
+          ? `Saved project "${project.name}" under ${area.name}.`
+          : `Saved project "${project.name}".`
+      };
+    }
+  });
+
+  registry.register({
     name: "item.search",
     description: "Find candidate items for an ambiguous user reference.",
     metadata: {
@@ -129,25 +333,43 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       sideEffect: "state_write",
       confirmation: "not_required",
       retrySafety: "safe_with_idempotency_key",
-      descriptionForModel: "Creates a RyanOS item only; does not contact external systems. Use `kind` for item type, for example `{ \"title\": \"Go to the gym\", \"kind\": \"habit\" }`."
+      descriptionForModel: "Creates a RyanOS item only; does not contact external systems. Use `kind` for item type, for example `{ \"title\": \"Go to the gym\", \"kind\": \"habit\", \"areaRef\": \"Health\" }`. Use `areaRef` for the broad domain and `projectRef` for a specific silo."
     },
     inputSchema: toolEnvelopeSchema.extend({
       userId: userIdSchema,
       title: z.string().min(1),
-      kind: z.enum(["task", "reminder", "decision", "note", "waiting", "habit", "other"]).default("task"),
+      kind: z.enum(["task", "reminder", "decision", "note", "waiting", "habit", "opportunity_action", "other"]).default("task"),
       priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
+      areaRef: z.string().optional(),
+      projectRef: z.string().optional(),
       dueAt: z.string().optional(),
       startAt: z.string().optional(),
       estimateMinutes: z.number().int().positive().optional(),
       body: z.string().optional()
     }),
     handler: async (input) => {
+      const area = await resolveArea(store, {
+        userId: input.userId,
+        areaRef: input.areaRef,
+        createMissing: true
+      });
+      const project = await resolveProject(store, {
+        userId: input.userId,
+        projectRef: input.projectRef,
+        area,
+        createMissing: true
+      });
       const createData: ItemCreateData = {
         userId: input.userId,
         kind: input.kind,
         title: input.title,
         priority: input.priority
       };
+      if (area !== undefined) createData.areaId = area.id;
+      if (project !== undefined) {
+        createData.projectId = project.id;
+        if (area === undefined && project.areaId !== undefined) createData.areaId = project.areaId;
+      }
       if (input.dueAt !== undefined) createData.dueAt = input.dueAt;
       if (input.startAt !== undefined) createData.startAt = input.startAt;
       if (input.estimateMinutes !== undefined) createData.estimateMinutes = input.estimateMinutes;
@@ -170,7 +392,7 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
         toolName: "item.create",
         sourceMessageId: input.sourceMessageId,
         request: input,
-        result: { itemId: item.id, eventId: event.id }
+        result: { itemId: item.id, eventId: event.id, areaId: item.areaId, projectId: item.projectId }
       });
       return {
         status: "applied",
@@ -195,7 +417,7 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       userId: userIdSchema,
       itemRef: z.string().min(1),
       patch: z.object({
-        kind: z.enum(["task", "reminder", "decision", "note", "waiting", "habit", "other"]).optional(),
+        kind: z.enum(["task", "reminder", "decision", "note", "waiting", "habit", "opportunity_action", "other"]).optional(),
         title: z.string().min(1).optional(),
         body: z.string().optional(),
         bodyAppend: z.string().optional(),
@@ -267,6 +489,120 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
         eventIds: [event.id],
         auditId: auditLog.id,
         messageForUser: `Updated "${item.title}".`
+      };
+    }
+  });
+
+  registry.register({
+    name: "item.classify",
+    description: "Assign, move, or clear an item's broad area and specific project/silo.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "low_confidence",
+      retrySafety: "safe_with_idempotency_key",
+      descriptionForModel:
+        "Use when the user says an item belongs to an area or project, for example `put gym under Health`, `BP Living is Finance / Real Estate`, or `Court Nox is Work / Legal software`."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      itemRef: z.string().min(1),
+      areaRef: z.string().optional(),
+      projectRef: z.string().optional(),
+      createMissing: z.boolean().default(true),
+      clearArea: z.boolean().default(false),
+      clearProject: z.boolean().default(false),
+      note: z.string().optional()
+    }),
+    handler: async (input) => {
+      const matches = await store.searchItems(input.userId, input.itemRef, 3);
+      const best = matches[0];
+      if (!best || best.confidence < 0.75) {
+        return {
+          status: "needs_clarification",
+          clarificationPrompt: `Which item should I classify for "${input.itemRef}"?`
+        };
+      }
+
+      const area = input.clearArea
+        ? undefined
+        : await resolveArea(store, {
+            userId: input.userId,
+            areaRef: input.areaRef,
+            createMissing: input.createMissing
+          });
+      if (input.areaRef !== undefined && !area && input.createMissing === false) {
+        return {
+          status: "needs_clarification",
+          clarificationPrompt: `Which area should I use for "${input.areaRef}"?`
+        };
+      }
+
+      const project = input.clearProject
+        ? undefined
+        : await resolveProject(store, {
+            userId: input.userId,
+            projectRef: input.projectRef,
+            area,
+            createMissing: input.createMissing
+          });
+      if (input.projectRef !== undefined && !project && input.createMissing === false) {
+        return {
+          status: "needs_clarification",
+          clarificationPrompt: `Which project should I use for "${input.projectRef}"?`
+        };
+      }
+
+      const patch: ItemPatch = {};
+      if (input.clearArea) patch.areaId = null;
+      else if (area !== undefined) patch.areaId = area.id;
+      else if (project?.areaId !== undefined) patch.areaId = project.areaId;
+
+      if (input.clearProject) patch.projectId = null;
+      else if (project !== undefined) patch.projectId = project.id;
+
+      if (Object.keys(patch).length === 0) {
+        return {
+          status: "rejected",
+          messageForUser: "No classification change was provided."
+        };
+      }
+
+      const item = await store.updateItem(best.record.id, patch);
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: item.id,
+        eventType: "updated",
+        occurredAt: nowIso(),
+        payload: {
+          classification: {
+            areaId: item.areaId ?? null,
+            projectId: item.projectId ?? null,
+            note: input.note ?? ""
+          },
+          matchedBy: best.reason
+        }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.classify",
+        toolName: "item.classify",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: item.id, areaId: item.areaId, projectId: item.projectId, eventId: event.id }
+      });
+      const labels = [area?.name, project?.name].filter((label): label is string => label !== undefined);
+      return {
+        status: "applied",
+        data: { item, area, project },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser:
+          labels.length > 0
+            ? `Classified "${item.title}" as ${labels.join(" / ")}.`
+            : `Cleared classification for "${item.title}".`
       };
     }
   });

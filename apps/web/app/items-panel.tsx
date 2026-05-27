@@ -1,6 +1,26 @@
 "use client";
 
-import { Check, CheckCircle2, Circle, RefreshCw, RotateCcw } from "lucide-react";
+import {
+  BookOpen,
+  BriefcaseBusiness,
+  Check,
+  CheckCircle2,
+  Circle,
+  ClipboardList,
+  Code2,
+  Folder,
+  FolderKanban,
+  HeartPulse,
+  Home,
+  Landmark,
+  PawPrint,
+  Plane,
+  RefreshCw,
+  RotateCcw,
+  Sparkles,
+  Users
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 type RecurrenceDay = {
@@ -31,6 +51,13 @@ type RecurrenceProgress = {
   };
 };
 
+type ScopeLabel = {
+  id: string;
+  name: string;
+  icon?: string;
+  color?: string;
+};
+
 type Item = {
   id: string;
   kind: string;
@@ -42,6 +69,10 @@ type Item = {
   completion?: {
     completedToday: boolean;
     completedAt?: string;
+  };
+  scope?: {
+    area?: ScopeLabel;
+    project?: ScopeLabel;
   };
   recurrence?: RecurrenceProgress;
 };
@@ -58,12 +89,71 @@ type ToggleResponse = {
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
 
+const scopeIcons: Record<string, LucideIcon> = {
+  "book-open": BookOpen,
+  "briefcase-business": BriefcaseBusiness,
+  "clipboard-list": ClipboardList,
+  "code-2": Code2,
+  folder: Folder,
+  "folder-kanban": FolderKanban,
+  "heart-pulse": HeartPulse,
+  home: Home,
+  landmark: Landmark,
+  "paw-print": PawPrint,
+  plane: Plane,
+  sparkles: Sparkles,
+  users: Users
+};
+
 function formatDate(value: string | undefined): string | undefined {
   if (!value) return undefined;
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric"
   }).format(new Date(value));
+}
+
+function scopeTone(color: string | undefined, variant: "area" | "project"): string {
+  if (variant === "project") {
+    return "border-stone-300 bg-white text-stone-700";
+  }
+  switch (color) {
+    case "emerald":
+      return "border-emerald-200 bg-emerald-50 text-emerald-900";
+    case "sky":
+      return "border-sky-200 bg-sky-50 text-sky-900";
+    case "rose":
+      return "border-rose-200 bg-rose-50 text-rose-900";
+    case "amber":
+      return "border-amber-200 bg-amber-50 text-amber-900";
+    case "indigo":
+      return "border-indigo-200 bg-indigo-50 text-indigo-900";
+    case "violet":
+      return "border-violet-200 bg-violet-50 text-violet-900";
+    case "fuchsia":
+      return "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-900";
+    case "cyan":
+      return "border-cyan-200 bg-cyan-50 text-cyan-900";
+    case "lime":
+      return "border-lime-200 bg-lime-50 text-lime-900";
+    case "blue":
+      return "border-blue-200 bg-blue-50 text-blue-900";
+    default:
+      return "border-stone-300 bg-stone-50 text-stone-800";
+  }
+}
+
+function ScopeChip({ scope, variant }: { scope: ScopeLabel; variant: "area" | "project" }) {
+  const Icon = scopeIcons[scope.icon ?? ""] ?? (variant === "area" ? Folder : FolderKanban);
+  return (
+    <span
+      className={`inline-flex max-w-full items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium ${scopeTone(scope.color, variant)}`}
+      title={variant === "area" ? `Area: ${scope.name}` : `Project: ${scope.name}`}
+    >
+      <Icon className="h-3 w-3 shrink-0" aria-hidden="true" />
+      <span className="truncate">{scope.name}</span>
+    </span>
+  );
 }
 
 function dayTone(day: RecurrenceDay, isToday: boolean): string {
@@ -257,9 +347,23 @@ export function ItemsPanel() {
                       </button>
                     )}
                     <div className="min-w-0">
-                      <p className={`truncate text-sm font-medium ${completed ? "text-stone-500 line-through" : "text-stone-950"}`}>
+                      <p
+                        className={`truncate text-sm font-medium ${
+                          completed ? "text-stone-500 line-through" : "text-stone-950"
+                        }`}
+                      >
                         {item.title}
                       </p>
+                      {item.scope?.area || item.scope?.project ? (
+                        <div className="mt-1 flex min-w-0 flex-wrap gap-1.5">
+                          {item.scope.area ? (
+                            <ScopeChip scope={item.scope.area} variant="area" />
+                          ) : null}
+                          {item.scope.project ? (
+                            <ScopeChip scope={item.scope.project} variant="project" />
+                          ) : null}
+                        </div>
+                      ) : null}
                       <p className="mt-1 text-xs text-stone-600">
                         {item.kind} / {item.priority} / {completed ? "done today" : item.status}
                       </p>

@@ -26,7 +26,7 @@ describe("core tools", () => {
     expect(itemCreate?.inputSchema).toMatchObject({
       properties: {
         kind: {
-          enum: ["task", "reminder", "decision", "note", "waiting", "habit", "other"]
+          enum: ["task", "reminder", "decision", "note", "waiting", "habit", "opportunity_action", "other"]
         }
       }
     });
@@ -113,6 +113,45 @@ describe("core tools", () => {
     expect(item?.priority).toBe("high");
     expect(item?.body).toContain("Check due date");
     expect(store.itemEvents.filter((event) => event.eventType === "updated")).toHaveLength(1);
+  });
+
+  it("creates taxonomy and classifies items by area and project", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    const created = await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Find new court RFPs",
+      kind: "opportunity_action",
+      areaRef: "Work",
+      projectRef: "Legal software"
+    });
+
+    expect(created.status).toBe("applied");
+    expect(store.areas.size).toBe(1);
+    expect(store.projects.size).toBe(1);
+    const item = [...store.items.values()][0];
+    const area = [...store.areas.values()][0];
+    const project = [...store.projects.values()][0];
+    expect(item?.areaId).toBe(area?.id);
+    expect(item?.projectId).toBe(project?.id);
+    expect(project?.areaId).toBe(area?.id);
+
+    await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Go to the gym",
+      kind: "habit"
+    });
+    const classified = await tools.execute("item.classify", {
+      userId: "user-1",
+      itemRef: "Go to the gym",
+      areaRef: "Health"
+    });
+
+    expect(classified.status).toBe("applied");
+    const gym = [...store.items.values()].find((candidate) => candidate.title === "Go to the gym");
+    const health = [...store.areas.values()].find((candidate) => candidate.name === "Health");
+    expect(gym?.areaId).toBe(health?.id);
   });
 
   it("lists active items in due-date order", async () => {
