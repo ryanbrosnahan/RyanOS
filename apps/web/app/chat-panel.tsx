@@ -82,6 +82,7 @@ export function ChatPanel() {
   const [sending, setSending] = useState(false);
   const [panelHeight, setPanelHeight] = useState(defaultPanelHeight);
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const resizeHandleRef = useRef<HTMLButtonElement | null>(null);
   const dragStartRef = useRef<{ pointerId: number; y: number; height: number } | null>(null);
   const sendingRef = useRef(false);
@@ -125,6 +126,17 @@ export function ChatPanel() {
       }
     }, 15000);
     return () => window.clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    function handleChatPrefill(event: Event) {
+      const detail = (event as CustomEvent<{ text?: string }>).detail;
+      setInput(detail?.text ?? "");
+      window.requestAnimationFrame(() => inputRef.current?.focus());
+    }
+
+    window.addEventListener("ryanos:chat-prefill", handleChatPrefill);
+    return () => window.removeEventListener("ryanos:chat-prefill", handleChatPrefill);
   }, []);
 
   useEffect(() => {
@@ -230,6 +242,7 @@ export function ChatPanel() {
 
   return (
     <div
+      id="assistant-intake"
       className="flex min-h-80 flex-col rounded-md border border-stone-300 bg-white shadow-sm"
       style={{ height: panelHeight }}
     >
@@ -264,6 +277,7 @@ export function ChatPanel() {
 
       <form onSubmit={sendMessage} className="mx-4 mt-4 flex gap-2">
         <textarea
+          ref={inputRef}
           value={input}
           onChange={(event) => setInput(event.target.value)}
           className="min-h-12 flex-1 resize-y rounded-md border border-stone-300 bg-white px-3 py-2 text-sm leading-6 text-stone-950 outline-none focus:border-sky-700 focus:ring-2 focus:ring-sky-100"

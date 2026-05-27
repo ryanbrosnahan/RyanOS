@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Loader2, RefreshCw, Target } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, Loader2, MessageSquare, RefreshCw, Target } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type ScopeLabel = {
@@ -62,14 +62,6 @@ function formatDue(value: string | undefined): string | undefined {
   }).format(new Date(value));
 }
 
-function criteriaFromResponse(response: string): string[] {
-  return response
-    .split(/\n+/)
-    .map((line) => line.replace(/^[-*]\s*/, "").trim())
-    .filter(Boolean)
-    .slice(0, 5);
-}
-
 function scopeText(item: FocusItem): string {
   return [item.scope?.area?.name, item.scope?.project?.name].filter(Boolean).join(" / ");
 }
@@ -78,12 +70,16 @@ function itemMeta(item: FocusItem): string {
   return [scopeText(item), item.kind, item.priority].filter(Boolean).join(" / ");
 }
 
+function focusStatus(item: FocusItem): string {
+  if (item.completion?.completedToday) return "Done";
+  return formatDue(item.dueAt) ?? (item.status === "waiting" ? "Waiting" : "Open");
+}
+
 export function DailyFocusPanel() {
   const [payload, setPayload] = useState<DailyPlanPayload | null>(null);
   const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
-  const [response, setResponse] = useState("");
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [savingSelection, setSavingSelection] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const suggestionAttemptedRef = useRef(false);
@@ -99,7 +95,6 @@ export function DailyFocusPanel() {
         ? nextPayload.plan.selectedItemIds.slice(0, 3)
         : nextPayload.suggestedItems.map((item) => item.id).slice(0, 3)
     );
-    setResponse(nextPayload.plan.response ?? "");
   }
 
   async function loadPlan(options?: { background?: boolean }) {
@@ -116,7 +111,7 @@ export function DailyFocusPanel() {
       if (!response.ok) throw new Error(`Daily plan returned ${response.status}`);
       applyPayload((await response.json()) as DailyPlanPayload);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (!options?.background) setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -145,9 +140,9 @@ export function DailyFocusPanel() {
     }
   }
 
-  async function savePlan() {
-    if (!payload || saving) return;
-    setSaving(true);
+  async function saveSelection(nextSelectedItemIds: string[]) {
+    if (!payload || savingSelection) return;
+    setSavingSelection(true);
     setError(null);
     try {
       const saveResponse = await fetch(`${apiUrl}/v1/daily-plan`, {
@@ -159,9 +154,9 @@ export function DailyFocusPanel() {
           userId: "local-owner",
           timezone,
           date: payload.date,
-          response,
-          successCriteria: criteriaFromResponse(response),
-          selectedItemIds
+          response: payload.plan.response,
+          successCriteria: payload.plan.successCriteria,
+          selectedItemIds: nextSelectedItemIds
         })
       });
       if (!saveResponse.ok) throw new Error(`Daily plan save returned ${saveResponse.status}`);
@@ -169,24 +164,47 @@ export function DailyFocusPanel() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      setSavingSelection(false);
     }
   }
 
   function toggleItem(itemId: string) {
-    setSelectedItemIds((current) => {
-      if (current.includes(itemId)) return current.filter((id) => id !== itemId);
-      if (current.length >= 3) {
-        setError("Pick up to 3 focus items.");
-        return current;
-      }
-      setError(null);
-      return [...current, itemId];
+    const nextSelectedItemIds = selectedItemIds.includes(itemId)
+      ? selectedItemIds.filter((id) => id !== itemId)
+      : selectedItemIds.length >= 3
+        ? selectedItemIds
+        : [...selectedItemIds, itemId];
+
+    if (nextSelectedItemIds === selectedItemIds) {
+      setError("Pick up to 3 focus items.");
+      return;
+    }
+
+    setError(null);
+    setSelectedItemIds(nextSelectedItemIds);
+    void saveSelection(nextSelectedItemIds);
+  }
+
+  function startChatAnswer() {
+    window.dispatchEvent(
+      new CustomEvent("ryanos:chat-prefill", {
+        detail: { text: "For today's focus: " }
+      })
+    );
+    document.getElementById("assistant-intake")?.scrollIntoView({
+      behavior: "smooth",
+      block: "start"
     });
   }
 
   useEffect(() => {
     void loadPlan();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void loadPlan({ background: true });
+      }
+    }, 30000);
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -207,8 +225,17 @@ export function DailyFocusPanel() {
 
   const candidateItems = useMemo(() => {
     if (!payload) return [];
-    const ids = new Set([...selectedItemIds, ...payload.plan.suggestedItemIds]);
-    return payload.items.filter((item) => ids.has(item.id)).slice(0, 6);
+    const ids = new Set([
+      ...selectedItemIds,
+      ...payload.plan.suggestedItemIds,
+      ...payload.dueItems.map((item) => item.id)
+    ]);
+    return payload.items.filter((item) => ids.has(item.id)).slice(0, 8);
+  }, [payload, selectedItemIds]);
+
+  const remainingDueItems = useMemo(() => {
+    if (!payload) return [];
+    return payload.dueItems.filter((item) => !selectedItemIds.includes(item.id)).slice(0, 6);
   }, [payload, selectedItemIds]);
 
   if (loading && !payload) {
@@ -225,60 +252,121 @@ export function DailyFocusPanel() {
   if (!payload) return null;
 
   return (
-    <section className="rounded-md border border-stone-300 bg-white p-4 shadow-sm">
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <Target className="h-5 w-5 text-sky-700" aria-hidden="true" />
-            <p className="text-sm font-medium text-stone-600">{formatPlanDate(payload.date)}</p>
+    <section className="overflow-hidden rounded-md border border-stone-300 bg-white shadow-sm">
+      <div className="grid gap-4 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium text-stone-600">
+            <Target className="h-4 w-4 text-sky-700" aria-hidden="true" />
+            <span>{formatPlanDate(payload.date)}</span>
           </div>
-          <h2 className="mt-2 max-w-3xl text-2xl font-semibold tracking-normal text-stone-950">
-            {payload.prompt}
+          <h2 className="mt-1 text-2xl font-semibold tracking-normal text-stone-950">
+            Today's focus
           </h2>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-stone-700">{payload.prompt}</p>
+
+          {payload.plan.response.trim().length > 0 ? (
+            <div className="mt-3 max-w-3xl border-l-2 border-sky-700 pl-3">
+              <p className="text-xs font-medium text-stone-500">Today's answer</p>
+              <p className="mt-1 text-sm leading-6 text-stone-700">{payload.plan.response}</p>
+            </div>
+          ) : null}
         </div>
-        <button
-          type="button"
-          onClick={() => void refreshSuggestion()}
-          disabled={suggesting}
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-stone-300 text-stone-700 hover:bg-stone-100 disabled:cursor-wait disabled:opacity-60"
-          aria-label="Refresh focus suggestions"
-          title="Refresh focus suggestions"
-        >
-          <RefreshCw className={`h-4 w-4 ${suggesting ? "animate-spin" : ""}`} aria-hidden="true" />
-        </button>
+
+        <div className="flex flex-wrap gap-2 lg:justify-end">
+          <button
+            type="button"
+            onClick={startChatAnswer}
+            className="inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-md border border-sky-700 bg-sky-700 px-3 text-sm font-medium text-white hover:bg-sky-800 sm:flex-none"
+          >
+            <MessageSquare className="h-4 w-4" aria-hidden="true" />
+            Answer in chat
+          </button>
+          <button
+            type="button"
+            onClick={() => void refreshSuggestion()}
+            disabled={suggesting}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-stone-300 text-stone-700 hover:bg-stone-100 disabled:cursor-wait disabled:opacity-60"
+            aria-label="Refresh focus suggestions"
+            title="Refresh focus suggestions"
+          >
+            <RefreshCw
+              className={`h-4 w-4 ${suggesting ? "animate-spin" : ""}`}
+              aria-hidden="true"
+            />
+          </button>
+        </div>
       </div>
 
-      {error ? <p className="mt-3 text-sm leading-6 text-rose-700">{error}</p> : null}
+      {error ? <p className="px-4 pb-3 text-sm leading-6 text-rose-700 sm:px-5">{error}</p> : null}
 
-      <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_0.9fr]">
-        <div>
-          <h3 className="text-sm font-semibold text-stone-950">Today's focus</h3>
-          <div className="mt-2 divide-y divide-sky-100 rounded-md bg-sky-50">
-            {focusItems.length > 0 ? (
-              focusItems.map((item, index) => (
+      <div className="border-t border-stone-200 px-4 py-4 sm:px-5">
+        <div className="grid gap-3 lg:grid-cols-3">
+          {focusItems.length > 0 ? (
+            focusItems.map((item, index) => {
+              const completed = item.completion?.completedToday;
+              return (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => toggleItem(item.id)}
-                  className="flex w-full items-start gap-3 px-3 py-3 text-left hover:bg-sky-100"
+                  disabled={savingSelection}
+                  className={`flex min-h-28 flex-col rounded-md p-3 text-left ring-1 transition disabled:cursor-wait disabled:opacity-70 ${
+                    completed
+                      ? "bg-emerald-50 ring-emerald-200"
+                      : "bg-sky-50 ring-sky-200 hover:bg-sky-100"
+                  }`}
                 >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-xs font-semibold text-sky-900 ring-1 ring-sky-200">
-                    {index + 1}
+                  <span className="flex items-start gap-3">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-xs font-semibold text-sky-900 ring-1 ring-sky-200">
+                      {index + 1}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold leading-5 text-stone-950">
+                        {item.title}
+                      </span>
+                      <span className="mt-1 block text-xs leading-5 text-stone-600">
+                        {itemMeta(item)}
+                      </span>
+                    </span>
+                    {completed ? (
+                      <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-700" aria-hidden="true" />
+                    ) : (
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-sky-800 ring-1 ring-sky-300">
+                        <Check className="h-3 w-3" aria-hidden="true" />
+                      </span>
+                    )}
                   </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-stone-950">{item.title}</span>
-                    <span className="mt-1 block text-xs text-stone-600">{itemMeta(item)}</span>
+                  <span className="mt-auto pt-3">
+                    <span
+                      className={`inline-flex rounded-md px-2 py-1 text-xs font-medium ring-1 ${
+                        completed
+                          ? "bg-emerald-100 text-emerald-800 ring-emerald-200"
+                          : "bg-white text-stone-700 ring-stone-200"
+                      }`}
+                    >
+                      {focusStatus(item)}
+                    </span>
                   </span>
-                  <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" aria-hidden="true" />
                 </button>
-              ))
-            ) : (
-              <p className="px-3 py-3 text-sm leading-6 text-stone-600">No focus items selected.</p>
-            )}
-          </div>
+              );
+            })
+          ) : (
+            <div className="rounded-md border border-dashed border-stone-300 bg-stone-50 p-3 text-sm leading-6 text-stone-600 lg:col-span-3">
+              No focus items selected yet.
+            </div>
+          )}
+        </div>
 
-          {candidateItems.length > 0 ? (
-            <div className="mt-3 flex flex-wrap gap-2">
+        {candidateItems.length > 0 ? (
+          <details className="group mt-4">
+            <summary className="inline-flex h-8 cursor-pointer list-none items-center gap-1 rounded-md border border-stone-300 bg-white px-2.5 text-xs font-medium text-stone-700 hover:bg-stone-50">
+              Adjust focus
+              <ChevronDown
+                className="h-3.5 w-3.5 transition group-open:rotate-180"
+                aria-hidden="true"
+              />
+            </summary>
+            <div className="mt-2 flex flex-wrap gap-2">
               {candidateItems.map((item) => {
                 const selected = selectedItemIds.includes(item.id);
                 return (
@@ -286,7 +374,8 @@ export function DailyFocusPanel() {
                     key={item.id}
                     type="button"
                     onClick={() => toggleItem(item.id)}
-                    className={`rounded-md px-2.5 py-1 text-xs font-medium ring-1 ${
+                    disabled={savingSelection}
+                    className={`rounded-md px-2.5 py-1 text-xs font-medium ring-1 transition disabled:cursor-wait disabled:opacity-70 ${
                       selected
                         ? "bg-sky-100 text-sky-900 ring-sky-200"
                         : "bg-white text-stone-700 ring-stone-200 hover:bg-stone-50"
@@ -297,60 +386,32 @@ export function DailyFocusPanel() {
                 );
               })}
             </div>
-          ) : null}
-        </div>
-
-        <div>
-          <label htmlFor="daily-focus-response" className="text-sm font-semibold text-stone-950">
-            Your answer
-          </label>
-          <textarea
-            id="daily-focus-response"
-            value={response}
-            onChange={(event) => setResponse(event.target.value)}
-            className="mt-2 min-h-32 w-full resize-y rounded-md border border-stone-300 bg-white px-3 py-2 text-sm leading-6 text-stone-950 outline-none focus:border-sky-700 focus:ring-2 focus:ring-sky-100"
-            placeholder="Write 1-3 outcomes..."
-          />
-          <div className="mt-2 flex justify-end">
-            <button
-              type="button"
-              onClick={() => void savePlan()}
-              disabled={saving}
-              className="inline-flex h-9 items-center justify-center rounded-md border border-sky-700 bg-sky-700 px-3 text-sm font-medium text-white hover:bg-sky-800 disabled:cursor-wait disabled:border-stone-300 disabled:bg-stone-200 disabled:text-stone-500"
-            >
-              {saving ? "Saving..." : "Save focus"}
-            </button>
-          </div>
-        </div>
+          </details>
+        ) : null}
       </div>
 
-      {payload.dueItems.length > 0 ? (
-        <div className="mt-5 border-t border-stone-200 pt-4">
-          <h3 className="text-sm font-semibold text-stone-950">Due or active today</h3>
+      {remainingDueItems.length > 0 ? (
+        <div className="border-t border-stone-200 px-4 py-4 sm:px-5">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-stone-950">Still on deck today</h3>
+            <span className="text-xs font-medium text-stone-500">{remainingDueItems.length}</span>
+          </div>
           <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {payload.dueItems.slice(0, 9).map((item) => {
-              const selected = selectedItemIds.includes(item.id);
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => toggleItem(item.id)}
-                  className={`flex min-h-16 items-start justify-between gap-3 rounded-md px-3 py-2 text-left ring-1 ${
-                    selected
-                      ? "bg-sky-50 ring-sky-200"
-                      : "bg-stone-50 ring-stone-200 hover:bg-stone-100"
-                  }`}
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium text-stone-950">{item.title}</span>
-                    <span className="mt-1 block truncate text-xs text-stone-600">{itemMeta(item)}</span>
-                  </span>
-                  <span className="shrink-0 text-xs font-medium text-stone-500">
-                    {item.completion?.completedToday ? "Done" : formatDue(item.dueAt) ?? "Today"}
-                  </span>
-                </button>
-              );
-            })}
+            {remainingDueItems.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => toggleItem(item.id)}
+                disabled={savingSelection}
+                className="flex min-h-14 items-start justify-between gap-3 rounded-md bg-stone-50 px-3 py-2 text-left ring-1 ring-stone-200 transition hover:bg-stone-100 disabled:cursor-wait disabled:opacity-70"
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium text-stone-950">{item.title}</span>
+                  <span className="mt-1 block truncate text-xs text-stone-600">{itemMeta(item)}</span>
+                </span>
+                <span className="shrink-0 text-xs font-medium text-stone-500">{focusStatus(item)}</span>
+              </button>
+            ))}
           </div>
         </div>
       ) : null}

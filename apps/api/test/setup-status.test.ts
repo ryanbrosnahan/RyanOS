@@ -208,7 +208,7 @@ describe("setup status", () => {
 
     expect(plan.statusCode).toBe(200);
     expect(plan.json()).toMatchObject({
-      prompt: expect.stringContaining("make today a win"),
+      prompt: expect.stringContaining("make today count"),
       suggestedItems: expect.arrayContaining([
         expect.objectContaining({ title: "File court proposal" })
       ]),

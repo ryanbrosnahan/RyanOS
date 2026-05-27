@@ -54,8 +54,7 @@ const taxonomyQuerySchema = z.object({
   userId: z.string().default("local-owner")
 });
 
-const dailyPlanPrompt =
-  "Which 1-3 outcomes would make today a win if everything else had to wait?";
+const dailyPlanPrompt = "What 1-3 outcomes would make today count?";
 
 const dailyPlanQuerySchema = z.object({
   userId: z.string().default("local-owner"),
