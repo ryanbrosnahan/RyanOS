@@ -9,6 +9,8 @@
     "build": "tsc -p tsconfig.json",
     "dev": "pnpm run build && node dist/index.js",
     "start": "node dist/index.js",
+    "telegram:poll": "pnpm run build && node dist/telegram-poll-cli.js",
+    "telegram:store-token": "pnpm run build && node dist/telegram-token-cli.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

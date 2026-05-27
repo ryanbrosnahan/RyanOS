@@ -13,12 +13,16 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "codex:bridge": "pnpm run build && node dist/codex-bridge-server.js",
     "dev": "tsc -p tsconfig.json --watch",
-    "test": "echo \"No ai tests yet\"",
+    "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@ryanos/shared": "workspace:*",
     "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "vitest": "1.6.1"
   }
 }

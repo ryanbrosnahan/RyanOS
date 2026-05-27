@@ -1,4 +1,4 @@
-import { and, count, eq, ilike, isNull, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
   AuditLog,
@@ -10,6 +10,7 @@ import type {
   RecurrenceState,
   RyanStore,
   ItemCreateData,
+  ItemListFilters,
   ItemPatch,
   PolicyUpsertData,
   SearchMatch
@@ -223,6 +224,7 @@ export class PostgresRyanStore implements RyanStore {
       revision: sql`${schema.items.revision} + 1` as unknown as number,
       updatedAt: new Date()
     };
+    if (patch.kind !== undefined) values.kind = patch.kind;
     if (patch.title !== undefined) values.title = patch.title;
     if (patch.body !== undefined) values.body = patch.body;
     if (patch.status !== undefined) values.status = patch.status;
@@ -241,6 +243,27 @@ export class PostgresRyanStore implements RyanStore {
       .returning();
     if (!row) throw new Error(`Item not found: ${itemId}`);
     return itemFromRow(row);
+  }
+
+  async listItems(filters: ItemListFilters): Promise<Item[]> {
+    const resolvedUserId = await this.resolveUserId(filters.userId);
+    const statuses = filters.statuses ?? ["open", "active", "waiting"];
+    const conditions = [
+      eq(schema.items.userId, resolvedUserId),
+      isNull(schema.items.deletedAt)
+    ];
+    if (statuses.length > 0) {
+      conditions.push(inArray(schema.items.status, statuses));
+    }
+
+    const rows = await this.db
+      .select()
+      .from(schema.items)
+      .where(and(...conditions))
+      .orderBy(asc(schema.items.dueAt), desc(schema.items.createdAt))
+      .limit(Math.min(Math.max(filters.limit ?? 30, 1), 100));
+
+    return rows.map(itemFromRow);
   }
 
   async searchItems(
@@ -418,15 +441,15 @@ export class PostgresRyanStore implements RyanStore {
   async updateRecurrenceState(state: RecurrenceState): Promise<RecurrenceState> {
     const values: typeof schema.recurrenceState.$inferInsert = {
       recurrencePolicyId: state.recurrencePolicyId,
+      lastEventAt: state.lastEventAt === undefined ? null : toDate(state.lastEventAt),
+      lastCompletedAt:
+        state.lastCompletedAt === undefined ? null : toDate(state.lastCompletedAt),
+      nextEligibleAt:
+        state.nextEligibleAt === undefined ? null : toDate(state.nextEligibleAt),
+      nextDueAt: state.nextDueAt === undefined ? null : toDate(state.nextDueAt),
       stalenessScore: state.stalenessScore,
       updatedAt: new Date(state.updatedAt)
     };
-    if (state.lastEventAt !== undefined) values.lastEventAt = toDate(state.lastEventAt);
-    if (state.lastCompletedAt !== undefined) {
-      values.lastCompletedAt = toDate(state.lastCompletedAt);
-    }
-    if (state.nextEligibleAt !== undefined) values.nextEligibleAt = toDate(state.nextEligibleAt);
-    if (state.nextDueAt !== undefined) values.nextDueAt = toDate(state.nextDueAt);
 
     const [row] = await this.db
       .insert(schema.recurrenceState)

@@ -1,13 +1,38 @@
-import { NoopAiProvider, type IncomingMessage, type ToolResult } from "@ryanos/ai";
+import { createAiProviderFromEnv, type AiProviderStatus, type IncomingMessage, type ToolResult } from "@ryanos/ai";
 import { createCoreToolRegistry, InMemoryRyanStore } from "@ryanos/core";
-import { createDb, PostgresMessageStore, PostgresRyanStore, type StoredMessage } from "@ryanos/db";
+import {
+  createDb,
+  loadSecretVaultFromEnv,
+  PostgresMessageStore,
+  PostgresRyanStore,
+  PostgresSecretStore,
+  type RyanDb,
+  type StoredMessage
+} from "@ryanos/db";
 import { nowIso } from "@ryanos/shared";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
+import { sendTelegramMessage } from "./telegram-client.js";
+import { resolveTelegramBotToken } from "./telegram-credentials.js";
 import { getTelegramSenderId, normalizeTelegramUpdate } from "./telegram.js";
 
 const toolInvokeSchema = z.object({
   input: z.unknown()
+});
+
+const listMessagesQuerySchema = z.object({
+  provider: z.enum(["telegram", "whatsapp", "web", "system"]).default("web"),
+  chatId: z.string().default("dashboard"),
+  userId: z.string().default("local-owner"),
+  limit: z.coerce.number().int().min(1).max(100).default(30)
+});
+
+const itemStatusSchema = z.enum(["open", "active", "waiting", "done", "cancelled"]);
+
+const listItemsQuerySchema = z.object({
+  userId: z.string().default("local-owner"),
+  status: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(30)
 });
 
 const messageSchema = z.object({
@@ -25,6 +50,26 @@ const messageSchema = z.object({
     })
     .optional()
 });
+
+const defaultCorsOrigins = ["http://localhost:3100", "http://127.0.0.1:3100"];
+
+function csvValues(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function corsOriginsFromEnv(): Set<string> {
+  const configured = csvValues(process.env.RYANOS_CORS_ORIGINS);
+  return new Set(configured.length > 0 ? configured : defaultCorsOrigins);
+}
+
+function parseItemStatuses(value: string | undefined) {
+  const statuses = csvValues(value);
+  if (statuses.length === 0) return undefined;
+  return statuses.map((status) => itemStatusSchema.parse(status));
+}
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -88,23 +133,193 @@ function telegramAuthorization(message: IncomingMessage): {
     : { allowed: false, configured: true, senderId };
 }
 
+type SetupStatus = {
+  id: string;
+  name: string;
+  configured: boolean;
+  ready: boolean;
+  setupRequired: boolean;
+  setupActions: Array<{
+    id: string;
+    title: string;
+    blocking: boolean;
+    instructions: string[];
+    command?: string;
+    docs?: string[];
+  }>;
+  warnings: string[];
+};
+
+type AssistantDelivery = {
+  provider: "telegram";
+  status: "sent" | "skipped" | "failed";
+  source?: string;
+  providerMessageId?: string;
+  reason?: string;
+  error?: string;
+  warnings?: string[];
+};
+
+async function telegramSetupStatus(db: RyanDb | undefined): Promise<SetupStatus> {
+  const hasEnvBotToken = Boolean((process.env.TELEGRAM_BOT_TOKEN ?? "").trim());
+  const hasAllowlist = Boolean((process.env.TELEGRAM_ALLOWED_USER_IDS ?? "").trim());
+  const setupActions: SetupStatus["setupActions"] = [];
+  const warnings: string[] = [];
+  const loadedVault = await loadSecretVaultFromEnv();
+  let hasDbBotToken = false;
+  let dbBotTokenDecryptable = false;
+
+  if (!db) {
+    if (!hasEnvBotToken) {
+      setupActions.push({
+        id: "telegram-database",
+        title: "Enable database-backed Telegram setup",
+        blocking: true,
+        instructions: [
+          "Run RyanOS with Postgres enabled before importing Telegram credentials.",
+          "The Docker stack already provides this; direct host runs need `DATABASE_URL`."
+        ],
+        command: "docker compose up --build"
+      });
+    }
+  } else {
+    const secretStore = new PostgresSecretStore(db, loadedVault.vault);
+    try {
+      const secretStatus = await secretStore.getProviderSecretStatus({
+        userId: "local-owner",
+        provider: "telegram",
+        externalAccountId: "bot",
+        kind: "bot_token"
+      });
+      hasDbBotToken = secretStatus.exists;
+      dbBotTokenDecryptable = secretStatus.decryptable === true || (secretStatus.exists && !loadedVault.vault);
+      if (secretStatus.exists && secretStatus.decryptable === false) {
+        setupActions.push({
+          id: "telegram-secret-decrypt",
+          title: "Restore the correct RyanOS master key",
+          blocking: true,
+          instructions: [
+            "Telegram has an encrypted token in the database, but RyanOS could not decrypt it.",
+            "Restore the master key that was used when the token was imported, or rotate the token and import it again."
+          ]
+        });
+        if (secretStatus.error) warnings.push(secretStatus.error);
+      }
+    } catch (err) {
+      warnings.push(
+        `Could not inspect encrypted Telegram credentials: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
+  }
+
+  if (!hasDbBotToken && !hasEnvBotToken && !loadedVault.status.ready) {
+    setupActions.push(...loadedVault.status.setupActions);
+    warnings.push(...loadedVault.status.warnings);
+  }
+
+  if (!hasDbBotToken && !hasEnvBotToken) {
+    setupActions.push({
+      id: "telegram-bot-token",
+      title: "Import Telegram bot token into encrypted DB",
+      blocking: true,
+      instructions: [
+        "Create a Telegram bot with BotFather.",
+        "Put the token in `secrets/telegram-bot-token` on this machine, then import it with the command below.",
+        "The token file is gitignored; remove it after import if you do not want a plaintext local copy."
+      ],
+      command: "docker compose exec api pnpm telegram:store-token -- --file /app/secrets/telegram-bot-token",
+      docs: ["https://core.telegram.org/bots/features#botfather"]
+    });
+  }
+
+  if (hasEnvBotToken && !hasDbBotToken) {
+    setupActions.push({
+      id: "telegram-env-token-migration",
+      title: "Migrate Telegram token out of environment",
+      blocking: false,
+      instructions: [
+        "`TELEGRAM_BOT_TOKEN` is configured as a fallback, but RyanOS should store long-lived integration secrets encrypted in Postgres.",
+        "Import the token into `secret_records`, then remove `TELEGRAM_BOT_TOKEN` from your local environment."
+      ],
+      command: "docker compose exec api pnpm telegram:store-token"
+    });
+  }
+
+  if (hasDbBotToken && !hasEnvBotToken && !loadedVault.status.ready) {
+    setupActions.push(...loadedVault.status.setupActions);
+    warnings.push(...loadedVault.status.warnings);
+  }
+
+  if (!hasAllowlist) {
+    warnings.push(
+      "`TELEGRAM_ALLOWED_USER_IDS` is empty; local webhook testing accepts all Telegram sender IDs."
+    );
+  }
+
+  const dbReady = hasDbBotToken && loadedVault.status.ready && dbBotTokenDecryptable;
+  const envReady = hasEnvBotToken;
+
+  return {
+    id: "telegram",
+    name: "Telegram",
+    configured: hasDbBotToken || hasEnvBotToken,
+    ready: dbReady || envReady,
+    setupRequired: setupActions.length > 0,
+    setupActions,
+    warnings
+  };
+}
+
+function aiSetupStatus(status: AiProviderStatus): SetupStatus {
+  return {
+    id: "ai",
+    name: status.mode === "none" ? "AI provider" : `AI provider (${status.name})`,
+    configured: status.mode !== "none",
+    ready: status.ready,
+    setupRequired: status.setupRequired,
+    setupActions: status.setupActions,
+    warnings: status.warnings
+  };
+}
+
 export function buildApp() {
   const app = Fastify({
     logger: true
   });
+  const corsOrigins = corsOriginsFromEnv();
   const database = process.env.DATABASE_URL ? createDb() : undefined;
   const store = database
     ? new PostgresRyanStore(database.db)
     : new InMemoryRyanStore();
   const messageStore = database ? new PostgresMessageStore(database.db) : undefined;
   const tools = createCoreToolRegistry(store);
-  const ai = new NoopAiProvider();
+  const ai = createAiProviderFromEnv();
 
   if (database) {
     app.addHook("onClose", async () => {
       await database.pool.end();
     });
   }
+
+  app.addHook("onRequest", async (request, reply) => {
+    const origin = request.headers.origin;
+    if (typeof origin === "string" && corsOrigins.has(origin)) {
+      reply.header("Access-Control-Allow-Origin", origin);
+      reply.header("Vary", "Origin");
+      reply.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+      reply.header(
+        "Access-Control-Allow-Headers",
+        typeof request.headers["access-control-request-headers"] === "string"
+          ? request.headers["access-control-request-headers"]
+          : "content-type, authorization"
+      );
+    }
+    if (request.method === "OPTIONS") {
+      reply.code(204).send();
+    }
+  });
 
   app.get("/", async () => ({
     service: "RyanOS API",
@@ -121,6 +336,36 @@ export function buildApp() {
   app.get("/v1/tools", async () => ({
     tools: tools.list()
   }));
+
+  app.get("/v1/ai/status", async () => ai.getStatus());
+
+  app.get("/v1/setup/status", async () => {
+    const aiStatus = await ai.getStatus();
+    return {
+      ai: aiSetupStatus(aiStatus),
+      integrations: [await telegramSetupStatus(database?.db)]
+    };
+  });
+
+  app.get("/v1/messages", async (request) => {
+    const query = listMessagesQuerySchema.parse(request.query);
+    return {
+      messages: messageStore ? await messageStore.listMessages(query) : []
+    };
+  });
+
+  app.get("/v1/items", async (request) => {
+    const query = listItemsQuerySchema.parse(request.query);
+    const filters: Parameters<typeof store.listItems>[0] = {
+      userId: query.userId,
+      limit: query.limit
+    };
+    const statuses = parseItemStatuses(query.status);
+    if (statuses !== undefined) filters.statuses = statuses;
+    return {
+      items: await store.listItems(filters)
+    };
+  });
 
   app.post("/v1/tools/:name/invoke", async (request, reply) => {
     const params = z.object({ name: z.string() }).parse(request.params);
@@ -270,9 +515,12 @@ export function buildApp() {
     message: IncomingMessage,
     text: string | undefined,
     metadata: Record<string, unknown>
-  ): Promise<{ text: string; storedMessage?: StoredMessage } | undefined> {
+  ): Promise<{ text: string; storedMessage?: StoredMessage; delivery?: AssistantDelivery } | undefined> {
     if (!text || text.trim().length === 0) return undefined;
-    if (!messageStore) return { text };
+    if (!messageStore) {
+      const delivery = await deliverAssistantResponse(message, text, false);
+      return delivery ? { text, delivery } : { text };
+    }
     const storedMessage = await messageStore.saveOutgoingMessage({
       provider: message.provider,
       chatId: message.chatId,
@@ -285,7 +533,63 @@ export function buildApp() {
         sourceMessageId: message.id
       }
     });
-    return { text, storedMessage };
+    const delivery = await deliverAssistantResponse(message, text, storedMessage.duplicate);
+    return delivery ? { text, storedMessage, delivery } : { text, storedMessage };
+  }
+
+  async function deliverAssistantResponse(
+    message: IncomingMessage,
+    text: string,
+    duplicate: boolean
+  ): Promise<AssistantDelivery | undefined> {
+    if (message.provider !== "telegram") return undefined;
+    if (duplicate) {
+      return {
+        provider: "telegram",
+        status: "skipped",
+        reason: "duplicate_response"
+      };
+    }
+
+    const tokenResolutionInput: { db?: RyanDb } = {};
+    if (database) tokenResolutionInput.db = database.db;
+    const tokenResolution = await resolveTelegramBotToken(tokenResolutionInput);
+    if (!tokenResolution.token) {
+      return {
+        provider: "telegram",
+        status: "skipped",
+        reason: "telegram_token_missing",
+        warnings: tokenResolution.warnings
+      };
+    }
+
+    try {
+      const externalMessageId =
+        typeof message.metadata.externalMessageId === "string"
+          ? message.metadata.externalMessageId
+          : undefined;
+      const result = await sendTelegramMessage({
+        token: tokenResolution.token,
+        chatId: message.chatId,
+        text,
+        ...(externalMessageId ? { replyToMessageId: externalMessageId } : {})
+      });
+      return {
+        provider: "telegram",
+        status: "sent",
+        ...(tokenResolution.source ? { source: tokenResolution.source } : {}),
+        ...(result.providerMessageId ? { providerMessageId: result.providerMessageId } : {}),
+        ...(tokenResolution.warnings.length > 0 ? { warnings: tokenResolution.warnings } : {})
+      };
+    } catch (err) {
+      return {
+        provider: "telegram",
+        status: "failed",
+        ...(tokenResolution.source ? { source: tokenResolution.source } : {}),
+        error: err instanceof Error ? err.message : String(err),
+        ...(tokenResolution.warnings.length > 0 ? { warnings: tokenResolution.warnings } : {})
+      };
+    }
   }
 
   app.get("/v1/dev/snapshot", async () => ({

@@ -7,6 +7,11 @@ coverage/
 .env
 .env.local
 .env.*.local
+secrets/
 *.log
+*.pid
+logs/
+.cache/
+tmp/
 .DS_Store
 postgres-data/

@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "next build && pnpm run standalone:assets",
-    "dev": "next dev",
+    "build": "NODE_ENV=production next build && pnpm run standalone:assets",
+    "dev": "next dev -p ${WEB_PORT:-3100}",
     "standalone:assets": "mkdir -p .next/standalone/apps/web/.next && rm -rf .next/standalone/apps/web/.next/static && cp -R .next/static .next/standalone/apps/web/.next/static && if [ -d public ]; then rm -rf .next/standalone/apps/web/public && cp -R public .next/standalone/apps/web/public; fi",
     "start": "node .next/standalone/apps/web/server.js",
     "test": "echo \"No web tests yet\"",

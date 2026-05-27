@@ -17,9 +17,14 @@
     "typecheck": "pnpm -r --filter './packages/*' build && pnpm -r typecheck",
     "db:generate": "pnpm --filter @ryanos/db db:generate",
     "db:migrate": "pnpm --filter @ryanos/db db:migrate",
+    "codex:bridge": "pnpm --filter @ryanos/ai codex:bridge",
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down",
-    "docker:logs": "docker compose logs -f"
+    "docker:logs": "docker compose logs -f",
+    "docker:telegram": "docker compose --profile telegram up -d --build telegram-poller",
+    "secrets:generate-key": "node scripts/generate-master-key.mjs",
+    "telegram:poll": "pnpm --filter @ryanos/api telegram:poll",
+    "telegram:store-token": "pnpm --filter @ryanos/api telegram:store-token"
   },
   "devDependencies": {
     "@types/node": "^20.19.25",

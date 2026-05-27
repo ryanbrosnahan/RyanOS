@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { JsonObject, UUID } from "@ryanos/shared";
 import { isUuid, resolveUserId, type RyanDb } from "./identity.js";
@@ -47,6 +47,13 @@ export type StoredMessage = {
   duplicate: boolean;
 };
 
+export type ListMessagesInput = {
+  provider: "telegram" | "whatsapp" | "web" | "system";
+  chatId: string;
+  userId: string;
+  limit?: number;
+};
+
 function asJsonObject(value: unknown): JsonObject {
   return JSON.parse(JSON.stringify(value ?? {})) as JsonObject;
 }
@@ -71,6 +78,26 @@ function messageFromRow(
 
 export class PostgresMessageStore {
   constructor(private readonly db: RyanDb) {}
+
+  async listMessages(input: ListMessagesInput): Promise<StoredMessage[]> {
+    const userId = await resolveUserId(this.db, input.userId);
+    const session = await this.db.query.sessions.findFirst({
+      where: and(
+        eq(schema.sessions.provider, input.provider),
+        eq(schema.sessions.providerChatId, input.chatId)
+      )
+    });
+    if (!session) return [];
+
+    const rows = await this.db
+      .select()
+      .from(schema.messages)
+      .where(and(eq(schema.messages.sessionId, session.id), eq(schema.messages.userId, userId)))
+      .orderBy(desc(schema.messages.occurredAt), desc(schema.messages.createdAt))
+      .limit(Math.min(Math.max(input.limit ?? 30, 1), 100));
+
+    return rows.reverse().map((row) => messageFromRow(row, false));
+  }
 
   async saveIncomingMessage(input: PersistIncomingMessageInput): Promise<StoredMessage> {
     const messageInput: Parameters<PostgresMessageStore["saveMessage"]>[0] = {

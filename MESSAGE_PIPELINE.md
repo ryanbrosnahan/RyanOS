@@ -75,6 +75,17 @@ Provider adapters may do basic transport work such as:
 
 Provider adapters should not interpret personal task intent.
 
+## Setup Boundaries
+
+Provider and connector setup is a human handoff. If RyanOS needs Codex login,
+Telegram bot setup, an OAuth callback, an account connection, or explicit API
+billing approval, it should return a setup-required status with the exact action
+needed and wait for the user.
+
+The assistant should not invent substitute credentials, scrape private tokens,
+silently fall back to billable APIs, or mark a connector ready because a prompt
+said it was ready. Setup state comes from deterministic readiness checks.
+
 ## Agent Context
 
 Before calling AI, the app should gather structured context:
@@ -248,6 +259,14 @@ Current implementation status:
 - Assistant response text is persisted as an outbound message with an
   idempotent `response:<source-message-id>` provider message ID.
 - Provider redelivery reuses the stored message row instead of duplicating it.
+- Telegram setup status checks for encrypted DB credentials first, with
+  `TELEGRAM_BOT_TOKEN` only as a development fallback.
+- Telegram assistant responses are sent through Telegram `sendMessage` only
+  after the response row is persisted. Duplicate persisted response rows skip
+  provider delivery.
+- Local Telegram testing uses `docker compose exec api pnpm telegram:poll`,
+  which calls Telegram `getUpdates` and forwards updates into
+  `/v1/inbound/telegram`.
 - Intent interpretation is still behind the AI provider abstraction; the current
   provider is `none`, so no natural-language parser has been added.
 

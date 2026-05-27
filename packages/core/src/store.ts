@@ -26,6 +26,7 @@ export type ItemCreateData = {
 export type ItemPatch = Partial<
   Pick<
     Item,
+    | "kind"
     | "title"
     | "body"
     | "status"
@@ -45,6 +46,12 @@ export type SearchMatch<T> = {
   reason: string;
 };
 
+export type ItemListFilters = {
+  userId: UUID;
+  statuses?: Item["status"][];
+  limit?: number;
+};
+
 export type PolicyUpsertData = Omit<
   Policy,
   "id" | "createdAt" | "updatedAt" | "deletedAt"
@@ -53,6 +60,7 @@ export type PolicyUpsertData = Omit<
 export interface RyanStore {
   createItem(data: ItemCreateData): Promise<Item>;
   updateItem(itemId: UUID, patch: ItemPatch): Promise<Item>;
+  listItems(filters: ItemListFilters): Promise<Item[]>;
   searchItems(userId: UUID, query: string, limit?: number): Promise<Array<SearchMatch<Item>>>;
   getItem(itemId: UUID): Promise<Item | undefined>;
   addItemEvent(event: Omit<ItemEvent, "id" | "createdAt">): Promise<ItemEvent>;

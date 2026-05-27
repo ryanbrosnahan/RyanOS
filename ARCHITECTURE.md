@@ -20,6 +20,8 @@ public core.
 - [TOOL_CONTRACTS.md](./TOOL_CONTRACTS.md): typed AI-callable tool boundary.
 - [DATA_MODEL.md](./DATA_MODEL.md): PostgreSQL/Drizzle data model.
 - [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md): V1 through V2 build plan.
+- [AI_PROVIDER_RISK_REVIEW.md](./AI_PROVIDER_RISK_REVIEW.md): AI provider,
+  agent security, and Codex bridge risk review.
 
 ## 2. Design Principles
 
@@ -53,6 +55,8 @@ public core.
 - Tailscale Funnel may be used for temporary webhook testing, but it is not the
   main public deployment model.
 - Public domain auth is a planned future mode, not required for V1.
+- Browser API access is origin-scoped through `RYANOS_CORS_ORIGINS`; add LAN,
+  Tailscale, tunnel, or public dashboard origins explicitly before exposing them.
 
 ### Deployment Targets
 
@@ -324,20 +328,37 @@ many core functions.
 
 The AI layer should support multiple providers:
 
-- `codex-bridge`: experimental use of Codex/ChatGPT login where feasible.
-- `openai-api`: optional fallback when explicitly enabled.
+- `codex-login`: preferred personal/local provider using Codex/ChatGPT login
+  where feasible.
+- `openai-responses-api`: optional fallback only when explicitly approved.
 - `local-ai`: optional local model provider.
 - `none`: deterministic-only mode for jobs that do not require AI.
 
-### Codex Login Constraint
+### Codex Login Boundary
 
-OpenAI documents Codex ChatGPT login for Codex itself, but this is not the same
-as a stable public API for arbitrary apps. Designs inspired by projects that use
-ChatGPT/Codex OAuth should be treated as experimental and isolated behind an
-adapter.
+RyanOS should assume `codex-login` is the long-term personal deployment default,
+similar in spirit to `dcramer/ash`. The provider is still a runtime adapter, not
+the trust root.
 
-The application must not depend on an undocumented private endpoint as its only
-AI path.
+The application must depend on typed tool contracts, deterministic handlers,
+schema validation, permissions, idempotency, and audit logs. If the Codex-login
+runtime changes or is unavailable, RyanOS should degrade to setup-required or
+`none` mode instead of corrupting state.
+
+### Human Setup Boundaries
+
+When the system needs an action that only the user can perform, it must ask for
+the exact action and stop. Examples:
+
+- log into Codex or refresh Codex credentials;
+- create a Telegram bot or provide a bot token;
+- approve OpenAI API billing before enabling API-backed providers;
+- connect Gmail, Calendar, Slack, WhatsApp, or other external accounts;
+- approve a new capability grant or generated skill power;
+- paste an OAuth callback/code through an approved setup path.
+
+RyanOS should expose these as setup-required statuses or confirmation prompts,
+not as silent failures and not as instructions hidden in logs.
 
 ### Embeddings
 
@@ -408,6 +429,18 @@ features.
 - Access external services through host-owned capabilities.
 - SOPS/age may be used for encrypted deployment secrets such as `.env` or Docker
   Compose secret files.
+
+V1 implementation note:
+
+- The local master key is loaded from `RYANOS_MASTER_KEY_FILE`, defaulting to
+  `./secrets/master-key`, or from `RYANOS_MASTER_KEY` as a fallback.
+- `pnpm secrets:generate-key` creates a 32-byte local key with filesystem mode
+  `0600`.
+- Telegram bot tokens are imported through
+  `docker compose exec api pnpm telegram:store-token -- --file /app/secrets/telegram-bot-token`
+  and stored as encrypted `secret_records`.
+- `TELEGRAM_BOT_TOKEN` is accepted only as a development fallback and should be
+  migrated into encrypted storage.
 
 ### Secret Operations
 

@@ -16,6 +16,9 @@ skills, deeper integrations, self-improvement, and stronger autonomy controls.
 - Keep deterministic state authoritative.
 - Do not hardcode natural-language parsing.
 - Keep secrets and capabilities host-owned.
+- Stop at human setup boundaries: when RyanOS needs the user to log in,
+  approve billing, create a connector, paste a token, or configure an external
+  account, ask for that exact action and wait instead of inventing a workaround.
 - Make every mutation auditable.
 - Keep user-specific configuration/data outside the OSS boundary.
 - Prefer small vertical slices over broad unfinished surfaces.
@@ -675,13 +678,18 @@ Status:
   redelivery-safe response IDs.
 - Telegram webhook ingestion normalizes provider messages without interpreting
   intent and is idempotent across redelivery.
-- Remaining in this slice: real AI provider/Codex bridge selection, outbound
-  Telegram responses, and notification delivery.
+- Local master-key loading, encrypted secret helpers, and a Telegram token import
+  CLI are implemented.
+- Outbound Telegram assistant responses are wired to encrypted DB credentials,
+  with duplicate webhook responses skipped.
+- Remaining in this slice: real AI provider/Codex bridge selection and scheduled
+  notification delivery.
+- `/v1/ai/status` and `/v1/setup/status` expose provider/connector readiness and
+  concrete setup actions for the user.
 
 ## Remaining Decisions
 
-- Exact first AI provider implementation path for structured tool calling.
-- Whether `codex-bridge` can be robust enough for V1 dogfooding.
+- Exact Codex-login bridge execution path for structured tool calling.
 - Exact local embedding model, if/when local embeddings are added.
 - Exact public deployment topology.
 - Exact sandbox implementation details.

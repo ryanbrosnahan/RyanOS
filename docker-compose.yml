@@ -38,13 +38,21 @@ services:
     environment:
       CI: "true"
       NODE_ENV: ${NODE_ENV:-development}
+      RYANOS_AI_PROVIDER: ${RYANOS_AI_PROVIDER:-none}
+      RYANOS_CODEX_COMMAND: ${RYANOS_CODEX_COMMAND:-codex}
+      RYANOS_CODEX_BRIDGE_URL: ${RYANOS_CODEX_BRIDGE_URL:-}
+      RYANOS_CODEX_BRIDGE_TOKEN: ${RYANOS_CODEX_BRIDGE_TOKEN:-}
+      RYANOS_CODEX_WORKDIR: ${RYANOS_CODEX_WORKDIR:-}
+      RYANOS_CODEX_TIMEOUT_MS: ${RYANOS_CODEX_TIMEOUT_MS:-60000}
       API_HOST: 0.0.0.0
       API_PORT: 4000
+      RYANOS_CORS_ORIGINS: ${RYANOS_CORS_ORIGINS:-http://localhost:3100,http://127.0.0.1:3100}
       DATABASE_URL: postgres://${DB_USER:-ryanos}:${DB_PASSWORD:-ryanos}@postgres:5432/${DB_NAME:-ryanos}
       RYANOS_MASTER_KEY_FILE: ${RYANOS_MASTER_KEY_FILE:-/app/secrets/master-key}
       TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
     ports:
-      - "127.0.0.1:${API_PORT:-4000}:4000"
+      - "127.0.0.1:${API_PORT:-4100}:4000"
     volumes:
       - ./:/app
       - api-node-modules:/app/node_modules
@@ -70,9 +78,9 @@ services:
     environment:
       CI: "true"
       NODE_ENV: ${NODE_ENV:-development}
-      NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-4000}
+      NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-4100}
     ports:
-      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+      - "127.0.0.1:${WEB_PORT:-3100}:3000"
     volumes:
       - ./:/app
       - web-node-modules:/app/node_modules
@@ -99,6 +107,7 @@ services:
     environment:
       CI: "true"
       NODE_ENV: ${NODE_ENV:-development}
+      RYANOS_AI_PROVIDER: ${RYANOS_AI_PROVIDER:-none}
       DATABASE_URL: postgres://${DB_USER:-ryanos}:${DB_PASSWORD:-ryanos}@postgres:5432/${DB_NAME:-ryanos}
       RYANOS_MASTER_KEY_FILE: ${RYANOS_MASTER_KEY_FILE:-/app/secrets/master-key}
     volumes:
@@ -120,6 +129,43 @@ services:
       - -lc
       - mkdir -p /app/.pnpm-store/v3 && pnpm install --frozen-lockfile=false --store-dir /app/.pnpm-store/v3 && pnpm -r --filter './packages/*' build && pnpm db:migrate && pnpm --filter @ryanos/worker dev
 
+  telegram-poller:
+    <<: *node-service
+    container_name: ryanos-telegram-poller
+    profiles: ["telegram"]
+    environment:
+      CI: "true"
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: postgres://${DB_USER:-ryanos}:${DB_PASSWORD:-ryanos}@postgres:5432/${DB_NAME:-ryanos}
+      RYANOS_MASTER_KEY_FILE: ${RYANOS_MASTER_KEY_FILE:-/app/secrets/master-key}
+      RYANOS_API_URL: http://api:4000
+      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_POLL_TIMEOUT_SECONDS: ${TELEGRAM_POLL_TIMEOUT_SECONDS:-25}
+      TELEGRAM_POLL_LIMIT: ${TELEGRAM_POLL_LIMIT:-20}
+      TELEGRAM_SEND_TYPING: ${TELEGRAM_SEND_TYPING:-true}
+      TELEGRAM_TYPING_INTERVAL_MS: ${TELEGRAM_TYPING_INTERVAL_MS:-4500}
+    volumes:
+      - ./:/app
+      - telegram-poller-node-modules:/app/node_modules
+      - api-app-node-modules:/app/apps/api/node_modules
+      - web-app-node-modules:/app/apps/web/node_modules
+      - worker-app-node-modules:/app/apps/worker/node_modules
+      - ai-package-node-modules:/app/packages/ai/node_modules
+      - core-package-node-modules:/app/packages/core/node_modules
+      - db-package-node-modules:/app/packages/db/node_modules
+      - shared-package-node-modules:/app/packages/shared/node_modules
+      - pnpm-store:/app/.pnpm-store
+    depends_on:
+      api:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    command:
+      - bash
+      - -lc
+      - mkdir -p /app/.pnpm-store/v3 && pnpm install --frozen-lockfile=false --store-dir /app/.pnpm-store/v3 && pnpm -r --filter './packages/*' build && pnpm --filter @ryanos/api telegram:poll
+
 volumes:
   api-node-modules:
   api-app-node-modules:
@@ -131,5 +177,6 @@ volumes:
   worker-node-modules:
   worker-app-node-modules:
   shared-package-node-modules:
+  telegram-poller-node-modules:
   pnpm-store:
   postgres-data:

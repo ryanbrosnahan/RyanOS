@@ -2,6 +2,7 @@ import { createId, nowIso } from "@ryanos/shared";
 import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
   ItemCreateData,
+  ItemListFilters,
   ItemPatch,
   PolicyUpsertData,
   RyanStore,
@@ -67,6 +68,24 @@ export class InMemoryRyanStore implements RyanStore {
     };
     this.items.set(itemId, updated);
     return updated;
+  }
+
+  async listItems(filters: ItemListFilters): Promise<Item[]> {
+    const statuses = filters.statuses ?? ["open", "active", "waiting"];
+    return [...this.items.values()]
+      .filter(
+        (item) =>
+          item.userId === filters.userId &&
+          !item.deletedAt &&
+          statuses.includes(item.status)
+      )
+      .sort((a, b) => {
+        const aDue = a.dueAt ?? "9999-12-31T23:59:59.999Z";
+        const bDue = b.dueAt ?? "9999-12-31T23:59:59.999Z";
+        if (aDue !== bDue) return aDue.localeCompare(bDue);
+        return b.createdAt.localeCompare(a.createdAt);
+      })
+      .slice(0, Math.min(Math.max(filters.limit ?? 30, 1), 100));
   }
 
   async searchItems(

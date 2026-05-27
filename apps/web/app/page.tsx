@@ -8,6 +8,9 @@ import {
   GitBranch,
   ShieldCheck
 } from "lucide-react";
+import { ChatPanel } from "./chat-panel";
+import { ItemsPanel } from "./items-panel";
+import { SetupStatusPanel } from "./setup-status-panel";
 
 const systemStatus = [
   { label: "Message pipeline", value: "AI-first contract", icon: Brain },
@@ -77,6 +80,9 @@ export default function Home() {
 
       <section className="mx-auto grid max-w-7xl gap-6 px-5 py-6 sm:px-8 lg:grid-cols-[1.2fr_0.8fr] lg:px-10">
         <div className="space-y-6">
+          <ChatPanel />
+          <ItemsPanel />
+
           <div>
             <div className="mb-3 flex items-center gap-2">
               <CheckCircle2 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
@@ -108,6 +114,8 @@ export default function Home() {
         </div>
 
         <aside className="space-y-4">
+          <SetupStatusPanel />
+
           <div className="rounded-md border border-stone-300 bg-white p-4 shadow-sm">
             <div className="flex items-center gap-2">
               <Database className="h-5 w-5 text-sky-700" aria-hidden="true" />
