@@ -246,6 +246,22 @@ Examples:
   stale relationship touchpoints.
 - Follow-up reminder tied to an external source or opportunity.
 
+### Open Item Attention
+
+The API should assign every dashboard item an explainable priority score and
+signals, then sort open items by that score before the UI renders them.
+
+- Minimum-interval and completion-based items should stay hidden from the
+  default open item list until the day before their next due date. On that day
+  they should appear as low-priority reminders, then rise sharply on or after
+  the due date.
+- Target-frequency items should rise as the period ages, the remaining target
+  count grows, or the item has not been completed recently.
+- One-off tasks and external-deadline items should score from explicit
+  priority, due dates, waiting state, and opportunity context.
+- Hidden items must remain queryable through explicit admin/debug flags so the
+  system can explain why they are not currently cluttering the main dashboard.
+
 ### Daily Planning
 
 Daily planning should distinguish:

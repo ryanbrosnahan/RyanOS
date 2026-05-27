@@ -10,6 +10,7 @@ import {
   Code2,
   Folder,
   FolderKanban,
+  Gauge,
   HeartPulse,
   Home,
   Landmark,
@@ -50,6 +51,12 @@ type RecurrenceProgress = {
     targetCount?: number;
     targetWindowDays: number;
   };
+  state?: {
+    lastCompletedAt?: string;
+    nextEligibleAt?: string;
+    nextDueAt?: string;
+    stalenessScore: number;
+  };
 };
 
 type ScopeLabel = {
@@ -70,6 +77,9 @@ type Item = {
   title: string;
   status: string;
   priority: string;
+  priorityScore: number;
+  prioritySignals: string[];
+  hiddenUntil?: string;
   dueAt?: string;
   completedAt?: string;
   completion?: {
@@ -196,6 +206,10 @@ function recurrenceSummary(recurrence: RecurrenceProgress): string {
   const target = recurrence.week.targetCount;
   if (target) return `${recurrence.week.completedCount}/${target}`;
   return `${recurrence.week.completedCount}`;
+}
+
+function nextRecurrenceDate(recurrence: RecurrenceProgress | undefined): string | undefined {
+  return formatDate(recurrence?.state?.nextDueAt);
 }
 
 function updateErrorMessage(payload: ToolResultResponse, fallback: string): string {
@@ -485,6 +499,7 @@ export function ItemsPanel() {
         <div className="mt-4 divide-y divide-stone-200">
           {items.map((item) => {
             const due = formatDate(item.dueAt);
+            const nextDue = nextRecurrenceDate(item.recurrence);
             const completed = item.status === "done";
             const hasRecurrence = item.recurrence !== undefined;
             const selectedAreaId = item.scope?.area?.id ?? "";
@@ -627,9 +642,22 @@ export function ItemsPanel() {
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
+                    <span
+                      className="inline-flex items-center gap-1 rounded-md bg-stone-100 px-2 py-1 text-xs font-medium text-stone-600"
+                      aria-label={`Priority score ${item.priorityScore}`}
+                      title={`Priority score ${item.priorityScore}: ${item.prioritySignals.join(", ")}`}
+                    >
+                      <Gauge className="h-3 w-3" aria-hidden="true" />
+                      <span>{item.priorityScore}</span>
+                    </span>
                     {item.recurrence ? (
                       <span className="rounded-md bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-900">
                         {recurrenceSummary(item.recurrence)}
+                      </span>
+                    ) : null}
+                    {!due && nextDue ? (
+                      <span className="rounded-md bg-stone-100 px-2 py-1 text-xs font-medium text-stone-700">
+                        {nextDue}
                       </span>
                     ) : null}
                     {due ? (

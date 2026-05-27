@@ -334,6 +334,185 @@ describe("setup status", () => {
     await app.close();
   });
 
+  it("hides future minimum-interval items until the day before they are due", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Take GLP-1 shot",
+          kind: "habit"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Review insurance bill",
+          kind: "task",
+          priority: "normal"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.setPolicy/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          itemRef: "Take GLP-1 shot",
+          policy: {
+            type: "minimum_interval",
+            minimumIntervalDays: 7,
+            resetFromCompletion: true
+          }
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.recordEvent/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          recurrenceRef: "Take GLP-1 shot",
+          eventType: "completed",
+          occurredAt: "2026-05-20T12:00:00.000Z"
+        }
+      }
+    });
+
+    const twoDaysBefore = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-05-25&timezone=UTC"
+    });
+    const hiddenIncluded = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-05-25&timezone=UTC&includeHidden=true"
+    });
+    const dayBefore = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-05-26&timezone=UTC"
+    });
+    await app.close();
+
+    expect(twoDaysBefore.json().items.map((item: { title: string }) => item.title)).not.toContain(
+      "Take GLP-1 shot"
+    );
+    expect(hiddenIncluded.json().items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: "Take GLP-1 shot",
+          hiddenUntil: "2026-05-26",
+          prioritySignals: expect.arrayContaining(["hidden until 2026-05-26", "next due 2026-05-27"])
+        })
+      ])
+    );
+    expect(dayBefore.json().items.map((item: { title: string }) => item.title)).toEqual([
+      "Review insurance bill",
+      "Take GLP-1 shot"
+    ]);
+    expect(dayBefore.json().items[1].priorityScore).toBeLessThan(dayBefore.json().items[0].priorityScore);
+  });
+
+  it("orders target-frequency items by recency and target pressure", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    for (const title of ["Go to the gym", "Call grandpa"]) {
+      await app.inject({
+        method: "POST",
+        url: "/v1/tools/item.create/invoke",
+        payload: {
+          input: {
+            userId: "local-owner",
+            title,
+            kind: "habit"
+          }
+        }
+      });
+    }
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.setPolicy/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          itemRef: "Go to the gym",
+          policy: {
+            type: "target_frequency",
+            targetCount: 5,
+            targetWindowDays: 7,
+            resetFromCompletion: true
+          }
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.setPolicy/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          itemRef: "Call grandpa",
+          policy: {
+            type: "target_frequency",
+            targetCount: 1,
+            targetWindowDays: 7,
+            resetFromCompletion: true
+          }
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.recordEvent/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          recurrenceRef: "Go to the gym",
+          eventType: "completed",
+          occurredAt: "2026-05-27T12:00:00.000Z"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.recordEvent/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          recurrenceRef: "Call grandpa",
+          eventType: "completed",
+          occurredAt: "2026-05-18T12:00:00.000Z"
+        }
+      }
+    });
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    await app.close();
+
+    const items = listed.json().items as Array<{
+      title: string;
+      priorityScore: number;
+      prioritySignals: string[];
+    }>;
+    expect(items.map((item) => item.title)).toEqual(["Call grandpa", "Go to the gym"]);
+    expect(items[0].priorityScore).toBeGreaterThan(items[1].priorityScore);
+    expect(items[0].prioritySignals).toEqual(expect.arrayContaining(["9d since last"]));
+    expect(items[1].prioritySignals).toEqual(expect.arrayContaining(["done today"]));
+  });
+
   it("returns dashboard taxonomy labels for classified items", async () => {
     vi.stubEnv("DATABASE_URL", "");
 

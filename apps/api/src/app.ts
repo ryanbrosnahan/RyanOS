@@ -45,6 +45,9 @@ const listItemsQuerySchema = z.object({
   includeDoneToday: z
     .preprocess((value) => value === "true" || value === "1" || value === true, z.boolean())
     .default(false),
+  includeHidden: z
+    .preprocess((value) => value === "true" || value === "1" || value === true, z.boolean())
+    .default(false),
   timezone: z.string().default("America/Chicago"),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(30)
@@ -146,6 +149,14 @@ function addDaysToDateKey(dateKey: string, days: number): string {
   const { year, month, day } = parseDateKey(dateKey);
   const date = new Date(Date.UTC(year, month - 1, day + days));
   return `${date.getUTCFullYear()}-${padDatePart(date.getUTCMonth() + 1)}-${padDatePart(date.getUTCDate())}`;
+}
+
+function daysBetweenDateKeys(startDateKey: string, endDateKey: string): number {
+  const start = parseDateKey(startDateKey);
+  const end = parseDateKey(endDateKey);
+  const startMs = Date.UTC(start.year, start.month - 1, start.day);
+  const endMs = Date.UTC(end.year, end.month - 1, end.day);
+  return Math.round((endMs - startMs) / (24 * 60 * 60 * 1000));
 }
 
 function localDateParts(date: Date, timeZone: string): {
@@ -590,7 +601,7 @@ export function buildApp() {
     project: ReturnType<typeof projectForDashboard> | undefined;
   };
 
-  type DashboardItem = Item & {
+  type DashboardItemBase = Item & {
     scope: DashboardScope;
     completion: {
       completedToday: boolean;
@@ -598,6 +609,164 @@ export function buildApp() {
     };
     recurrence?: ReturnType<typeof recurrenceProgress>;
   };
+
+  type DashboardItem = DashboardItemBase & {
+    priorityScore: number;
+    prioritySignals: string[];
+    hiddenUntil?: string;
+  };
+
+  function priorityRank(priority: Item["priority"]): number {
+    switch (priority) {
+      case "urgent":
+        return 4;
+      case "high":
+        return 3;
+      case "normal":
+        return 2;
+      case "low":
+        return 1;
+    }
+  }
+
+  function cadenceDueDateKey(item: DashboardItemBase, timeZone: string): string | undefined {
+    const policyType = item.recurrence?.policy.type;
+    if (policyType !== "completion_based" && policyType !== "minimum_interval") return undefined;
+    const nextDueAt = item.recurrence?.state?.nextDueAt;
+    return nextDueAt === undefined ? undefined : localDateKey(new Date(nextDueAt), timeZone);
+  }
+
+  function scoreDashboardItem(
+    item: DashboardItemBase,
+    timeZone: string,
+    referenceDateKey: string
+  ): Pick<DashboardItem, "priorityScore" | "prioritySignals" | "hiddenUntil"> {
+    const signals: string[] = [];
+
+    if (item.status === "done") {
+      return {
+        priorityScore: item.completion.completedToday ? 1 : 0,
+        prioritySignals: item.completion.completedToday ? ["completed today"] : ["done"]
+      };
+    }
+
+    let score = priorityRank(item.priority) * 10;
+    signals.push(`${item.priority} priority`);
+
+    if (item.status === "waiting") {
+      score -= 12;
+      signals.push("waiting");
+    }
+
+    if (item.kind === "opportunity_action") {
+      score += 18;
+      signals.push("opportunity");
+    }
+
+    if (item.dueAt !== undefined) {
+      const dueKey = localDateKey(new Date(item.dueAt), timeZone);
+      const daysUntilDue = daysBetweenDateKeys(referenceDateKey, dueKey);
+      if (daysUntilDue < 0) {
+        score += 60 + Math.min(40, Math.abs(daysUntilDue) * 6);
+        signals.push(`${Math.abs(daysUntilDue)}d overdue`);
+      } else if (daysUntilDue === 0) {
+        score += 50;
+        signals.push("due today");
+      } else if (daysUntilDue === 1) {
+        score += 16;
+        signals.push("due tomorrow");
+      } else if (daysUntilDue <= 7) {
+        score += Math.max(2, 10 - daysUntilDue);
+        signals.push(`due in ${daysUntilDue}d`);
+      }
+    }
+
+    const cadenceDueKey = cadenceDueDateKey(item, timeZone);
+    if (cadenceDueKey !== undefined) {
+      const attentionDateKey = addDaysToDateKey(cadenceDueKey, -1);
+      if (referenceDateKey < attentionDateKey) {
+        return {
+          priorityScore: Math.max(0, Math.min(score, 5)),
+          prioritySignals: [...signals, `hidden until ${attentionDateKey}`, `next due ${cadenceDueKey}`],
+          hiddenUntil: attentionDateKey
+        };
+      }
+
+      const daysUntilDue = daysBetweenDateKeys(referenceDateKey, cadenceDueKey);
+      if (daysUntilDue === 1) {
+        score = Math.min(score, 12);
+        signals.push("recurs tomorrow");
+      } else if (daysUntilDue === 0) {
+        score += 32;
+        signals.push("recurs today");
+      } else if (daysUntilDue < 0) {
+        score += 48 + Math.min(40, Math.abs(daysUntilDue) * 6);
+        signals.push(`${Math.abs(daysUntilDue)}d stale`);
+      }
+    }
+
+    if (item.recurrence?.policy.type === "target_frequency") {
+      const target = item.recurrence.week.targetCount ?? item.recurrence.policy.targetCount ?? 0;
+      const completed = item.recurrence.week.completedCount;
+      const remaining = Math.max(0, target - completed);
+      const daysLeft = daysBetweenDateKeys(referenceDateKey, item.recurrence.week.endDate) + 1;
+      const lastCompletedAt = item.recurrence.state?.lastCompletedAt;
+      const daysSinceLastCompleted =
+        lastCompletedAt === undefined
+          ? item.recurrence.week.targetWindowDays + 1
+          : Math.max(0, daysBetweenDateKeys(localDateKey(new Date(lastCompletedAt), timeZone), referenceDateKey));
+      const completedToday = item.recurrence.week.days.some(
+        (day) => day.date === referenceDateKey && day.status === "completed"
+      );
+
+      if (remaining <= 0) {
+        score -= 18;
+        signals.push("target met");
+      } else {
+        score += remaining * 7;
+        score += Math.min(32, daysSinceLastCompleted * 4);
+        signals.push(`${remaining} left`);
+        signals.push(`${daysSinceLastCompleted}d since last`);
+
+        if (remaining > daysLeft) {
+          score += 45;
+          signals.push("behind target");
+        } else if (remaining === daysLeft) {
+          score += 24;
+          signals.push("must do daily");
+        }
+
+        if (completedToday) {
+          score -= 14;
+          signals.push("done today");
+        }
+      }
+    } else if (item.recurrence !== undefined && cadenceDueKey === undefined) {
+      score += Math.min(12, item.recurrence.state?.stalenessScore ?? 0);
+    }
+
+    return {
+      priorityScore: Math.max(0, Math.round(score)),
+      prioritySignals: signals
+    };
+  }
+
+  function withDashboardPriority(item: DashboardItemBase, timeZone: string, referenceDateKey: string): DashboardItem {
+    return {
+      ...item,
+      ...scoreDashboardItem(item, timeZone, referenceDateKey)
+    };
+  }
+
+  function compareDashboardItems(a: DashboardItem, b: DashboardItem): number {
+    if (a.status === "done" && b.status !== "done") return 1;
+    if (a.status !== "done" && b.status === "done") return -1;
+    if (a.priorityScore !== b.priorityScore) return b.priorityScore - a.priorityScore;
+    const aDue = a.dueAt ?? a.recurrence?.state?.nextDueAt ?? "9999-12-31T23:59:59.999Z";
+    const bDue = b.dueAt ?? b.recurrence?.state?.nextDueAt ?? "9999-12-31T23:59:59.999Z";
+    if (aDue !== bDue) return aDue.localeCompare(bDue);
+    return b.createdAt.localeCompare(a.createdAt);
+  }
 
   async function itemForDashboard(item: Item, timeZone: string, referenceDateKey: string): Promise<DashboardItem> {
     const [policy, itemArea, itemProject] = await Promise.all([
@@ -623,21 +792,21 @@ export function buildApp() {
         item.completedAt < dayBounds.end
     };
     if (item.completedAt !== undefined) completion.completedAt = item.completedAt;
-    const dashboardItem: DashboardItem = {
+    const dashboardItem: DashboardItemBase = {
       ...item,
       scope,
       completion
     };
-    if (!policy) return dashboardItem;
+    if (!policy) return withDashboardPriority(dashboardItem, timeZone, referenceDateKey);
 
     const [events, state] = await Promise.all([
       store.listRecurrenceEvents(policy.id),
       store.getRecurrenceState(policy.id)
     ]);
-    return {
+    return withDashboardPriority({
       ...dashboardItem,
       recurrence: recurrenceProgress(policy, state, events, timeZone, referenceDateKey)
-    };
+    }, timeZone, referenceDateKey);
   }
 
   function itemEffort(item: DashboardItem): "easy" | "medium" | "big" {
@@ -649,40 +818,26 @@ export function buildApp() {
     return "medium";
   }
 
+  function itemVisibleByDefault(item: DashboardItem): boolean {
+    return item.hiddenUntil === undefined;
+  }
+
   function itemNeedsAttentionToday(item: DashboardItem, timeZone: string, dateKey: string): boolean {
     if (item.status === "done") return item.completion.completedToday;
     if (item.dueAt !== undefined && localDateKey(new Date(item.dueAt), timeZone) <= dateKey) return true;
     if (item.recurrence === undefined) return false;
+    const cadenceDueKey = cadenceDueDateKey(item, timeZone);
+    if (cadenceDueKey !== undefined) return cadenceDueKey <= dateKey;
     const today = item.recurrence.week.days.find((day) => day.date === dateKey);
     if (today?.status === "completed") return false;
     const target = item.recurrence.week.targetCount;
     return target !== undefined && item.recurrence.week.completedCount < target;
   }
 
-  function priorityRank(priority: Item["priority"]): number {
-    switch (priority) {
-      case "urgent":
-        return 4;
-      case "high":
-        return 3;
-      case "normal":
-        return 2;
-      case "low":
-        return 1;
-    }
-  }
-
   function planScore(item: DashboardItem, timeZone: string, dateKey: string): number {
-    let score = priorityRank(item.priority) * 10;
+    let score = item.priorityScore;
     if (itemNeedsAttentionToday(item, timeZone, dateKey)) score += 35;
     if (item.kind === "opportunity_action") score += 18;
-    if (item.status === "waiting") score -= 10;
-    if (item.recurrence !== undefined && item.recurrence.week.completedCount === 0) score += 8;
-    if (item.dueAt !== undefined) {
-      const dueKey = localDateKey(new Date(item.dueAt), timeZone);
-      if (dueKey < dateKey) score += 20;
-      if (dueKey === dateKey) score += 30;
-    }
     return score;
   }
 
@@ -735,7 +890,8 @@ export function buildApp() {
       completedBefore: dayBounds.end,
       limit: 100
     });
-    return Promise.all(items.map((item) => itemForDashboard(item, timeZone, dateKey)));
+    const dashboardItems = await Promise.all(items.map((item) => itemForDashboard(item, timeZone, dateKey)));
+    return dashboardItems.filter(itemVisibleByDefault).sort(compareDashboardItems);
   }
 
   async function ensureDailyPlanPromptMessage(userId: string, dateKey: string) {
@@ -945,7 +1101,7 @@ export function buildApp() {
     const dayBounds = localDayBounds(referenceDateKey, query.timezone);
     const filters: Parameters<typeof store.listItems>[0] = {
       userId: query.userId,
-      limit: query.limit
+      limit: 100
     };
     const statuses = parseItemStatuses(query.status);
     if (statuses !== undefined) filters.statuses = statuses;
@@ -954,12 +1110,16 @@ export function buildApp() {
       filters.completedBefore = dayBounds.end;
     }
     const items = await store.listItems(filters);
+    const dashboardItems = await Promise.all(
+      items.map((item) => itemForDashboard(item, query.timezone, referenceDateKey))
+    );
+    const visibleItems = (query.includeHidden ? dashboardItems : dashboardItems.filter(itemVisibleByDefault))
+      .sort(compareDashboardItems)
+      .slice(0, query.limit);
     return {
       date: referenceDateKey,
       timezone: query.timezone,
-      items: await Promise.all(
-        items.map((item) => itemForDashboard(item, query.timezone, referenceDateKey))
-      )
+      items: visibleItems
     };
   });
 
