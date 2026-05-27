@@ -54,8 +54,13 @@ type RecurrenceProgress = {
 type ScopeLabel = {
   id: string;
   name: string;
+  description?: string;
   icon?: string;
   color?: string;
+};
+
+type ProjectScopeLabel = ScopeLabel & {
+  areaId?: string;
 };
 
 type Item = {
@@ -83,8 +88,20 @@ type ItemsResponse = {
   items: Item[];
 };
 
+type TaxonomyResponse = {
+  areas: ScopeLabel[];
+  projects: ProjectScopeLabel[];
+};
+
 type ToggleResponse = {
   item?: Item;
+};
+
+type ToolResultResponse = {
+  status: string;
+  messageForUser?: string;
+  clarificationPrompt?: string;
+  confirmationPrompt?: string;
 };
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
@@ -180,39 +197,79 @@ function recurrenceSummary(recurrence: RecurrenceProgress): string {
   return `${recurrence.week.completedCount}`;
 }
 
+function updateErrorMessage(payload: ToolResultResponse, fallback: string): string {
+  return payload.messageForUser ?? payload.clarificationPrompt ?? payload.confirmationPrompt ?? fallback;
+}
+
 export function ItemsPanel() {
   const [items, setItems] = useState<Item[]>([]);
+  const [areas, setAreas] = useState<ScopeLabel[]>([]);
+  const [projects, setProjects] = useState<ProjectScopeLabel[]>([]);
   const [dashboardDate, setDashboardDate] = useState<string | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const timezone = useMemo(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago",
     []
   );
+  const areaCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of items) {
+      const areaId = item.scope?.area?.id;
+      if (areaId) counts.set(areaId, (counts.get(areaId) ?? 0) + 1);
+    }
+    return counts;
+  }, [items]);
+  const projectCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of items) {
+      const projectId = item.scope?.project?.id;
+      if (projectId) counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
+    }
+    return counts;
+  }, [items]);
+  const unscopedCount = useMemo(
+    () => items.filter((item) => !item.scope?.area && !item.scope?.project).length,
+    [items]
+  );
 
-  async function loadItems() {
-    setLoading(true);
-    setError(null);
+  async function loadDashboard(options?: { background?: boolean }) {
+    if (options?.background) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const params = new URLSearchParams({
         userId: "local-owner",
         status: "open,active,waiting",
         includeDoneToday: "true",
         timezone,
-        limit: "20"
+        limit: "100"
       });
-      const response = await fetch(`${apiUrl}/v1/items?${params.toString()}`, {
-        cache: "no-store"
-      });
-      if (!response.ok) throw new Error(`Items returned ${response.status}`);
-      const payload = (await response.json()) as ItemsResponse;
-      setItems(payload.items);
-      setDashboardDate(payload.date);
+      const taxonomyParams = new URLSearchParams({ userId: "local-owner" });
+      const [itemsResponse, taxonomyResponse] = await Promise.all([
+        fetch(`${apiUrl}/v1/items?${params.toString()}`, { cache: "no-store" }),
+        fetch(`${apiUrl}/v1/taxonomy?${taxonomyParams.toString()}`, { cache: "no-store" })
+      ]);
+      if (!itemsResponse.ok) throw new Error(`Items returned ${itemsResponse.status}`);
+      if (!taxonomyResponse.ok) throw new Error(`Taxonomy returned ${taxonomyResponse.status}`);
+      const itemsPayload = (await itemsResponse.json()) as ItemsResponse;
+      const taxonomyPayload = (await taxonomyResponse.json()) as TaxonomyResponse;
+      setItems(itemsPayload.items);
+      setAreas(taxonomyPayload.areas);
+      setProjects(taxonomyPayload.projects);
+      setDashboardDate(itemsPayload.date);
+      setLastUpdatedAt(new Date().toISOString());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }
 
@@ -238,7 +295,7 @@ export function ItemsPanel() {
       if (payload.item) {
         setItems((current) => current.map((candidate) => (candidate.id === item.id ? payload.item! : candidate)));
       } else {
-        await loadItems();
+        await loadDashboard({ background: true });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -271,7 +328,7 @@ export function ItemsPanel() {
       if (payload.item) {
         setItems((current) => current.map((candidate) => (candidate.id === item.id ? payload.item! : candidate)));
       } else {
-        await loadItems();
+        await loadDashboard({ background: true });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -280,8 +337,62 @@ export function ItemsPanel() {
     }
   }
 
+  async function classifyItem(
+    item: Item,
+    input: {
+      areaId?: string;
+      projectId?: string;
+      clearArea?: boolean;
+      clearProject?: boolean;
+    }
+  ) {
+    const key = `${item.id}:classify`;
+    const area = input.areaId ? areas.find((candidate) => candidate.id === input.areaId) : undefined;
+    const project = input.projectId
+      ? projects.find((candidate) => candidate.id === input.projectId)
+      : undefined;
+    const projectArea = project?.areaId
+      ? areas.find((candidate) => candidate.id === project.areaId)
+      : undefined;
+
+    setPendingKey(key);
+    setError(null);
+    try {
+      const response = await fetch(`${apiUrl}/v1/tools/item.classify/invoke`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          input: {
+            userId: "local-owner",
+            itemRef: item.id,
+            createMissing: false,
+            areaRef: projectArea?.name ?? area?.name,
+            projectRef: project?.name,
+            clearArea: input.clearArea ?? false,
+            clearProject: input.clearProject ?? false
+          }
+        })
+      });
+      const payload = (await response.json()) as ToolResultResponse;
+      if (!response.ok) throw new Error(updateErrorMessage(payload, `Classification returned ${response.status}`));
+      await loadDashboard({ background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingKey(null);
+    }
+  }
+
   useEffect(() => {
-    void loadItems();
+    void loadDashboard();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void loadDashboard({ background: true });
+      }
+    }, 30000);
+    return () => window.clearInterval(interval);
   }, []);
 
   return (
@@ -293,13 +404,17 @@ export function ItemsPanel() {
         </div>
         <button
           type="button"
-          onClick={() => void loadItems()}
+          onClick={() => void loadDashboard()}
           className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-stone-300 text-stone-700 hover:bg-stone-100"
           aria-label="Refresh open items"
           title="Refresh open items"
         >
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} aria-hidden="true" />
+          <RefreshCw className={`h-4 w-4 ${loading || refreshing ? "animate-spin" : ""}`} aria-hidden="true" />
         </button>
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-stone-500">
+        <span>Auto-refreshes every 30 seconds</span>
+        {lastUpdatedAt ? <span>Updated {formatDate(lastUpdatedAt)} {new Date(lastUpdatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span> : null}
       </div>
 
       {error ? <p className="mt-3 text-sm leading-6 text-rose-700">{error}</p> : null}
@@ -312,12 +427,69 @@ export function ItemsPanel() {
         <p className="mt-3 text-sm leading-6 text-stone-600">No open items.</p>
       ) : null}
 
+      {areas.length > 0 || projects.length > 0 || unscopedCount > 0 ? (
+        <div className="mt-4 rounded-md border border-stone-200 bg-stone-50 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <FolderKanban className="h-4 w-4 text-sky-700" aria-hidden="true" />
+              <h3 className="text-sm font-semibold text-stone-950">Areas and projects</h3>
+            </div>
+            {unscopedCount > 0 ? (
+              <span className="rounded-md bg-white px-2 py-1 text-xs font-medium text-stone-700 ring-1 ring-stone-200">
+                {unscopedCount} unscoped
+              </span>
+            ) : null}
+          </div>
+
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {areas.map((area) => {
+              const areaProjects = projects.filter((project) => project.areaId === area.id);
+              return (
+                <div key={area.id} className="rounded-md border border-stone-200 bg-white p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <ScopeChip scope={area} variant="area" />
+                    <span className="text-xs font-medium text-stone-500">
+                      {areaCounts.get(area.id) ?? 0}
+                    </span>
+                  </div>
+                  {areaProjects.length > 0 ? (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {areaProjects.map((project) => (
+                        <span key={project.id} className="inline-flex items-center gap-1 rounded-md border border-stone-200 bg-stone-50 px-2 py-0.5 text-xs text-stone-700">
+                          <FolderKanban className="h-3 w-3" aria-hidden="true" />
+                          <span>{project.name}</span>
+                          <span className="text-stone-400">{projectCounts.get(project.id) ?? 0}</span>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+
+          {projects.some((project) => project.areaId === undefined) ? (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {projects.filter((project) => project.areaId === undefined).map((project) => (
+                <ScopeChip key={project.id} scope={project} variant="project" />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {items.length > 0 ? (
         <div className="mt-4 divide-y divide-stone-200">
           {items.map((item) => {
             const due = formatDate(item.dueAt);
             const completed = item.status === "done";
             const hasRecurrence = item.recurrence !== undefined;
+            const selectedAreaId = item.scope?.area?.id ?? "";
+            const selectedProjectId = item.scope?.project?.id ?? "";
+            const visibleProjects = projects.filter((project) => {
+              if (!selectedAreaId) return true;
+              return project.areaId === undefined || project.areaId === selectedAreaId;
+            });
             return (
               <div key={item.id} className="py-3 first:pt-0 last:pb-0">
                 <div className="flex items-start justify-between gap-4">
@@ -367,6 +539,68 @@ export function ItemsPanel() {
                       <p className="mt-1 text-xs text-stone-600">
                         {item.kind} / {item.priority} / {completed ? "done today" : item.status}
                       </p>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <label className="sr-only" htmlFor={`area-${item.id}`}>
+                          Area for {item.title}
+                        </label>
+                        <select
+                          id={`area-${item.id}`}
+                          value={selectedAreaId}
+                          disabled={pendingKey === `${item.id}:classify`}
+                          onChange={(event) => {
+                            const areaId = event.target.value;
+                            if (!areaId) {
+                              void classifyItem(item, { clearArea: true, clearProject: true });
+                              return;
+                            }
+                            const currentProject = projects.find((project) => project.id === selectedProjectId);
+                            void classifyItem(item, {
+                              areaId,
+                              clearProject:
+                                currentProject?.areaId !== undefined && currentProject.areaId !== areaId
+                            });
+                          }}
+                          className="h-8 min-w-0 rounded-md border border-stone-300 bg-white px-2 text-xs text-stone-800 outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100 disabled:cursor-wait disabled:opacity-60"
+                        >
+                          <option value="">No area</option>
+                          {areas.map((area) => (
+                            <option key={area.id} value={area.id}>
+                              {area.name}
+                            </option>
+                          ))}
+                        </select>
+
+                        <label className="sr-only" htmlFor={`project-${item.id}`}>
+                          Project for {item.title}
+                        </label>
+                        <select
+                          id={`project-${item.id}`}
+                          value={selectedProjectId}
+                          disabled={pendingKey === `${item.id}:classify` || projects.length === 0}
+                          onChange={(event) => {
+                            const projectId = event.target.value;
+                            if (!projectId) {
+                              void classifyItem(item, { clearProject: true });
+                              return;
+                            }
+                            const project = projects.find((candidate) => candidate.id === projectId);
+                            void classifyItem(
+                              item,
+                              project?.areaId === undefined
+                                ? { projectId }
+                                : { projectId, areaId: project.areaId }
+                            );
+                          }}
+                          className="h-8 min-w-0 rounded-md border border-stone-300 bg-white px-2 text-xs text-stone-800 outline-none focus:border-emerald-700 focus:ring-2 focus:ring-emerald-100 disabled:cursor-wait disabled:opacity-60"
+                        >
+                          <option value="">No project</option>
+                          {visibleProjects.map((project) => (
+                            <option key={project.id} value={project.id}>
+                              {project.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">

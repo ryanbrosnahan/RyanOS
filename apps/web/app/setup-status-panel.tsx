@@ -48,9 +48,11 @@ export function SetupStatusPanel() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  async function loadStatus() {
-    setLoading(true);
-    setError(null);
+  async function loadStatus(options?: { background?: boolean }) {
+    if (!options?.background) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const response = await fetch(`${apiUrl}/v1/setup/status`, {
         cache: "no-store"
@@ -58,7 +60,9 @@ export function SetupStatusPanel() {
       if (!response.ok) throw new Error(`Setup status returned ${response.status}`);
       setStatus((await response.json()) as SetupStatus);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (!options?.background) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setLoading(false);
     }
@@ -66,6 +70,12 @@ export function SetupStatusPanel() {
 
   useEffect(() => {
     void loadStatus();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void loadStatus({ background: true });
+      }
+    }, 60000);
+    return () => window.clearInterval(interval);
   }, []);
 
   const entries = status ? [status.ai, ...status.integrations] : [];

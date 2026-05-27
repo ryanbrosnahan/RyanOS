@@ -84,6 +84,28 @@ export function ChatPanel() {
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const resizeHandleRef = useRef<HTMLButtonElement | null>(null);
   const dragStartRef = useRef<{ pointerId: number; y: number; height: number } | null>(null);
+  const sendingRef = useRef(false);
+
+  async function loadMessages(options?: { background?: boolean }) {
+    try {
+      const params = new URLSearchParams({
+        provider: "web",
+        chatId: "dashboard",
+        userId: "local-owner",
+        limit: "20"
+      });
+      const response = await fetch(`${apiUrl}/v1/messages?${params.toString()}`, {
+        cache: "no-store"
+      });
+      if (!response.ok) throw new Error(`Message history returned ${response.status}`);
+      const payload = (await response.json()) as MessagesResponse;
+      setTurns(payload.messages.map(messageToTurn));
+    } catch (err) {
+      if (!options?.background) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
 
   useEffect(() => {
     const messages = messagesRef.current;
@@ -92,26 +114,17 @@ export function ChatPanel() {
   }, [turns, sending]);
 
   useEffect(() => {
-    async function loadMessages() {
-      try {
-        const params = new URLSearchParams({
-          provider: "web",
-          chatId: "dashboard",
-          userId: "local-owner",
-          limit: "20"
-        });
-        const response = await fetch(`${apiUrl}/v1/messages?${params.toString()}`, {
-          cache: "no-store"
-        });
-        if (!response.ok) throw new Error(`Message history returned ${response.status}`);
-        const payload = (await response.json()) as MessagesResponse;
-        setTurns(payload.messages.map(messageToTurn));
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    }
+    sendingRef.current = sending;
+  }, [sending]);
 
+  useEffect(() => {
     void loadMessages();
+    const interval = window.setInterval(() => {
+      if (!sendingRef.current && document.visibilityState === "visible") {
+        void loadMessages({ background: true });
+      }
+    }, 15000);
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {

@@ -2,10 +2,10 @@ import {
   Activity,
   Bell,
   Brain,
-  CalendarClock,
   CheckCircle2,
   Database,
-  GitBranch,
+  FolderKanban,
+  RefreshCw,
   ShieldCheck
 } from "lucide-react";
 import { ChatPanel } from "./chat-panel";
@@ -13,31 +13,11 @@ import { ItemsPanel } from "./items-panel";
 import { SetupStatusPanel } from "./setup-status-panel";
 
 const systemStatus = [
-  { label: "Message pipeline", value: "AI-first contract", icon: Brain },
+  { label: "Assistant intake", value: "Chat + Telegram", icon: Brain },
   { label: "Task ledger", value: "Events + audit", icon: CheckCircle2 },
-  { label: "Scheduler", value: "Graphile Worker planned", icon: CalendarClock },
+  { label: "Scope map", value: "Areas + projects", icon: FolderKanban },
+  { label: "Refresh loop", value: "Live polling", icon: RefreshCw },
   { label: "Secrets", value: "Encrypted DB fields", icon: ShieldCheck }
-];
-
-const successCriteria = [
-  "Persist chat turns",
-  "Keep tools typed",
-  "Verify webhook retries"
-];
-
-const buildSlices = [
-  {
-    title: "Current slice",
-    body: "Workspace, API, worker, database schema, AI tool registry, item tools, recurrence core, persisted policies, dashboard shell, Docker dev environment, Postgres store adapter, and persisted inbound/outbound messages."
-  },
-  {
-    title: "Next slice",
-    body: "Connect a real AI provider or Codex bridge to typed tool calls, then add Telegram assistant responses and notification delivery."
-  },
-  {
-    title: "V2 runway",
-    body: "Generated skills, capability approvals, sandboxed dry runs, and self-improvement proposals."
-  }
 ];
 
 export default function Home() {
@@ -54,11 +34,11 @@ export default function Home() {
             </div>
             <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
               <Activity className="h-4 w-4" aria-hidden="true" />
-              Implementation started
+              Local system active
             </div>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             {systemStatus.map((item) => {
               const Icon = item.icon;
               return (
@@ -82,35 +62,6 @@ export default function Home() {
         <div className="space-y-6">
           <ChatPanel />
           <ItemsPanel />
-
-          <div>
-            <div className="mb-3 flex items-center gap-2">
-              <CheckCircle2 className="h-5 w-5 text-emerald-700" aria-hidden="true" />
-              <h2 className="text-lg font-semibold text-stone-950">Today&apos;s success criteria</h2>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              {successCriteria.map((item) => (
-                <div key={item} className="rounded-md border border-stone-300 bg-white p-4 shadow-sm">
-                  <p className="text-sm font-medium text-stone-900">{item}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <div className="mb-3 flex items-center gap-2">
-              <GitBranch className="h-5 w-5 text-indigo-700" aria-hidden="true" />
-              <h2 className="text-lg font-semibold text-stone-950">Build slices</h2>
-            </div>
-            <div className="grid gap-3">
-              {buildSlices.map((slice) => (
-                <div key={slice.title} className="rounded-md border border-stone-300 bg-white p-4 shadow-sm">
-                  <h3 className="text-sm font-semibold text-stone-950">{slice.title}</h3>
-                  <p className="mt-1 text-sm leading-6 text-stone-700">{slice.body}</p>
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
 
         <aside className="space-y-4">
@@ -131,8 +82,8 @@ export default function Home() {
                 <dd className="font-medium text-stone-950">Typed JSON</dd>
               </div>
               <div className="flex items-center justify-between gap-4">
-                <dt className="text-stone-600">Current AI provider</dt>
-                <dd className="font-medium text-stone-950">None</dd>
+                <dt className="text-stone-600">Dashboard refresh</dt>
+                <dd className="font-medium text-stone-950">Polling</dd>
               </div>
             </dl>
           </div>
