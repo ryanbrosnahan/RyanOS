@@ -1,0 +1,15 @@
+.git/
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.next/
+**/.next/
+coverage/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+secrets/
+*.log
+.DS_Store

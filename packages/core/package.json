@@ -1,0 +1,28 @@
+{
+  "name": "@ryanos/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ryanos/ai": "workspace:*",
+    "@ryanos/shared": "workspace:*",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "vitest": "1.6.1"
+  }
+}

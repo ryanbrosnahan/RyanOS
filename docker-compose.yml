@@ -1,0 +1,107 @@
+name: ryanos
+
+x-node-service: &node-service
+  build:
+    context: .
+    dockerfile: docker/node.Dockerfile
+    args:
+      NODE_VERSION: 20.20.0-slim
+      PNPM_VERSION: 10.11.0
+  environment:
+    CI: "true"
+  volumes:
+    - ./:/app
+    - pnpm-store:/app/.pnpm-store
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ryanos-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-ryanos}
+      POSTGRES_USER: ${DB_USER:-ryanos}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-ryanos}
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-54334}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ryanos} -d ${DB_NAME:-ryanos}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    <<: *node-service
+    container_name: ryanos-api
+    environment:
+      CI: "true"
+      NODE_ENV: ${NODE_ENV:-development}
+      API_HOST: 0.0.0.0
+      API_PORT: 4000
+      DATABASE_URL: postgres://${DB_USER:-ryanos}:${DB_PASSWORD:-ryanos}@postgres:5432/${DB_NAME:-ryanos}
+      RYANOS_MASTER_KEY_FILE: ${RYANOS_MASTER_KEY_FILE:-/app/secrets/master-key}
+      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
+    ports:
+      - "127.0.0.1:${API_PORT:-4000}:4000"
+    volumes:
+      - ./:/app
+      - api-node-modules:/app/node_modules
+      - pnpm-store:/app/.pnpm-store
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - bash
+      - -lc
+      - mkdir -p /app/.pnpm-store/v3 && pnpm install --frozen-lockfile=false --store-dir /app/.pnpm-store/v3 && pnpm -r --filter './packages/*' build && pnpm db:migrate && pnpm --filter @ryanos/api dev
+
+  web:
+    <<: *node-service
+    container_name: ryanos-web
+    environment:
+      CI: "true"
+      NODE_ENV: ${NODE_ENV:-development}
+      NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-4000}
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    volumes:
+      - ./:/app
+      - web-node-modules:/app/node_modules
+      - pnpm-store:/app/.pnpm-store
+      - /app/apps/web/.next
+    depends_on:
+      - api
+    command:
+      - bash
+      - -lc
+      - mkdir -p /app/.pnpm-store/v3 && pnpm install --frozen-lockfile=false --store-dir /app/.pnpm-store/v3 && pnpm -r --filter './packages/*' build && pnpm --filter @ryanos/web exec next dev -p 3000 -H 0.0.0.0
+
+  worker:
+    <<: *node-service
+    container_name: ryanos-worker
+    profiles: ["worker"]
+    environment:
+      CI: "true"
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: postgres://${DB_USER:-ryanos}:${DB_PASSWORD:-ryanos}@postgres:5432/${DB_NAME:-ryanos}
+      RYANOS_MASTER_KEY_FILE: ${RYANOS_MASTER_KEY_FILE:-/app/secrets/master-key}
+    volumes:
+      - ./:/app
+      - worker-node-modules:/app/node_modules
+      - pnpm-store:/app/.pnpm-store
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - bash
+      - -lc
+      - mkdir -p /app/.pnpm-store/v3 && pnpm install --frozen-lockfile=false --store-dir /app/.pnpm-store/v3 && pnpm -r --filter './packages/*' build && pnpm db:migrate && pnpm --filter @ryanos/worker dev
+
+volumes:
+  api-node-modules:
+  web-node-modules:
+  worker-node-modules:
+  pnpm-store:
+  postgres-data:

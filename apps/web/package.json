@@ -1,0 +1,26 @@
+{
+  "name": "@ryanos/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "next build && pnpm run standalone:assets",
+    "dev": "next dev",
+    "standalone:assets": "mkdir -p .next/standalone/apps/web/.next && rm -rf .next/standalone/apps/web/.next/static && cp -R .next/static .next/standalone/apps/web/.next/static && if [ -d public ]; then rm -rf .next/standalone/apps/web/public && cp -R public .next/standalone/apps/web/public; fi",
+    "start": "node .next/standalone/apps/web/server.js",
+    "test": "echo \"No web tests yet\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "next": "15.5.18",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.0",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "tailwindcss": "^4.3.0"
+  }
+}

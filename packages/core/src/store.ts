@@ -1,0 +1,68 @@
+import type { JsonObject, UUID } from "@ryanos/shared";
+import type {
+  AuditLog,
+  Item,
+  ItemEvent,
+  RecurrenceEvent,
+  RecurrencePolicy,
+  RecurrenceState
+} from "./types.js";
+
+export type ItemCreateData = {
+  userId: UUID;
+  kind: Item["kind"];
+  title: string;
+  body?: string;
+  areaId?: UUID;
+  projectId?: UUID;
+  priority?: Item["priority"];
+  dueAt?: string;
+  startAt?: string;
+  estimateMinutes?: number;
+  metadata?: JsonObject;
+};
+
+export type ItemPatch = Partial<
+  Pick<
+    Item,
+    | "title"
+    | "body"
+    | "status"
+    | "priority"
+    | "dueAt"
+    | "startAt"
+    | "snoozedUntil"
+    | "estimateMinutes"
+    | "completedAt"
+    | "cancelledAt"
+  >
+>;
+
+export type SearchMatch<T> = {
+  record: T;
+  confidence: number;
+  reason: string;
+};
+
+export interface RyanStore {
+  createItem(data: ItemCreateData): Promise<Item>;
+  updateItem(itemId: UUID, patch: ItemPatch): Promise<Item>;
+  searchItems(userId: UUID, query: string, limit?: number): Promise<Array<SearchMatch<Item>>>;
+  getItem(itemId: UUID): Promise<Item | undefined>;
+  addItemEvent(event: Omit<ItemEvent, "id" | "createdAt">): Promise<ItemEvent>;
+  findItemEventByIdempotencyKey(userId: UUID, key: string): Promise<ItemEvent | undefined>;
+
+  upsertRecurrencePolicy(
+    policy: Omit<RecurrencePolicy, "id" | "createdAt" | "updatedAt">
+  ): Promise<RecurrencePolicy>;
+  findRecurrencePolicyForItem(itemId: UUID): Promise<RecurrencePolicy | undefined>;
+  addRecurrenceEvent(
+    event: Omit<RecurrenceEvent, "id" | "createdAt">
+  ): Promise<RecurrenceEvent>;
+  listRecurrenceEvents(policyId: UUID): Promise<RecurrenceEvent[]>;
+  updateRecurrenceState(state: RecurrenceState): Promise<RecurrenceState>;
+  getRecurrenceState(policyId: UUID): Promise<RecurrenceState | undefined>;
+
+  addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog>;
+  snapshot?(): JsonObject | Promise<JsonObject>;
+}
