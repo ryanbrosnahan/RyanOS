@@ -23,7 +23,9 @@ workspace, Docker/Postgres setup, Drizzle schema and migration, Fastify API
 shell, Graphile Worker shell, Next.js dashboard shell, first typed tool
 contracts, a Postgres-backed store adapter with in-memory fallback, persisted
 message sessions, and Telegram webhook normalization with redelivery
-idempotency.
+idempotency. The current typed tool surface includes item search, create,
+update, complete, and snooze; recurrence policy/event recording; notification
+policy persistence; and state explain placeholders.
 
 ## Local Dev
 

@@ -669,8 +669,8 @@ Status:
 - Repo, Docker Postgres, Fastify API, worker shell, Next dashboard, Drizzle
   schema/migrations, core tools, recurrence logic, and Postgres store adapter
   are implemented.
-- `/v1/messages` persists chat turns and can execute typed tool calls in
-  deterministic test mode.
+- `/v1/messages` persists chat turns and can execute typed item, recurrence,
+  and notification-policy tool calls in deterministic test mode.
 - Telegram webhook ingestion normalizes provider messages without interpreting
   intent and is idempotent across redelivery.
 - Remaining in this slice: real AI provider/Codex bridge selection, outbound

@@ -4,12 +4,14 @@ import type {
   AuditLog,
   Item,
   ItemEvent,
+  Policy,
   RecurrenceEvent,
   RecurrencePolicy,
   RecurrenceState,
   RyanStore,
   ItemCreateData,
   ItemPatch,
+  PolicyUpsertData,
   SearchMatch
 } from "@ryanos/core";
 import { isUuid, resolveUserId, type RyanDb } from "./identity.js";
@@ -163,6 +165,29 @@ function auditLogFromRow(row: typeof schema.auditLogs.$inferSelect): AuditLog {
   if (row.sourceMessageId !== null) log.sourceMessageId = row.sourceMessageId;
   if (row.toolName !== null) log.toolName = row.toolName;
   return log;
+}
+
+function policyFromRow(row: typeof schema.policies.$inferSelect): Policy {
+  const policy: Policy = {
+    id: row.id,
+    userId: row.userId,
+    type: row.type,
+    scope: row.scope,
+    priority: row.priority,
+    status: row.status as Policy["status"],
+    rules: asJsonObject(row.rules),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.scopeRef !== null) policy.scopeRef = row.scopeRef;
+  const startsAt = toIso(row.startsAt);
+  if (startsAt !== undefined) policy.startsAt = startsAt;
+  const expiresAt = toIso(row.expiresAt);
+  if (expiresAt !== undefined) policy.expiresAt = expiresAt;
+  if (row.sourceMessageId !== null) policy.sourceMessageId = row.sourceMessageId;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) policy.deletedAt = deletedAt;
+  return policy;
 }
 
 export class PostgresRyanStore implements RyanStore {
@@ -422,6 +447,49 @@ export class PostgresRyanStore implements RyanStore {
     return row ? recurrenceStateFromRow(row) : undefined;
   }
 
+  async upsertPolicy(policy: PolicyUpsertData): Promise<Policy> {
+    const userId = await this.resolveUserId(policy.userId);
+    const existing = await this.db.query.policies.findFirst({
+      where: and(
+        eq(schema.policies.userId, userId),
+        eq(schema.policies.type, policy.type),
+        eq(schema.policies.scope, policy.scope),
+        policy.scopeRef === undefined
+          ? isNull(schema.policies.scopeRef)
+          : eq(schema.policies.scopeRef, policy.scopeRef),
+        isNull(schema.policies.deletedAt)
+      )
+    });
+
+    const values: typeof schema.policies.$inferInsert = {
+      userId,
+      type: policy.type,
+      scope: policy.scope,
+      priority: policy.priority,
+      status: policy.status,
+      rules: policy.rules,
+      updatedAt: new Date()
+    };
+    if (policy.scopeRef !== undefined) values.scopeRef = policy.scopeRef;
+    if (policy.startsAt !== undefined) values.startsAt = toDate(policy.startsAt);
+    if (policy.expiresAt !== undefined) values.expiresAt = toDate(policy.expiresAt);
+    if (isUuid(policy.sourceMessageId)) values.sourceMessageId = policy.sourceMessageId;
+
+    if (existing) {
+      const [row] = await this.db
+        .update(schema.policies)
+        .set(values)
+        .where(eq(schema.policies.id, existing.id))
+        .returning();
+      if (!row) throw new Error(`Policy not found: ${existing.id}`);
+      return policyFromRow(row);
+    }
+
+    const [row] = await this.db.insert(schema.policies).values(values).returning();
+    if (!row) throw new Error("Failed to upsert policy");
+    return policyFromRow(row);
+  }
+
   async addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog> {
     const userId = await this.resolveUserId(log.userId);
     const values: typeof schema.auditLogs.$inferInsert = {
@@ -454,6 +522,7 @@ export class PostgresRyanStore implements RyanStore {
     const [auditLogCount] = await this.db.select({ value: count() }).from(schema.auditLogs);
     const [sessionCount] = await this.db.select({ value: count() }).from(schema.sessions);
     const [messageCount] = await this.db.select({ value: count() }).from(schema.messages);
+    const [policyCount] = await this.db.select({ value: count() }).from(schema.policies);
 
     return {
       storeType: "postgres",
@@ -463,7 +532,8 @@ export class PostgresRyanStore implements RyanStore {
       recurrenceEventCount: recurrenceEventCount?.value ?? 0,
       auditLogCount: auditLogCount?.value ?? 0,
       sessionCount: sessionCount?.value ?? 0,
-      messageCount: messageCount?.value ?? 0
+      messageCount: messageCount?.value ?? 0,
+      policyCount: policyCount?.value ?? 0
     };
   }
 }

@@ -1,10 +1,17 @@
 import { createId, nowIso } from "@ryanos/shared";
 import type { JsonObject, UUID } from "@ryanos/shared";
-import type { ItemCreateData, ItemPatch, RyanStore, SearchMatch } from "./store.js";
+import type {
+  ItemCreateData,
+  ItemPatch,
+  PolicyUpsertData,
+  RyanStore,
+  SearchMatch
+} from "./store.js";
 import type {
   AuditLog,
   Item,
   ItemEvent,
+  Policy,
   RecurrenceEvent,
   RecurrencePolicy,
   RecurrenceState
@@ -20,6 +27,7 @@ export class InMemoryRyanStore implements RyanStore {
   readonly recurrencePolicies = new Map<UUID, RecurrencePolicy>();
   readonly recurrenceEvents: RecurrenceEvent[] = [];
   readonly recurrenceStates = new Map<UUID, RecurrenceState>();
+  readonly policies = new Map<UUID, Policy>();
   readonly auditLogs: AuditLog[] = [];
 
   async createItem(data: ItemCreateData): Promise<Item> {
@@ -164,6 +172,27 @@ export class InMemoryRyanStore implements RyanStore {
     return this.recurrenceStates.get(policyId);
   }
 
+  async upsertPolicy(policy: PolicyUpsertData): Promise<Policy> {
+    const existing = [...this.policies.values()].find(
+      (candidate) =>
+        candidate.userId === policy.userId &&
+        candidate.type === policy.type &&
+        candidate.scope === policy.scope &&
+        candidate.scopeRef === policy.scopeRef &&
+        !candidate.deletedAt
+    );
+    const timestamp = nowIso();
+    const stored: Policy = {
+      ...existing,
+      ...policy,
+      id: existing?.id ?? createId("policy"),
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    this.policies.set(stored.id, stored);
+    return stored;
+  }
+
   async addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog> {
     const created: AuditLog = {
       ...log,
@@ -180,8 +209,8 @@ export class InMemoryRyanStore implements RyanStore {
       itemEventCount: this.itemEvents.length,
       recurrencePolicyCount: this.recurrencePolicies.size,
       recurrenceEventCount: this.recurrenceEvents.length,
+      policyCount: this.policies.size,
       auditLogCount: this.auditLogs.length
     };
   }
 }
-

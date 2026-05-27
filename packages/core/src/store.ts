@@ -3,6 +3,7 @@ import type {
   AuditLog,
   Item,
   ItemEvent,
+  Policy,
   RecurrenceEvent,
   RecurrencePolicy,
   RecurrenceState
@@ -44,6 +45,11 @@ export type SearchMatch<T> = {
   reason: string;
 };
 
+export type PolicyUpsertData = Omit<
+  Policy,
+  "id" | "createdAt" | "updatedAt" | "deletedAt"
+>;
+
 export interface RyanStore {
   createItem(data: ItemCreateData): Promise<Item>;
   updateItem(itemId: UUID, patch: ItemPatch): Promise<Item>;
@@ -62,6 +68,8 @@ export interface RyanStore {
   listRecurrenceEvents(policyId: UUID): Promise<RecurrenceEvent[]>;
   updateRecurrenceState(state: RecurrenceState): Promise<RecurrenceState>;
   getRecurrenceState(policyId: UUID): Promise<RecurrenceState | undefined>;
+
+  upsertPolicy(policy: PolicyUpsertData): Promise<Policy>;
 
   addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog>;
   snapshot?(): JsonObject | Promise<JsonObject>;

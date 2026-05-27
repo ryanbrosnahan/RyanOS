@@ -12,6 +12,14 @@ export type ItemKind =
 
 export type ItemStatus = "open" | "active" | "waiting" | "done" | "cancelled";
 export type Priority = "low" | "normal" | "high" | "urgent";
+export type PolicyType =
+  | "notification"
+  | "planning"
+  | "confirmation"
+  | "retention"
+  | "permission"
+  | "other";
+export type PolicyStatus = "active" | "paused" | "archived" | "disabled";
 
 export type Item = {
   id: UUID;
@@ -128,3 +136,19 @@ export type AuditLog = {
   metadata: JsonObject;
 };
 
+export type Policy = {
+  id: UUID;
+  userId: UUID;
+  type: PolicyType;
+  scope: string;
+  scopeRef?: string;
+  priority: number;
+  status: PolicyStatus;
+  startsAt?: ISODateString;
+  expiresAt?: ISODateString;
+  rules: JsonObject;
+  sourceMessageId?: string;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};

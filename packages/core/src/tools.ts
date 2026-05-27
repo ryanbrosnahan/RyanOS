@@ -2,7 +2,7 @@ import { ToolRegistry, toolEnvelopeSchema } from "@ryanos/ai";
 import { nowIso } from "@ryanos/shared";
 import { z } from "zod";
 import { calculateRecurrenceState, isBeforeMinimumInterval } from "./recurrence.js";
-import type { ItemCreateData, RyanStore } from "./store.js";
+import type { ItemCreateData, ItemPatch, RyanStore } from "./store.js";
 import type { JsonObject } from "@ryanos/shared";
 
 const userIdSchema = z.string().min(1).default("local-owner");
@@ -33,6 +33,51 @@ async function audit(
 
 export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
   const registry = new ToolRegistry();
+
+  registry.register({
+    name: "item.search",
+    description: "Find candidate items for an ambiguous user reference.",
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      query: z.string().min(1),
+      includeDone: z.boolean().default(false),
+      limit: z.number().int().positive().max(20).default(5)
+    }),
+    handler: async (input) => {
+      const matches = (await store.searchItems(input.userId, input.query, input.limit)).filter(
+        (match) => input.includeDone || !["done", "cancelled"].includes(match.record.status)
+      );
+      const data = {
+        matches: matches.map((match) => ({
+          id: match.record.id,
+          kind: match.record.kind,
+          title: match.record.title,
+          status: match.record.status,
+          priority: match.record.priority,
+          dueAt: match.record.dueAt,
+          confidence: match.confidence,
+          reason: match.reason
+        }))
+      };
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.search",
+        toolName: "item.search",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { matchCount: data.matches.length }
+      });
+      return {
+        status: "applied",
+        data,
+        auditId: auditLog.id,
+        messageForUser:
+          data.matches.length === 0
+            ? `I did not find an item matching "${input.query}".`
+            : `Found ${data.matches.length} candidate item${data.matches.length === 1 ? "" : "s"}.`
+      };
+    }
+  });
 
   registry.register({
     name: "item.create",
@@ -84,6 +129,87 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
         eventIds: [event.id],
         auditId: auditLog.id,
         messageForUser: `Created "${item.title}".`
+      };
+    }
+  });
+
+  registry.register({
+    name: "item.update",
+    description: "Update an existing item after resolving an item reference.",
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      itemRef: z.string().min(1),
+      patch: z.object({
+        title: z.string().min(1).optional(),
+        body: z.string().optional(),
+        bodyAppend: z.string().optional(),
+        status: z.enum(["open", "active", "waiting", "done", "cancelled"]).optional(),
+        priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
+        dueAt: z.string().optional(),
+        startAt: z.string().optional(),
+        snoozedUntil: z.string().optional(),
+        estimateMinutes: z.number().int().positive().optional()
+      })
+    }),
+    handler: async (input) => {
+      const matches = await store.searchItems(input.userId, input.itemRef, 3);
+      const best = matches[0];
+      if (!best || best.confidence < 0.75) {
+        return {
+          status: "needs_clarification",
+          clarificationPrompt: `Which item should I update for "${input.itemRef}"?`
+        };
+      }
+
+      const patch: ItemPatch = {};
+      if (input.patch.title !== undefined) patch.title = input.patch.title;
+      if (input.patch.status !== undefined) patch.status = input.patch.status;
+      if (input.patch.priority !== undefined) patch.priority = input.patch.priority;
+      if (input.patch.dueAt !== undefined) patch.dueAt = input.patch.dueAt;
+      if (input.patch.startAt !== undefined) patch.startAt = input.patch.startAt;
+      if (input.patch.snoozedUntil !== undefined) patch.snoozedUntil = input.patch.snoozedUntil;
+      if (input.patch.estimateMinutes !== undefined) {
+        patch.estimateMinutes = input.patch.estimateMinutes;
+      }
+      if (input.patch.body !== undefined) {
+        patch.body = input.patch.body;
+      } else if (input.patch.bodyAppend !== undefined) {
+        const existingBody = best.record.body ? `${best.record.body}\n` : "";
+        patch.body = `${existingBody}${input.patch.bodyAppend}`;
+      }
+
+      if (Object.keys(patch).length === 0) {
+        return {
+          status: "rejected",
+          messageForUser: "No item updates were provided."
+        };
+      }
+
+      const item = await store.updateItem(best.record.id, patch);
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: item.id,
+        eventType: "updated",
+        occurredAt: nowIso(),
+        payload: { patch: asJsonObject(patch), matchedBy: best.reason }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.update",
+        toolName: "item.update",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: item.id, eventId: event.id }
+      });
+      return {
+        status: "applied",
+        data: { item },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser: `Updated "${item.title}".`
       };
     }
   });
@@ -401,18 +527,36 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       reason: z.string().optional()
     }),
     handler: async (input) => {
+      const rules = asJsonObject({
+        ...input.policy,
+        reason: input.reason
+      });
+      const policyInput: Parameters<RyanStore["upsertPolicy"]>[0] = {
+        userId: input.userId,
+        type: "notification",
+        scope: input.scope,
+        priority: 0,
+        status: "active",
+        rules
+      };
+      if (input.scopeRef !== undefined) policyInput.scopeRef = input.scopeRef;
+      if (input.sourceMessageId !== undefined) {
+        policyInput.sourceMessageId = input.sourceMessageId;
+      }
+      const policy = await store.upsertPolicy(policyInput);
       const auditLog = await audit(store, {
         userId: input.userId,
         action: "policy.upsertNotification",
         toolName: "policy.upsertNotification",
         sourceMessageId: input.sourceMessageId,
         request: input,
-        result: { stored: false, reason: "Policy table implementation pending" }
+        result: { policyId: policy.id }
       });
       return {
-        status: "proposed",
+        status: "applied",
+        data: { policy },
         auditId: auditLog.id,
-        messageForUser: "Notification policy recognized. Persistent policy storage is the next implementation step."
+        messageForUser: `Updated notification policy for ${input.scope}.`
       };
     }
   });
