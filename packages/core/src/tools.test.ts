@@ -34,7 +34,7 @@ describe("core tools", () => {
       properties: {
         recurrenceRef: { type: "string" },
         eventType: {
-          enum: ["completed", "skipped", "missed", "deferred"]
+          enum: ["completed", "uncompleted", "skipped", "missed", "deferred"]
         }
       },
       required: expect.arrayContaining(["recurrenceRef", "eventType"])
@@ -161,6 +161,33 @@ describe("core tools", () => {
     expect(first.status).toBe("applied");
     expect(second.status).toBe("replayed");
     expect(store.itemEvents.filter((event) => event.eventType === "completed")).toHaveLength(1);
+  });
+
+  it("reopens a completed one-off item", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    await tools.execute("item.create", {
+      userId: "user-1",
+      title: "File expense receipt",
+      kind: "task"
+    });
+    await tools.execute("item.complete", {
+      userId: "user-1",
+      itemRef: "File expense receipt",
+      completedAt: "2026-05-27T15:00:00.000Z"
+    });
+
+    const reopened = await tools.execute("item.uncomplete", {
+      userId: "user-1",
+      itemRef: "File expense receipt"
+    });
+
+    expect(reopened.status).toBe("applied");
+    const item = [...store.items.values()][0];
+    expect(item?.status).toBe("open");
+    expect(item?.completedAt).toBeUndefined();
+    expect(store.itemEvents.filter((event) => event.eventType === "uncompleted")).toHaveLength(1);
   });
 
   it("records a recurrence event and updates next due", async () => {

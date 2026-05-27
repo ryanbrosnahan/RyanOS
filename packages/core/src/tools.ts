@@ -382,6 +382,62 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
   });
 
   registry.register({
+    name: "item.uncomplete",
+    description: "Move a completed one-off item back to open and record an undo event.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "low_confidence",
+      retrySafety: "safe_with_idempotency_key",
+      descriptionForModel: "Use when the user says a completed task should not be counted as done."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      itemRef: z.string().min(1),
+      note: z.string().optional()
+    }),
+    handler: async (input) => {
+      const matches = await store.searchItems(input.userId, input.itemRef, 3);
+      const best = matches[0];
+      if (!best || best.confidence < 0.75) {
+        return {
+          status: "needs_clarification",
+          clarificationPrompt: `Which item should I reopen for "${input.itemRef}"?`
+        };
+      }
+
+      const item = await store.updateItem(best.record.id, {
+        status: "open",
+        completedAt: null
+      });
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: item.id,
+        eventType: "uncompleted",
+        occurredAt: nowIso(),
+        payload: { note: input.note ?? "", matchedBy: best.reason }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.uncomplete",
+        toolName: "item.uncomplete",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: item.id, eventId: event.id }
+      });
+      return {
+        status: "applied",
+        data: { item },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser: `Reopened "${item.title}".`
+      };
+    }
+  });
+
+  registry.register({
     name: "item.snooze",
     description: "Delay an item or reminder until a future time.",
     metadata: {
@@ -526,13 +582,13 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       sideEffect: "state_write",
       confirmation: "low_confidence",
       retrySafety: "safe_with_idempotency_key",
-      descriptionForModel: "Records a recurrence event. Input shape is `{ \"recurrenceRef\": string, \"eventType\": \"completed\" | \"skipped\" | \"missed\" | \"deferred\", \"occurredAt\"?: ISO string }`. For \"I did it yesterday\", use `eventType: \"completed\"`."
+      descriptionForModel: "Records a recurrence event. Input shape is `{ \"recurrenceRef\": string, \"eventType\": \"completed\" | \"uncompleted\" | \"skipped\" | \"missed\" | \"deferred\", \"occurredAt\"?: ISO string }`. For \"I did it yesterday\", use `eventType: \"completed\"`. For undoing a mistaken completion, use `eventType: \"uncompleted\"` with the same day."
     },
     inputSchema: toolEnvelopeSchema.extend({
       userId: userIdSchema,
       recurrenceRef: z.string().min(1),
       occurredAt: z.string().optional(),
-      eventType: z.enum(["completed", "skipped", "missed", "deferred"]),
+      eventType: z.enum(["completed", "uncompleted", "skipped", "missed", "deferred"]),
       note: z.string().optional()
     }),
     handler: async (input) => {

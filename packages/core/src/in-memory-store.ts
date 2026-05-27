@@ -62,10 +62,35 @@ export class InMemoryRyanStore implements RyanStore {
     }
     const updated: Item = {
       ...item,
-      ...patch,
       revision: item.revision + 1,
       updatedAt: nowIso()
     };
+    if (patch.kind !== undefined) updated.kind = patch.kind;
+    if (patch.title !== undefined) updated.title = patch.title;
+    if (patch.body !== undefined) updated.body = patch.body;
+    if (patch.status !== undefined) updated.status = patch.status;
+    if (patch.priority !== undefined) updated.priority = patch.priority;
+    if (patch.estimateMinutes !== undefined) updated.estimateMinutes = patch.estimateMinutes;
+    if (patch.dueAt !== undefined) {
+      if (patch.dueAt === null) delete updated.dueAt;
+      else updated.dueAt = patch.dueAt;
+    }
+    if (patch.startAt !== undefined) {
+      if (patch.startAt === null) delete updated.startAt;
+      else updated.startAt = patch.startAt;
+    }
+    if (patch.snoozedUntil !== undefined) {
+      if (patch.snoozedUntil === null) delete updated.snoozedUntil;
+      else updated.snoozedUntil = patch.snoozedUntil;
+    }
+    if (patch.completedAt !== undefined) {
+      if (patch.completedAt === null) delete updated.completedAt;
+      else updated.completedAt = patch.completedAt;
+    }
+    if (patch.cancelledAt !== undefined) {
+      if (patch.cancelledAt === null) delete updated.cancelledAt;
+      else updated.cancelledAt = patch.cancelledAt;
+    }
     this.items.set(itemId, updated);
     return updated;
   }
@@ -74,12 +99,17 @@ export class InMemoryRyanStore implements RyanStore {
     const statuses = filters.statuses ?? ["open", "active", "waiting"];
     return [...this.items.values()]
       .filter(
-        (item) =>
-          item.userId === filters.userId &&
-          !item.deletedAt &&
-          statuses.includes(item.status)
+        (item) => {
+          if (item.userId !== filters.userId || item.deletedAt) return false;
+          if (statuses.includes(item.status)) return true;
+          if (item.status !== "done" || !item.completedAt || !filters.completedAfter) return false;
+          if (item.completedAt < filters.completedAfter) return false;
+          return filters.completedBefore === undefined || item.completedAt < filters.completedBefore;
+        }
       )
       .sort((a, b) => {
+        if (a.status === "done" && b.status !== "done") return 1;
+        if (a.status !== "done" && b.status === "done") return -1;
         const aDue = a.dueAt ?? "9999-12-31T23:59:59.999Z";
         const bDue = b.dueAt ?? "9999-12-31T23:59:59.999Z";
         if (aDue !== bDue) return aDue.localeCompare(bDue);

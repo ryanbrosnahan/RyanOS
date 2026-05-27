@@ -229,12 +229,18 @@ export class PostgresRyanStore implements RyanStore {
     if (patch.body !== undefined) values.body = patch.body;
     if (patch.status !== undefined) values.status = patch.status;
     if (patch.priority !== undefined) values.priority = patch.priority;
-    if (patch.dueAt !== undefined) values.dueAt = toDate(patch.dueAt);
-    if (patch.startAt !== undefined) values.startAt = toDate(patch.startAt);
-    if (patch.snoozedUntil !== undefined) values.snoozedUntil = toDate(patch.snoozedUntil);
+    if (patch.dueAt !== undefined) values.dueAt = patch.dueAt === null ? null : toDate(patch.dueAt);
+    if (patch.startAt !== undefined) values.startAt = patch.startAt === null ? null : toDate(patch.startAt);
+    if (patch.snoozedUntil !== undefined) {
+      values.snoozedUntil = patch.snoozedUntil === null ? null : toDate(patch.snoozedUntil);
+    }
     if (patch.estimateMinutes !== undefined) values.estimateMinutes = patch.estimateMinutes;
-    if (patch.completedAt !== undefined) values.completedAt = toDate(patch.completedAt);
-    if (patch.cancelledAt !== undefined) values.cancelledAt = toDate(patch.cancelledAt);
+    if (patch.completedAt !== undefined) {
+      values.completedAt = patch.completedAt === null ? null : toDate(patch.completedAt);
+    }
+    if (patch.cancelledAt !== undefined) {
+      values.cancelledAt = patch.cancelledAt === null ? null : toDate(patch.cancelledAt);
+    }
 
     const [row] = await this.db
       .update(schema.items)
@@ -248,19 +254,36 @@ export class PostgresRyanStore implements RyanStore {
   async listItems(filters: ItemListFilters): Promise<Item[]> {
     const resolvedUserId = await this.resolveUserId(filters.userId);
     const statuses = filters.statuses ?? ["open", "active", "waiting"];
-    const conditions = [
-      eq(schema.items.userId, resolvedUserId),
-      isNull(schema.items.deletedAt)
-    ];
-    if (statuses.length > 0) {
-      conditions.push(inArray(schema.items.status, statuses));
-    }
+    const completedWindow =
+      filters.completedAfter === undefined
+        ? undefined
+        : and(
+            eq(schema.items.status, "done"),
+            sql`${schema.items.completedAt} >= ${toDate(filters.completedAfter)}`,
+            filters.completedBefore === undefined
+              ? sql`true`
+              : sql`${schema.items.completedAt} < ${toDate(filters.completedBefore)}`
+          );
+    const statusCondition =
+      completedWindow === undefined
+        ? inArray(schema.items.status, statuses)
+        : or(inArray(schema.items.status, statuses), completedWindow);
 
     const rows = await this.db
       .select()
       .from(schema.items)
-      .where(and(...conditions))
-      .orderBy(asc(schema.items.dueAt), desc(schema.items.createdAt))
+      .where(
+        and(
+          eq(schema.items.userId, resolvedUserId),
+          isNull(schema.items.deletedAt),
+          statusCondition
+        )
+      )
+      .orderBy(
+        sql`case when ${schema.items.status} = 'done' then 1 else 0 end`,
+        asc(schema.items.dueAt),
+        desc(schema.items.createdAt)
+      )
       .limit(Math.min(Math.max(filters.limit ?? 30, 1), 100));
 
     return rows.map(itemFromRow);

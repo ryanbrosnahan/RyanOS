@@ -94,7 +94,12 @@ export type RecurrencePolicy = {
   deletedAt?: ISODateString;
 };
 
-export type RecurrenceEventType = "completed" | "skipped" | "missed" | "deferred";
+export type RecurrenceEventType =
+  | "completed"
+  | "uncompleted"
+  | "skipped"
+  | "missed"
+  | "deferred";
 
 export type RecurrenceEvent = {
   id: UUID;

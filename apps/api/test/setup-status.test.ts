@@ -148,6 +148,7 @@ describe("setup status", () => {
     expect(created.statusCode).toBe(200);
     expect(listed.statusCode).toBe(200);
     expect(listed.json()).toMatchObject({
+      date: expect.any(String),
       items: [
         {
           title: "Review dashboard item list",
@@ -155,5 +156,178 @@ describe("setup status", () => {
         }
       ]
     });
+  });
+
+  it("returns weekly recurrence progress and toggles day completion", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Go to the gym",
+          kind: "habit"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.setPolicy/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          itemRef: "Go to the gym",
+          policy: {
+            type: "target_frequency",
+            targetCount: 5,
+            targetWindowDays: 7,
+            resetFromCompletion: true
+          }
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.recordEvent/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          recurrenceRef: "Go to the gym",
+          eventType: "completed",
+          occurredAt: "2026-05-26T12:00:00.000Z"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.recordEvent/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          recurrenceRef: "Go to the gym",
+          eventType: "completed",
+          occurredAt: "2026-05-27T12:00:00.000Z"
+        }
+      }
+    });
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    const listedBody = listed.json() as {
+      items: Array<{
+        id: string;
+        recurrence: {
+          week: {
+            completedCount: number;
+            targetCount: number;
+            days: Array<{ date: string; status: string }>;
+          };
+        };
+      }>;
+    };
+    const item = listedBody.items[0];
+    expect(item?.recurrence.week.completedCount).toBe(2);
+    expect(item?.recurrence.week.targetCount).toBe(5);
+    expect(item?.recurrence.week.days).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ date: "2026-05-26", status: "completed" }),
+        expect.objectContaining({ date: "2026-05-27", status: "completed" })
+      ])
+    );
+
+    const toggled = await app.inject({
+      method: "POST",
+      url: `/v1/items/${item?.id}/recurrence-days/2026-05-28`,
+      payload: {
+        userId: "local-owner",
+        completed: true,
+        timezone: "UTC"
+      }
+    });
+    expect(toggled.statusCode).toBe(200);
+    expect(toggled.json().item.recurrence.week.completedCount).toBe(3);
+
+    const undone = await app.inject({
+      method: "POST",
+      url: `/v1/items/${item?.id}/recurrence-days/2026-05-28`,
+      payload: {
+        userId: "local-owner",
+        completed: false,
+        timezone: "UTC"
+      }
+    });
+    expect(undone.statusCode).toBe(200);
+    expect(undone.json().item.recurrence.week.completedCount).toBe(2);
+    expect(undone.json().item.recurrence.week.days).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ date: "2026-05-28", status: "uncompleted" })
+      ])
+    );
+    await app.close();
+  });
+
+  it("keeps one-off tasks completed today visible until end of day", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Pay parking ticket",
+          kind: "task"
+        }
+      }
+    });
+    const itemId = created.json().data.item.id;
+
+    const completed = await app.inject({
+      method: "POST",
+      url: `/v1/items/${itemId}/complete`,
+      payload: {
+        userId: "local-owner",
+        completed: true,
+        completedAt: "2026-05-27T16:00:00.000Z",
+        timezone: "UTC"
+      }
+    });
+    expect(completed.statusCode).toBe(200);
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&status=open,active,waiting&includeDoneToday=true&date=2026-05-27&timezone=UTC"
+    });
+    expect(listed.json().items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: itemId,
+          status: "done",
+          completion: expect.objectContaining({ completedToday: true })
+        })
+      ])
+    );
+
+    const reopened = await app.inject({
+      method: "POST",
+      url: `/v1/items/${itemId}/complete`,
+      payload: {
+        userId: "local-owner",
+        completed: false,
+        timezone: "UTC"
+      }
+    });
+    expect(reopened.statusCode).toBe(200);
+    expect(reopened.json().item).toMatchObject({
+      id: itemId,
+      status: "open"
+    });
+    await app.close();
   });
 });

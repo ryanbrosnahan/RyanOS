@@ -24,21 +24,14 @@ export type ItemCreateData = {
 };
 
 export type ItemPatch = Partial<
-  Pick<
-    Item,
-    | "kind"
-    | "title"
-    | "body"
-    | "status"
-    | "priority"
-    | "dueAt"
-    | "startAt"
-    | "snoozedUntil"
-    | "estimateMinutes"
-    | "completedAt"
-    | "cancelledAt"
-  >
->;
+  Pick<Item, "kind" | "title" | "body" | "status" | "priority" | "estimateMinutes">
+> & {
+  dueAt?: string | null;
+  startAt?: string | null;
+  snoozedUntil?: string | null;
+  completedAt?: string | null;
+  cancelledAt?: string | null;
+};
 
 export type SearchMatch<T> = {
   record: T;
@@ -49,6 +42,8 @@ export type SearchMatch<T> = {
 export type ItemListFilters = {
   userId: UUID;
   statuses?: Item["status"][];
+  completedAfter?: string;
+  completedBefore?: string;
   limit?: number;
 };
 

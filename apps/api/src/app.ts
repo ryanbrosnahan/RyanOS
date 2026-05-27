@@ -1,5 +1,12 @@
 import { createAiProviderFromEnv, type AiProviderStatus, type IncomingMessage, type ToolResult } from "@ryanos/ai";
-import { createCoreToolRegistry, InMemoryRyanStore } from "@ryanos/core";
+import {
+  createCoreToolRegistry,
+  InMemoryRyanStore,
+  type Item,
+  type RecurrenceEvent,
+  type RecurrencePolicy,
+  type RecurrenceState
+} from "@ryanos/core";
 import {
   createDb,
   loadSecretVaultFromEnv,
@@ -32,7 +39,33 @@ const itemStatusSchema = z.enum(["open", "active", "waiting", "done", "cancelled
 const listItemsQuerySchema = z.object({
   userId: z.string().default("local-owner"),
   status: z.string().optional(),
+  includeDoneToday: z
+    .preprocess((value) => value === "true" || value === "1" || value === true, z.boolean())
+    .default(false),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(30)
+});
+
+const itemActionParamsSchema = z.object({
+  itemId: z.string().min(1)
+});
+
+const completeItemBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  completed: z.boolean(),
+  completedAt: z.string().optional(),
+  timezone: z.string().default("America/Chicago")
+});
+
+const recurrenceDayParamsSchema = itemActionParamsSchema.extend({
+  dateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+});
+
+const recurrenceDayBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  completed: z.boolean(),
+  timezone: z.string().default("America/Chicago")
 });
 
 const messageSchema = z.object({
@@ -69,6 +102,154 @@ function parseItemStatuses(value: string | undefined) {
   const statuses = csvValues(value);
   if (statuses.length === 0) return undefined;
   return statuses.map((status) => itemStatusSchema.parse(status));
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function parseDateKey(dateKey: string): { year: number; month: number; day: number } {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+  if (!match) throw new Error(`Invalid date key: ${dateKey}`);
+  return {
+    year: Number(match[1]!),
+    month: Number(match[2]!),
+    day: Number(match[3]!)
+  };
+}
+
+function addDaysToDateKey(dateKey: string, days: number): string {
+  const { year, month, day } = parseDateKey(dateKey);
+  const date = new Date(Date.UTC(year, month - 1, day + days));
+  return `${date.getUTCFullYear()}-${padDatePart(date.getUTCMonth() + 1)}-${padDatePart(date.getUTCDate())}`;
+}
+
+function localDateParts(date: Date, timeZone: string): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+} {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+  return {
+    year: value("year"),
+    month: value("month"),
+    day: value("day"),
+    hour: value("hour"),
+    minute: value("minute"),
+    second: value("second")
+  };
+}
+
+function localDateKey(date: Date, timeZone: string): string {
+  const parts = localDateParts(date, timeZone);
+  return `${parts.year}-${padDatePart(parts.month)}-${padDatePart(parts.day)}`;
+}
+
+function localDateTimeToUtcIso(
+  dateKey: string,
+  timeZone: string,
+  hour = 12,
+  minute = 0,
+  second = 0
+): string {
+  const { year, month, day } = parseDateKey(dateKey);
+  const guess = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  const parts = localDateParts(guess, timeZone);
+  const localAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  const intendedAsUtc = Date.UTC(year, month - 1, day, hour, minute, second);
+  return new Date(guess.getTime() - (localAsUtc - intendedAsUtc)).toISOString();
+}
+
+function localDayBounds(dateKey: string, timeZone: string): { start: string; end: string } {
+  return {
+    start: localDateTimeToUtcIso(dateKey, timeZone, 0),
+    end: localDateTimeToUtcIso(addDaysToDateKey(dateKey, 1), timeZone, 0)
+  };
+}
+
+function weekStartDateKey(dateKey: string): string {
+  const { year, month, day } = parseDateKey(dateKey);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const mondayOffset = (date.getUTCDay() + 6) % 7;
+  return addDaysToDateKey(dateKey, -mondayOffset);
+}
+
+function completionTarget(policy: RecurrencePolicy): number | undefined {
+  if (policy.type === "target_frequency") return policy.targetCount;
+  if (policy.type === "completion_based" || policy.type === "minimum_interval") return 1;
+  return undefined;
+}
+
+function recurrenceProgress(
+  policy: RecurrencePolicy,
+  state: RecurrenceState | undefined,
+  events: RecurrenceEvent[],
+  timeZone: string,
+  referenceDateKey: string
+) {
+  const startDate = weekStartDateKey(referenceDateKey);
+  const dateKeys = Array.from({ length: 7 }, (_, index) => addDaysToDateKey(startDate, index));
+  const dateKeySet = new Set(dateKeys);
+  const latestByDay = new Map<string, RecurrenceEvent>();
+  const orderedEvents = [...events].sort((a, b) => {
+    const occurred = a.occurredAt.localeCompare(b.occurredAt);
+    if (occurred !== 0) return occurred;
+    return a.createdAt.localeCompare(b.createdAt);
+  });
+
+  for (const event of orderedEvents) {
+    const eventDateKey = localDateKey(new Date(event.occurredAt), timeZone);
+    if (dateKeySet.has(eventDateKey)) latestByDay.set(eventDateKey, event);
+  }
+
+  const days = dateKeys.map((dateKey) => {
+    const event = latestByDay.get(dateKey);
+    return {
+      date: dateKey,
+      weekday: new Intl.DateTimeFormat("en-US", {
+        timeZone: "UTC",
+        weekday: "short"
+      }).format(new Date(`${dateKey}T12:00:00.000Z`)),
+      status: event?.eventType ?? "none",
+      eventId: event?.id,
+      occurredAt: event?.occurredAt
+    };
+  });
+
+  const completedCount = days.filter((day) => day.status === "completed").length;
+  return {
+    policy: {
+      id: policy.id,
+      type: policy.type,
+      intervalDays: policy.intervalDays,
+      minimumIntervalDays: policy.minimumIntervalDays,
+      targetCount: policy.targetCount,
+      targetWindowDays: policy.targetWindowDays,
+      preferredDays: policy.preferredDays ?? []
+    },
+    state,
+    week: {
+      startDate,
+      endDate: addDaysToDateKey(startDate, 6),
+      days,
+      completedCount,
+      targetCount: completionTarget(policy),
+      targetWindowDays: policy.targetWindowDays ?? 7
+    }
+  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -354,16 +535,102 @@ export function buildApp() {
     };
   });
 
+  async function itemForDashboard(item: Item, timeZone: string, referenceDateKey: string) {
+    const policy = await store.findRecurrencePolicyForItem(item.id);
+    const completion = {
+      completedToday:
+        item.status === "done" &&
+        item.completedAt !== undefined &&
+        item.completedAt >= localDayBounds(referenceDateKey, timeZone).start &&
+        item.completedAt < localDayBounds(referenceDateKey, timeZone).end,
+      completedAt: item.completedAt
+    };
+    if (!policy) {
+      return {
+        ...item,
+        completion
+      };
+    }
+
+    const [events, state] = await Promise.all([
+      store.listRecurrenceEvents(policy.id),
+      store.getRecurrenceState(policy.id)
+    ]);
+    return {
+      ...item,
+      completion,
+      recurrence: recurrenceProgress(policy, state, events, timeZone, referenceDateKey)
+    };
+  }
+
   app.get("/v1/items", async (request) => {
     const query = listItemsQuerySchema.parse(request.query);
+    const referenceDateKey = query.date ?? localDateKey(new Date(), query.timezone);
+    const dayBounds = localDayBounds(referenceDateKey, query.timezone);
     const filters: Parameters<typeof store.listItems>[0] = {
       userId: query.userId,
       limit: query.limit
     };
     const statuses = parseItemStatuses(query.status);
     if (statuses !== undefined) filters.statuses = statuses;
+    if (query.includeDoneToday) {
+      filters.completedAfter = dayBounds.start;
+      filters.completedBefore = dayBounds.end;
+    }
+    const items = await store.listItems(filters);
     return {
-      items: await store.listItems(filters)
+      date: referenceDateKey,
+      timezone: query.timezone,
+      items: await Promise.all(
+        items.map((item) => itemForDashboard(item, query.timezone, referenceDateKey))
+      )
+    };
+  });
+
+  app.post("/v1/items/:itemId/complete", async (request, reply) => {
+    const params = itemActionParamsSchema.parse(request.params);
+    const body = completeItemBodySchema.parse(request.body);
+    const result = await tools.execute(body.completed ? "item.complete" : "item.uncomplete", {
+      userId: body.userId,
+      itemRef: params.itemId,
+      completedAt: body.completed ? body.completedAt ?? nowIso() : undefined
+    });
+    if (result.status === "failed" || result.status === "rejected") {
+      reply.code(400);
+      return { result };
+    }
+    const item = await store.getItem(params.itemId);
+    return {
+      result,
+      item: item ? await itemForDashboard(item, body.timezone, localDateKey(new Date(), body.timezone)) : undefined
+    };
+  });
+
+  app.post("/v1/items/:itemId/recurrence-days/:dateKey", async (request, reply) => {
+    const params = recurrenceDayParamsSchema.parse(request.params);
+    const body = recurrenceDayBodySchema.parse(request.body);
+    const item = await store.getItem(params.itemId);
+    if (!item) {
+      reply.code(404);
+      return {
+        result: {
+          status: "failed",
+          messageForUser: `Item not found: ${params.itemId}`
+        }
+      };
+    }
+    const result = await tools.execute("recurrence.recordEvent", {
+      userId: body.userId,
+      recurrenceRef: params.itemId,
+      eventType: body.completed ? "completed" : "uncompleted",
+      occurredAt: localDateTimeToUtcIso(params.dateKey, body.timezone, 12)
+    });
+    if (result.status === "failed" || result.status === "rejected") {
+      reply.code(400);
+    }
+    return {
+      result,
+      item: await itemForDashboard(item, body.timezone, params.dateKey)
     };
   });
 

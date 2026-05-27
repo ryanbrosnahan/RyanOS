@@ -1,6 +1,29 @@
 import { addDaysIso, nowIso } from "@ryanos/shared";
 import type { RecurrenceEvent, RecurrencePolicy, RecurrenceState } from "./types.js";
 
+function eventDayKey(event: RecurrenceEvent): string {
+  return event.occurredAt.slice(0, 10);
+}
+
+export function effectiveCompletedRecurrenceEvents(events: RecurrenceEvent[]): RecurrenceEvent[] {
+  const byDay = new Map<string, RecurrenceEvent>();
+  const ordered = [...events].sort((a, b) => {
+    const occurred = a.occurredAt.localeCompare(b.occurredAt);
+    if (occurred !== 0) return occurred;
+    return a.createdAt.localeCompare(b.createdAt);
+  });
+
+  for (const event of ordered) {
+    if (event.eventType === "completed") {
+      byDay.set(eventDayKey(event), event);
+    } else if (event.eventType === "uncompleted") {
+      byDay.delete(eventDayKey(event));
+    }
+  }
+
+  return [...byDay.values()].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
+}
+
 export function calculateRecurrenceState(
   policy: RecurrencePolicy,
   events: RecurrenceEvent[],
@@ -8,7 +31,7 @@ export function calculateRecurrenceState(
 ): RecurrenceState {
   const ordered = [...events].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
   const lastEvent = ordered.at(-1);
-  const completed = ordered.filter((event) => event.eventType === "completed");
+  const completed = effectiveCompletedRecurrenceEvents(events);
   const lastCompleted = completed.at(-1);
 
   const baseState: RecurrenceState = {
@@ -54,9 +77,7 @@ export function isBeforeMinimumInterval(
   if (!policy.minimumIntervalDays) {
     return false;
   }
-  const completed = events
-    .filter((event) => event.eventType === "completed")
-    .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
+  const completed = effectiveCompletedRecurrenceEvents(events);
   const lastCompleted = completed.at(-1);
   if (!lastCompleted) {
     return false;
@@ -64,4 +85,3 @@ export function isBeforeMinimumInterval(
   const nextEligibleAt = addDaysIso(lastCompleted.occurredAt, policy.minimumIntervalDays);
   return new Date(candidateAt).getTime() < new Date(nextEligibleAt).getTime();
 }
-

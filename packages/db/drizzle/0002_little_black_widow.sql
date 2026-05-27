@@ -1,0 +1,1 @@
+ALTER TYPE "public"."recurrence_event_type" ADD VALUE 'uncompleted' BEFORE 'skipped';

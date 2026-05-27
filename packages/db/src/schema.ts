@@ -50,6 +50,7 @@ export const recurrenceTypeEnum = pgEnum("recurrence_type", [
 
 export const recurrenceEventTypeEnum = pgEnum("recurrence_event_type", [
   "completed",
+  "uncompleted",
   "skipped",
   "missed",
   "deferred"

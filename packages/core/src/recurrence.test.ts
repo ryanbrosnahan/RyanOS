@@ -41,6 +41,30 @@ describe("calculateRecurrenceState", () => {
     expect(state.nextDueAt).toBe("2026-05-30T15:00:00.000Z");
   });
 
+  it("ignores a completed day after a later uncompleted event for that day", () => {
+    const state = calculateRecurrenceState(
+      basePolicy,
+      [
+        event({
+          id: "event-1",
+          eventType: "completed",
+          occurredAt: "2026-05-23T15:00:00.000Z",
+          createdAt: "2026-05-23T15:00:00.000Z"
+        }),
+        event({
+          id: "event-2",
+          eventType: "uncompleted",
+          occurredAt: "2026-05-23T15:00:00.000Z",
+          createdAt: "2026-05-24T15:00:00.000Z"
+        })
+      ],
+      "2026-05-26T12:00:00.000Z"
+    );
+
+    expect(state.lastCompletedAt).toBeUndefined();
+    expect(state.nextDueAt).toBe("2026-05-26T12:00:00.000Z");
+  });
+
   it("enforces minimum interval before another completion", () => {
     const { intervalDays: _intervalDays, ...policyBase } = basePolicy;
     const policy: RecurrencePolicy = {

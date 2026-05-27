@@ -13,7 +13,7 @@
     "dev:api": "pnpm --filter @ryanos/api dev",
     "dev:web": "pnpm --filter @ryanos/web dev",
     "dev:worker": "pnpm --filter @ryanos/worker dev",
-    "test": "pnpm -r test",
+    "test": "pnpm -r --filter './packages/*' build && pnpm -r test",
     "typecheck": "pnpm -r --filter './packages/*' build && pnpm -r typecheck",
     "db:generate": "pnpm --filter @ryanos/db db:generate",
     "db:migrate": "pnpm --filter @ryanos/db db:migrate",
