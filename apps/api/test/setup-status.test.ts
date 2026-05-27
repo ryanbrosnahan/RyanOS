@@ -158,6 +158,69 @@ describe("setup status", () => {
     });
   });
 
+  it("returns a daily focus plan with suggested items", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "File court proposal",
+          kind: "task",
+          priority: "high",
+          dueAt: "2026-05-27T17:00:00.000Z"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Do laundry",
+          kind: "task",
+          priority: "normal"
+        }
+      }
+    });
+
+    const plan = await app.inject({
+      method: "GET",
+      url: "/v1/daily-plan?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    const saved = await app.inject({
+      method: "POST",
+      url: "/v1/daily-plan",
+      payload: {
+        userId: "local-owner",
+        date: "2026-05-27",
+        timezone: "UTC",
+        response: "File court proposal",
+        successCriteria: ["File court proposal"],
+        selectedItemIds: [plan.json().suggestedItems[0].id]
+      }
+    });
+    await app.close();
+
+    expect(plan.statusCode).toBe(200);
+    expect(plan.json()).toMatchObject({
+      prompt: expect.stringContaining("make today a win"),
+      suggestedItems: expect.arrayContaining([
+        expect.objectContaining({ title: "File court proposal" })
+      ]),
+      dueItems: expect.arrayContaining([
+        expect.objectContaining({ title: "File court proposal" })
+      ])
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().plan.response).toBe("File court proposal");
+    expect(saved.json().plan.suggestionSource).toBe("user");
+  });
+
   it("returns weekly recurrence progress and toggles day completion", async () => {
     vi.stubEnv("DATABASE_URL", "");
 

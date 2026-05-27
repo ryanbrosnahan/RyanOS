@@ -186,3 +186,21 @@ export type Policy = {
   updatedAt: ISODateString;
   deletedAt?: ISODateString;
 };
+
+export type DailyPlan = {
+  id: UUID;
+  userId: UUID;
+  dateKey: string;
+  timezone: string;
+  prompt: string;
+  response?: string;
+  successCriteria: string[];
+  selectedItemIds: UUID[];
+  suggestedItemIds: UUID[];
+  suggestionSource: "ai" | "heuristic" | "user";
+  status: "active" | "archived";
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};

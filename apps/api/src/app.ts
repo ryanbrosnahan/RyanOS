@@ -3,6 +3,7 @@ import {
   createCoreToolRegistry,
   InMemoryRyanStore,
   type Area,
+  type DailyPlan,
   type Item,
   type Project,
   type RecurrenceEvent,
@@ -51,6 +52,24 @@ const listItemsQuerySchema = z.object({
 
 const taxonomyQuerySchema = z.object({
   userId: z.string().default("local-owner")
+});
+
+const dailyPlanPrompt =
+  "Which 1-3 outcomes would make today a win if everything else had to wait?";
+
+const dailyPlanQuerySchema = z.object({
+  userId: z.string().default("local-owner"),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+});
+
+const dailyPlanBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  response: z.string().optional(),
+  successCriteria: z.array(z.string()).default([]),
+  selectedItemIds: z.array(z.string()).default([])
 });
 
 const itemActionParamsSchema = z.object({
@@ -567,7 +586,21 @@ export function buildApp() {
     };
   });
 
-  async function itemForDashboard(item: Item, timeZone: string, referenceDateKey: string) {
+  type DashboardScope = {
+    area: ReturnType<typeof areaForDashboard> | undefined;
+    project: ReturnType<typeof projectForDashboard> | undefined;
+  };
+
+  type DashboardItem = Item & {
+    scope: DashboardScope;
+    completion: {
+      completedToday: boolean;
+      completedAt?: string;
+    };
+    recurrence?: ReturnType<typeof recurrenceProgress>;
+  };
+
+  async function itemForDashboard(item: Item, timeZone: string, referenceDateKey: string): Promise<DashboardItem> {
     const [policy, itemArea, itemProject] = await Promise.all([
       store.findRecurrencePolicyForItem(item.id),
       item.areaId === undefined ? Promise.resolve(undefined) : store.getArea(item.areaId),
@@ -578,36 +611,168 @@ export function buildApp() {
         ? await store.getArea(itemProject.areaId)
         : undefined;
     const area = itemArea ?? projectArea;
-    const scope = {
+    const scope: DashboardScope = {
       area: area === undefined ? undefined : areaForDashboard(area),
       project: itemProject === undefined ? undefined : projectForDashboard(itemProject)
     };
     const dayBounds = localDayBounds(referenceDateKey, timeZone);
-    const completion = {
+    const completion: DashboardItem["completion"] = {
       completedToday:
         item.status === "done" &&
         item.completedAt !== undefined &&
         item.completedAt >= dayBounds.start &&
-        item.completedAt < dayBounds.end,
-      completedAt: item.completedAt
+        item.completedAt < dayBounds.end
     };
-    if (!policy) {
-      return {
-        ...item,
-        scope,
-        completion
-      };
-    }
+    if (item.completedAt !== undefined) completion.completedAt = item.completedAt;
+    const dashboardItem: DashboardItem = {
+      ...item,
+      scope,
+      completion
+    };
+    if (!policy) return dashboardItem;
 
     const [events, state] = await Promise.all([
       store.listRecurrenceEvents(policy.id),
       store.getRecurrenceState(policy.id)
     ]);
     return {
-      ...item,
-      scope,
-      completion,
+      ...dashboardItem,
       recurrence: recurrenceProgress(policy, state, events, timeZone, referenceDateKey)
+    };
+  }
+
+  function itemEffort(item: DashboardItem): "easy" | "medium" | "big" {
+    if (item.estimateMinutes !== undefined && item.estimateMinutes <= 20) return "easy";
+    if (item.estimateMinutes !== undefined && item.estimateMinutes >= 90) return "big";
+    if (item.priority === "urgent" || item.priority === "high") return "big";
+    if (item.kind === "opportunity_action") return "big";
+    if (item.recurrence !== undefined || item.kind === "habit" || item.kind === "reminder") return "easy";
+    return "medium";
+  }
+
+  function itemNeedsAttentionToday(item: DashboardItem, timeZone: string, dateKey: string): boolean {
+    if (item.status === "done") return item.completion.completedToday;
+    if (item.dueAt !== undefined && localDateKey(new Date(item.dueAt), timeZone) <= dateKey) return true;
+    if (item.recurrence === undefined) return false;
+    const today = item.recurrence.week.days.find((day) => day.date === dateKey);
+    if (today?.status === "completed") return false;
+    const target = item.recurrence.week.targetCount;
+    return target !== undefined && item.recurrence.week.completedCount < target;
+  }
+
+  function priorityRank(priority: Item["priority"]): number {
+    switch (priority) {
+      case "urgent":
+        return 4;
+      case "high":
+        return 3;
+      case "normal":
+        return 2;
+      case "low":
+        return 1;
+    }
+  }
+
+  function planScore(item: DashboardItem, timeZone: string, dateKey: string): number {
+    let score = priorityRank(item.priority) * 10;
+    if (itemNeedsAttentionToday(item, timeZone, dateKey)) score += 35;
+    if (item.kind === "opportunity_action") score += 18;
+    if (item.status === "waiting") score -= 10;
+    if (item.recurrence !== undefined && item.recurrence.week.completedCount === 0) score += 8;
+    if (item.dueAt !== undefined) {
+      const dueKey = localDateKey(new Date(item.dueAt), timeZone);
+      if (dueKey < dateKey) score += 20;
+      if (dueKey === dateKey) score += 30;
+    }
+    return score;
+  }
+
+  function suggestedItemIds(items: DashboardItem[], timeZone: string, dateKey: string): string[] {
+    const openItems = items.filter((item) => item.status !== "done");
+    const ranked = [...openItems].sort((a, b) => planScore(b, timeZone, dateKey) - planScore(a, timeZone, dateKey));
+    const selected: DashboardItem[] = [];
+    for (const effort of ["easy", "medium", "big"] as const) {
+      const match = ranked.find(
+        (item) => itemEffort(item) === effort && !selected.some((selectedItem) => selectedItem.id === item.id)
+      );
+      if (match) selected.push(match);
+    }
+    for (const item of ranked) {
+      if (selected.length >= 3) break;
+      if (!selected.some((selectedItem) => selectedItem.id === item.id)) selected.push(item);
+    }
+    return selected.slice(0, 3).map((item) => item.id);
+  }
+
+  function planForDashboard(plan: DailyPlan | undefined, fallbackSuggestedIds: string[]) {
+    if (!plan) {
+      return {
+        response: "",
+        successCriteria: [],
+        selectedItemIds: fallbackSuggestedIds,
+        suggestedItemIds: fallbackSuggestedIds,
+        suggestionSource: "heuristic",
+        status: "active"
+      };
+    }
+    return {
+      id: plan.id,
+      response: plan.response ?? "",
+      successCriteria: plan.successCriteria,
+      selectedItemIds: plan.selectedItemIds.length > 0 ? plan.selectedItemIds : fallbackSuggestedIds,
+      suggestedItemIds: plan.suggestedItemIds.length > 0 ? plan.suggestedItemIds : fallbackSuggestedIds,
+      suggestionSource: plan.suggestionSource,
+      status: plan.status,
+      updatedAt: plan.updatedAt
+    };
+  }
+
+  async function dashboardItemsForDay(userId: string, timeZone: string, dateKey: string): Promise<DashboardItem[]> {
+    const dayBounds = localDayBounds(dateKey, timeZone);
+    const items = await store.listItems({
+      userId,
+      statuses: ["open", "active", "waiting"],
+      completedAfter: dayBounds.start,
+      completedBefore: dayBounds.end,
+      limit: 100
+    });
+    return Promise.all(items.map((item) => itemForDashboard(item, timeZone, dateKey)));
+  }
+
+  async function ensureDailyPlanPromptMessage(userId: string, dateKey: string) {
+    if (!messageStore) return;
+    await messageStore.saveOutgoingMessage({
+      provider: "web",
+      chatId: "dashboard",
+      userId,
+      text: dailyPlanPrompt,
+      providerMessageId: `daily-plan-prompt:${dateKey}`,
+      metadata: {
+        kind: "daily_plan_prompt",
+        dateKey
+      }
+    });
+  }
+
+  async function dailyPlanPayload(input: { userId: string; timezone: string; dateKey: string }) {
+    const [items, plan] = await Promise.all([
+      dashboardItemsForDay(input.userId, input.timezone, input.dateKey),
+      store.getDailyPlan(input.userId, input.dateKey)
+    ]);
+    const fallbackSuggestedIds = suggestedItemIds(items, input.timezone, input.dateKey);
+    const dashboardPlan = planForDashboard(plan, fallbackSuggestedIds);
+    const selectedIdSet = new Set(dashboardPlan.selectedItemIds);
+    const suggestedIdSet = new Set(dashboardPlan.suggestedItemIds);
+    const dueItems = items.filter((item) => itemNeedsAttentionToday(item, input.timezone, input.dateKey));
+    return {
+      date: input.dateKey,
+      timezone: input.timezone,
+      prompt: dailyPlanPrompt,
+      plan: dashboardPlan,
+      suggestedItems: items.filter((item) => suggestedIdSet.has(item.id)),
+      selectedItems: items.filter((item) => selectedIdSet.has(item.id)),
+      dueItems,
+      items
     };
   }
 
@@ -620,6 +785,158 @@ export function buildApp() {
     return {
       areas: areas.map(areaForDashboard),
       projects: projects.map(projectForDashboard)
+    };
+  });
+
+  app.get("/v1/daily-plan", async (request) => {
+    const query = dailyPlanQuerySchema.parse(request.query);
+    const dateKey = query.date ?? localDateKey(new Date(), query.timezone);
+    await ensureDailyPlanPromptMessage(query.userId, dateKey);
+    return dailyPlanPayload({
+      userId: query.userId,
+      timezone: query.timezone,
+      dateKey
+    });
+  });
+
+  app.post("/v1/daily-plan", async (request) => {
+    const body = dailyPlanBodySchema.parse(request.body);
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const existing = await store.getDailyPlan(body.userId, dateKey);
+    const selectedItemIds =
+      body.selectedItemIds.length > 0
+        ? body.selectedItemIds
+        : existing?.selectedItemIds ?? existing?.suggestedItemIds ?? [];
+    const suggestedItemIds =
+      body.selectedItemIds.length > 0
+        ? selectedItemIds
+        : existing?.suggestedItemIds && existing.suggestedItemIds.length > 0
+          ? existing.suggestedItemIds
+          : selectedItemIds;
+    const planInput: Parameters<typeof store.upsertDailyPlan>[0] = {
+      userId: body.userId,
+      dateKey,
+      timezone: body.timezone,
+      prompt: dailyPlanPrompt,
+      successCriteria: body.successCriteria
+        .map((criterion) => criterion.trim())
+        .filter((criterion) => criterion.length > 0),
+      selectedItemIds,
+      suggestedItemIds,
+      suggestionSource: "user",
+      status: "active",
+      metadata: {}
+    };
+    if (body.response !== undefined) planInput.response = body.response;
+    await store.upsertDailyPlan(planInput);
+    return dailyPlanPayload({
+      userId: body.userId,
+      timezone: body.timezone,
+      dateKey
+    });
+  });
+
+  app.post("/v1/daily-plan/suggest", async (request) => {
+    const body = dailyPlanBodySchema.partial({ response: true, successCriteria: true, selectedItemIds: true }).parse(request.body);
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const items = await dashboardItemsForDay(body.userId, body.timezone, dateKey);
+    const recentPlans = await store.listDailyPlans({
+      userId: body.userId,
+      beforeDateKey: dateKey,
+      limit: 5
+    });
+    const status = await ai.getStatus();
+    if (!status.ready) {
+      return {
+        ...(await dailyPlanPayload({ userId: body.userId, timezone: body.timezone, dateKey })),
+        suggestionAttempt: {
+          source: "heuristic",
+          warnings: status.warnings,
+          setupRequired: status.setupRequired,
+          setupActions: status.setupActions
+        }
+      };
+    }
+
+    const dailyPlanTools = tools.list().filter((tool) => tool.name === "daily_plan.upsert");
+    const suggestionMessage: IncomingMessage = {
+      id: `daily-plan-suggestion:${dateKey}`,
+      provider: "system",
+      chatId: "daily-plan",
+      userId: body.userId,
+      text: [
+        "Create today's RyanOS daily focus suggestion.",
+        `Date: ${dateKey}`,
+        `Question: ${dailyPlanPrompt}`,
+        "Select one to three item IDs. Prefer a realistic mix of one easy win, one medium item, and one important larger item when available.",
+        "Use daily_plan.upsert exactly once. Put exact item IDs in selectedItemRefs and suggestedItemRefs.",
+        "Do not answer the daily focus question for the user; leave response and successCriteria unset.",
+        "Do not invent tasks.",
+        "",
+        "Recent daily focus responses:",
+        JSON.stringify(
+          recentPlans.map((plan) => ({
+            dateKey: plan.dateKey,
+            response: plan.response,
+            successCriteria: plan.successCriteria,
+            selectedItemIds: plan.selectedItemIds
+          })),
+          null,
+          2
+        ),
+        "",
+        "Available items:",
+        JSON.stringify(
+          items.map((item) => ({
+            id: item.id,
+            title: item.title,
+            kind: item.kind,
+            status: item.status,
+            priority: item.priority,
+            dueAt: item.dueAt,
+            effort: itemEffort(item),
+            needsAttentionToday: itemNeedsAttentionToday(item, body.timezone, dateKey),
+            scope: item.scope
+          })),
+          null,
+          2
+        )
+      ].join("\n"),
+      timestamp: nowIso(),
+      attachments: [],
+      metadata: {
+        kind: "daily_plan_suggestion",
+        dateKey
+      }
+    };
+    const interpreted = await ai.interpret(suggestionMessage, dailyPlanTools);
+
+    const toolResults: Array<{ name: string; result: ToolResult }> = [];
+    for (const toolCall of interpreted.toolCalls.filter((toolCall) => toolCall.name === "daily_plan.upsert").slice(0, 1)) {
+      const suggestedInput: Record<string, unknown> = {
+        ...(asRecord(toolCall.input) ?? {}),
+        userId: body.userId,
+        dateKey,
+        timezone: body.timezone,
+        prompt: dailyPlanPrompt,
+        suggestionSource: "ai"
+      };
+      delete suggestedInput.response;
+      delete suggestedInput.successCriteria;
+      const result = await tools.execute(
+        toolCall.name,
+        enrichToolInput(suggestedInput, suggestionMessage, toolCall.name)
+      );
+      toolResults.push({ name: toolCall.name, result });
+    }
+
+    return {
+      ...(await dailyPlanPayload({ userId: body.userId, timezone: body.timezone, dateKey })),
+      suggestionAttempt: {
+        source: "ai",
+        interpreted,
+        toolResults
+      }
     };
   });
 

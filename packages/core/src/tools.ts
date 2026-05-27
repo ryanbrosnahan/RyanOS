@@ -3,10 +3,11 @@ import { nowIso } from "@ryanos/shared";
 import { z } from "zod";
 import { calculateRecurrenceState, isBeforeMinimumInterval } from "./recurrence.js";
 import type { ItemCreateData, ItemPatch, RyanStore } from "./store.js";
-import type { JsonObject } from "@ryanos/shared";
+import type { JsonObject, UUID } from "@ryanos/shared";
 import type { Area, Project } from "./types.js";
 
 const userIdSchema = z.string().min(1).default("local-owner");
+const dateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const recurrenceTypeSchema = z.preprocess(
   (value) => (value === "interval" ? "completion_based" : value),
   z.enum(["completion_based", "fixed_schedule", "minimum_interval", "target_frequency", "opportunistic"])
@@ -110,6 +111,25 @@ async function resolveProject(
   };
   if (input.area !== undefined) createData.areaId = input.area.id;
   return store.upsertProject(createData);
+}
+
+async function resolveItemIds(
+  store: RyanStore,
+  userId: string,
+  refs: string[] | undefined
+): Promise<UUID[]> {
+  const ids: UUID[] = [];
+  const seen = new Set<string>();
+  for (const ref of refs ?? []) {
+    const trimmed = ref.trim();
+    if (!trimmed) continue;
+    const matches = await store.searchItems(userId, trimmed, 3);
+    const best = matches[0];
+    if (!best || best.confidence < 0.75 || seen.has(best.record.id)) continue;
+    seen.add(best.record.id);
+    ids.push(best.record.id);
+  }
+  return ids;
 }
 
 type RecurrencePolicyToolInput = {
@@ -322,6 +342,70 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
           data.matches.length === 0
             ? `I did not find an item matching "${input.query}".`
             : `Found ${data.matches.length} candidate item${data.matches.length === 1 ? "" : "s"}.`
+      };
+    }
+  });
+
+  registry.register({
+    name: "daily_plan.upsert",
+    description: "Create or update the user's daily focus plan and selected priority items.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "not_required",
+      retrySafety: "safe_with_idempotency_key",
+      descriptionForModel:
+        "Use to save the answer to the daily focus question and choose one to three items that would make the day successful. Prefer a mix of one easy win, one medium task, and one important larger item when available."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      dateKey: dateKeySchema,
+      timezone: z.string().default("America/Chicago"),
+      prompt: z.string().min(1),
+      response: z.string().optional(),
+      successCriteria: z.array(z.string()).default([]),
+      selectedItemRefs: z.array(z.string()).default([]),
+      suggestedItemRefs: z.array(z.string()).default([]),
+      suggestionSource: z.enum(["ai", "heuristic", "user"]).default("ai"),
+      metadata: z.record(z.string(), z.unknown()).optional()
+    }),
+    handler: async (input) => {
+      const [selectedItemIds, suggestedItemIds] = await Promise.all([
+        resolveItemIds(store, input.userId, input.selectedItemRefs),
+        resolveItemIds(store, input.userId, input.suggestedItemRefs)
+      ]);
+      const planInput: Parameters<RyanStore["upsertDailyPlan"]>[0] = {
+        userId: input.userId,
+        dateKey: input.dateKey,
+        timezone: input.timezone,
+        prompt: input.prompt,
+        successCriteria: input.successCriteria
+          .map((criterion) => criterion.trim())
+          .filter((criterion) => criterion.length > 0),
+        selectedItemIds,
+        suggestedItemIds: suggestedItemIds.length > 0 ? suggestedItemIds : selectedItemIds,
+        suggestionSource: input.suggestionSource,
+        status: "active",
+        metadata: asJsonObject(input.metadata)
+      };
+      if (input.response !== undefined) planInput.response = input.response;
+      const plan = await store.upsertDailyPlan(planInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "daily_plan.upsert",
+        toolName: "daily_plan.upsert",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: {
+          planId: plan.id,
+          selectedItemIds: plan.selectedItemIds,
+          suggestedItemIds: plan.suggestedItemIds
+        }
+      });
+      return {
+        status: "applied",
+        data: { plan },
+        auditId: auditLog.id,
+        messageForUser: "Saved today's focus plan."
       };
     }
   });

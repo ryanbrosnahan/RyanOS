@@ -22,6 +22,13 @@
       "when": 1779906911511,
       "tag": "0002_little_black_widow",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1779914779439,
+      "tag": "0003_chemical_infant_terrible",
+      "breakpoints": true
     }
   ]
 }

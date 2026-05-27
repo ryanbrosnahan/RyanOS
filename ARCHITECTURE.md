@@ -59,6 +59,13 @@ public core.
 - Dashboard content should emphasize the user's live operating state. Avoid
   surfacing implementation scaffolding unless the user is actively working on
   RyanOS itself.
+- The main dashboard is for coaching, daily focus, current commitments, and
+  actionable personal context. Implementation status, setup readiness, core
+  storage details, and integration diagnostics belong on an admin dashboard.
+- Daily planning should start from the question: "Which 1-3 outcomes would make
+  today a win if everything else had to wait?" The dashboard and chat should
+  present the question daily, preserve the user's answer, and keep a small
+  suggested focus set prominent near the top.
 
 ## 3. Deployment Model
 

@@ -2,6 +2,7 @@ import { createId, nowIso } from "@ryanos/shared";
 import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
   AreaUpsertData,
+  DailyPlanUpsertData,
   ItemCreateData,
   ItemListFilters,
   ItemPatch,
@@ -13,6 +14,7 @@ import type {
 import type {
   AuditLog,
   Area,
+  DailyPlan,
   Item,
   ItemEvent,
   Policy,
@@ -35,6 +37,7 @@ export class InMemoryRyanStore implements RyanStore {
   readonly recurrenceEvents: RecurrenceEvent[] = [];
   readonly recurrenceStates = new Map<UUID, RecurrenceState>();
   readonly policies = new Map<UUID, Policy>();
+  readonly dailyPlans = new Map<UUID, DailyPlan>();
   readonly auditLogs: AuditLog[] = [];
 
   async upsertArea(data: AreaUpsertData): Promise<Area> {
@@ -398,6 +401,36 @@ export class InMemoryRyanStore implements RyanStore {
     return stored;
   }
 
+  async getDailyPlan(userId: UUID, dateKey: string): Promise<DailyPlan | undefined> {
+    return [...this.dailyPlans.values()].find(
+      (plan) => plan.userId === userId && plan.dateKey === dateKey && !plan.deletedAt
+    );
+  }
+
+  async listDailyPlans(filters: { userId: UUID; beforeDateKey?: string; limit?: number }): Promise<DailyPlan[]> {
+    return [...this.dailyPlans.values()]
+      .filter((plan) => {
+        if (plan.userId !== filters.userId || plan.deletedAt) return false;
+        return filters.beforeDateKey === undefined || plan.dateKey < filters.beforeDateKey;
+      })
+      .sort((a, b) => b.dateKey.localeCompare(a.dateKey))
+      .slice(0, Math.min(Math.max(filters.limit ?? 7, 1), 30));
+  }
+
+  async upsertDailyPlan(plan: DailyPlanUpsertData): Promise<DailyPlan> {
+    const existing = await this.getDailyPlan(plan.userId, plan.dateKey);
+    const timestamp = nowIso();
+    const stored: DailyPlan = {
+      ...existing,
+      ...plan,
+      id: existing?.id ?? createId("daily_plan"),
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    this.dailyPlans.set(stored.id, stored);
+    return stored;
+  }
+
   async addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog> {
     const created: AuditLog = {
       ...log,
@@ -417,6 +450,7 @@ export class InMemoryRyanStore implements RyanStore {
       recurrencePolicyCount: this.recurrencePolicies.size,
       recurrenceEventCount: this.recurrenceEvents.length,
       policyCount: this.policies.size,
+      dailyPlanCount: this.dailyPlans.size,
       auditLogCount: this.auditLogs.length
     };
   }

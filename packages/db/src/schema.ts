@@ -252,6 +252,25 @@ export const policies = pgTable("policies", {
   ...softDelete
 });
 
+export const dailyPlans = pgTable("daily_plans", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  dateKey: text("date_key").notNull(),
+  timezone: text("timezone").notNull().default("America/Chicago"),
+  prompt: text("prompt").notNull(),
+  response: text("response"),
+  successCriteria: jsonb("success_criteria").notNull().default([]),
+  selectedItemIds: jsonb("selected_item_ids").notNull().default([]),
+  suggestedItemIds: jsonb("suggested_item_ids").notNull().default([]),
+  suggestionSource: text("suggestion_source").notNull().default("heuristic"),
+  status: text("status").notNull().default("active"),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  userDateIdx: uniqueIndex("daily_plans_user_date_idx").on(table.userId, table.dateKey)
+}));
+
 export const providerAccounts = pgTable("provider_accounts", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),

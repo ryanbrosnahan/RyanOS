@@ -2,6 +2,7 @@ import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
   AuditLog,
   Area,
+  DailyPlan,
   Item,
   ItemEvent,
   Policy,
@@ -77,6 +78,11 @@ export type PolicyUpsertData = Omit<
   "id" | "createdAt" | "updatedAt" | "deletedAt"
 >;
 
+export type DailyPlanUpsertData = Omit<
+  DailyPlan,
+  "id" | "createdAt" | "updatedAt" | "deletedAt"
+>;
+
 export interface RyanStore {
   upsertArea(area: AreaUpsertData): Promise<Area>;
   listAreas(userId: UUID): Promise<Area[]>;
@@ -112,6 +118,10 @@ export interface RyanStore {
   getRecurrenceState(policyId: UUID): Promise<RecurrenceState | undefined>;
 
   upsertPolicy(policy: PolicyUpsertData): Promise<Policy>;
+
+  getDailyPlan(userId: UUID, dateKey: string): Promise<DailyPlan | undefined>;
+  listDailyPlans(filters: { userId: UUID; beforeDateKey?: string; limit?: number }): Promise<DailyPlan[]>;
+  upsertDailyPlan(plan: DailyPlanUpsertData): Promise<DailyPlan>;
 
   addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog>;
   snapshot?(): JsonObject | Promise<JsonObject>;

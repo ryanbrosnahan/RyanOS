@@ -3,6 +3,7 @@ import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
   AuditLog,
   Area,
+  DailyPlan,
   Item,
   ItemEvent,
   Policy,
@@ -12,6 +13,7 @@ import type {
   RecurrenceState,
   RyanStore,
   AreaUpsertData,
+  DailyPlanUpsertData,
   ItemCreateData,
   ItemListFilters,
   ItemPatch,
@@ -36,6 +38,10 @@ function cleanQuery(value: string): string {
 
 function asJsonObject(value: unknown): JsonObject {
   return JSON.parse(JSON.stringify(value ?? {})) as JsonObject;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function itemFromRow(row: typeof schema.items.$inferSelect): Item {
@@ -232,6 +238,28 @@ function policyFromRow(row: typeof schema.policies.$inferSelect): Policy {
   const deletedAt = toIso(row.deletedAt);
   if (deletedAt !== undefined) policy.deletedAt = deletedAt;
   return policy;
+}
+
+function dailyPlanFromRow(row: typeof schema.dailyPlans.$inferSelect): DailyPlan {
+  const plan: DailyPlan = {
+    id: row.id,
+    userId: row.userId,
+    dateKey: row.dateKey,
+    timezone: row.timezone,
+    prompt: row.prompt,
+    successCriteria: stringArray(row.successCriteria),
+    selectedItemIds: stringArray(row.selectedItemIds),
+    suggestedItemIds: stringArray(row.suggestedItemIds),
+    suggestionSource: row.suggestionSource as DailyPlan["suggestionSource"],
+    status: row.status as DailyPlan["status"],
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.response !== null) plan.response = row.response;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) plan.deletedAt = deletedAt;
+  return plan;
 }
 
 export class PostgresRyanStore implements RyanStore {
@@ -808,6 +836,75 @@ export class PostgresRyanStore implements RyanStore {
     return policyFromRow(row);
   }
 
+  async getDailyPlan(userId: UUID, dateKey: string): Promise<DailyPlan | undefined> {
+    const resolvedUserId = await this.resolveUserId(userId);
+    const row = await this.db.query.dailyPlans.findFirst({
+      where: and(
+        eq(schema.dailyPlans.userId, resolvedUserId),
+        eq(schema.dailyPlans.dateKey, dateKey),
+        isNull(schema.dailyPlans.deletedAt)
+      )
+    });
+    return row ? dailyPlanFromRow(row) : undefined;
+  }
+
+  async listDailyPlans(filters: { userId: UUID; beforeDateKey?: string; limit?: number }): Promise<DailyPlan[]> {
+    const resolvedUserId = await this.resolveUserId(filters.userId);
+    const conditions = [
+      eq(schema.dailyPlans.userId, resolvedUserId),
+      isNull(schema.dailyPlans.deletedAt)
+    ];
+    if (filters.beforeDateKey !== undefined) {
+      conditions.push(sql`${schema.dailyPlans.dateKey} < ${filters.beforeDateKey}`);
+    }
+    const rows = await this.db
+      .select()
+      .from(schema.dailyPlans)
+      .where(and(...conditions))
+      .orderBy(desc(schema.dailyPlans.dateKey))
+      .limit(Math.min(Math.max(filters.limit ?? 7, 1), 30));
+    return rows.map(dailyPlanFromRow);
+  }
+
+  async upsertDailyPlan(plan: DailyPlanUpsertData): Promise<DailyPlan> {
+    const userId = await this.resolveUserId(plan.userId);
+    const existing = await this.db.query.dailyPlans.findFirst({
+      where: and(
+        eq(schema.dailyPlans.userId, userId),
+        eq(schema.dailyPlans.dateKey, plan.dateKey),
+        isNull(schema.dailyPlans.deletedAt)
+      )
+    });
+    const values: typeof schema.dailyPlans.$inferInsert = {
+      userId,
+      dateKey: plan.dateKey,
+      timezone: plan.timezone,
+      prompt: plan.prompt,
+      successCriteria: plan.successCriteria,
+      selectedItemIds: plan.selectedItemIds,
+      suggestedItemIds: plan.suggestedItemIds,
+      suggestionSource: plan.suggestionSource,
+      status: plan.status,
+      metadata: plan.metadata,
+      updatedAt: new Date()
+    };
+    if (plan.response !== undefined) values.response = plan.response;
+
+    if (existing) {
+      const [row] = await this.db
+        .update(schema.dailyPlans)
+        .set(values)
+        .where(eq(schema.dailyPlans.id, existing.id))
+        .returning();
+      if (!row) throw new Error(`Daily plan not found: ${existing.id}`);
+      return dailyPlanFromRow(row);
+    }
+
+    const [row] = await this.db.insert(schema.dailyPlans).values(values).returning();
+    if (!row) throw new Error("Failed to upsert daily plan");
+    return dailyPlanFromRow(row);
+  }
+
   async addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog> {
     const userId = await this.resolveUserId(log.userId);
     const values: typeof schema.auditLogs.$inferInsert = {
@@ -838,6 +935,7 @@ export class PostgresRyanStore implements RyanStore {
       .select({ value: count() })
       .from(schema.recurrenceEvents);
     const [auditLogCount] = await this.db.select({ value: count() }).from(schema.auditLogs);
+    const [dailyPlanCount] = await this.db.select({ value: count() }).from(schema.dailyPlans);
     const [sessionCount] = await this.db.select({ value: count() }).from(schema.sessions);
     const [messageCount] = await this.db.select({ value: count() }).from(schema.messages);
     const [policyCount] = await this.db.select({ value: count() }).from(schema.policies);
@@ -849,6 +947,7 @@ export class PostgresRyanStore implements RyanStore {
       recurrencePolicyCount: recurrencePolicyCount?.value ?? 0,
       recurrenceEventCount: recurrenceEventCount?.value ?? 0,
       auditLogCount: auditLogCount?.value ?? 0,
+      dailyPlanCount: dailyPlanCount?.value ?? 0,
       sessionCount: sessionCount?.value ?? 0,
       messageCount: messageCount?.value ?? 0,
       policyCount: policyCount?.value ?? 0

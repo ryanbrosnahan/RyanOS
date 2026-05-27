@@ -154,6 +154,44 @@ describe("core tools", () => {
     expect(gym?.areaId).toBe(health?.id);
   });
 
+  it("stores a daily focus plan with selected item refs", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Send court RFP follow-up",
+      kind: "task",
+      priority: "high"
+    });
+    await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Do laundry",
+      kind: "task",
+      priority: "normal"
+    });
+
+    const planned = await tools.execute("daily_plan.upsert", {
+      userId: "user-1",
+      dateKey: "2026-05-27",
+      timezone: "America/Chicago",
+      prompt: "Which outcomes would make today a win?",
+      response: "Send the follow-up\nDo laundry",
+      successCriteria: ["Send the follow-up", "Do laundry"],
+      selectedItemRefs: ["Send court RFP follow-up", "Do laundry"],
+      suggestedItemRefs: ["Send court RFP follow-up"],
+      suggestionSource: "ai"
+    });
+
+    expect(planned.status).toBe("applied");
+    const plan = await store.getDailyPlan("user-1", "2026-05-27");
+    expect(plan?.response).toContain("Send the follow-up");
+    expect(plan?.successCriteria).toEqual(["Send the follow-up", "Do laundry"]);
+    expect(plan?.selectedItemIds).toHaveLength(2);
+    expect(plan?.suggestedItemIds).toHaveLength(1);
+    expect(plan?.suggestionSource).toBe("ai");
+  });
+
   it("lists active items in due-date order", async () => {
     const store = new InMemoryRyanStore();
     await store.createItem({
