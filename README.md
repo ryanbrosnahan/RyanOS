@@ -42,6 +42,7 @@ like `filemytro` and `NoxJury`.
 3. Dashboard: `http://localhost:3100`
 4. API health: `http://localhost:4100/health`
 5. Setup status: `http://localhost:4100/v1/setup/status`
+6. Admin diagnostics: `http://localhost:3100/admin`
 
 The Compose setup binds host ports to `127.0.0.1`, keeps Postgres on a
 non-default host port by default, mounts source into containers, and stores root
@@ -114,6 +115,11 @@ RYANOS_CODEX_BRIDGE_HOST=0.0.0.0 RYANOS_CODEX_BRIDGE_TOKEN=<local token> pnpm co
 The Docker API uses `RYANOS_CODEX_BRIDGE_URL` and
 `RYANOS_CODEX_BRIDGE_TOKEN` from `.env`. Keep the bridge local-only; do not
 expose it publicly.
+
+Use the Admin page's AI smoke test to verify that the bridge can complete a
+structured no-tool interpretation, not just report that the CLI is logged in.
+The same page exposes the daily coach prompt trigger and attention-scoring
+debug view.
 
 While Docker services are running, treat dependencies as Docker-owned. To switch
 back to direct host development, stop the services and run:

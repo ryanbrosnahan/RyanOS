@@ -48,7 +48,7 @@ export type ItemCreateData = {
 };
 
 export type ItemPatch = Partial<
-  Pick<Item, "kind" | "title" | "body" | "status" | "priority" | "estimateMinutes">
+  Pick<Item, "kind" | "title" | "body" | "status" | "priority" | "estimateMinutes" | "metadata">
 > & {
   areaId?: UUID | null;
   projectId?: UUID | null;

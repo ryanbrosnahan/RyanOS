@@ -527,6 +527,7 @@ export class PostgresRyanStore implements RyanStore {
     if (patch.body !== undefined) values.body = patch.body;
     if (patch.status !== undefined) values.status = patch.status;
     if (patch.priority !== undefined) values.priority = patch.priority;
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
     if (patch.areaId !== undefined) values.areaId = patch.areaId;
     if (patch.projectId !== undefined) values.projectId = patch.projectId;
     if (patch.dueAt !== undefined) values.dueAt = patch.dueAt === null ? null : toDate(patch.dueAt);

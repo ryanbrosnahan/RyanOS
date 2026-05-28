@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { InMemoryRyanStore } from "./in-memory-store.js";
 import { createCoreToolRegistry } from "./tools.js";
 
@@ -78,6 +78,65 @@ describe("core tools", () => {
     expect(completed.status).toBe("applied");
     expect([...store.items.values()][0]?.status).toBe("done");
     expect(store.auditLogs.length).toBe(2);
+  });
+
+  it("defaults one-off tasks to a two-week due date", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-28T14:00:00.000Z"));
+    try {
+      const store = new InMemoryRyanStore();
+      const tools = createCoreToolRegistry(store);
+
+      const created = await tools.execute("item.create", {
+        userId: "user-1",
+        title: "Schedule dentist",
+        kind: "task"
+      });
+
+      expect(created.status).toBe("applied");
+      const item = [...store.items.values()][0];
+      expect(item?.dueAt).toBe("2026-06-11T14:00:00.000Z");
+      expect(item?.metadata).toMatchObject({
+        defaultDueAt: true,
+        defaultDueDays: 14
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears a default one-off due date when an item becomes recurring", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-28T14:00:00.000Z"));
+    try {
+      const store = new InMemoryRyanStore();
+      const tools = createCoreToolRegistry(store);
+
+      await tools.execute("item.create", {
+        userId: "user-1",
+        title: "Change sheets",
+        kind: "task"
+      });
+      const recurrent = await tools.execute("recurrence.setPolicy", {
+        userId: "user-1",
+        itemRef: "Change sheets",
+        policy: {
+          type: "completion_based",
+          intervalDays: 7,
+          resetFromCompletion: true
+        }
+      });
+
+      expect(recurrent.status).toBe("applied");
+      const item = [...store.items.values()][0];
+      expect(item?.dueAt).toBeUndefined();
+      expect(item?.metadata).toMatchObject({
+        defaultDueAt: false,
+        defaultDueClearedForRecurrenceAt: "2026-05-28T14:00:00.000Z"
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("searches and updates an item through typed tool calls", async () => {

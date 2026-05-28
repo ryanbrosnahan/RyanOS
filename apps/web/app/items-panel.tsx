@@ -8,6 +8,7 @@ import {
   Circle,
   ClipboardList,
   Code2,
+  CalendarDays,
   Folder,
   FolderKanban,
   Gauge,
@@ -139,6 +140,15 @@ function formatDate(value: string | undefined): string | undefined {
     month: "short",
     day: "numeric"
   }).format(new Date(value));
+}
+
+function dateInputValue(value: string | undefined): string {
+  if (!value) return "";
+  return value.slice(0, 10);
+}
+
+function dateInputToIso(value: string): string {
+  return new Date(`${value}T12:00:00`).toISOString();
 }
 
 function scopeTone(color: string | undefined, variant: "area" | "project"): string {
@@ -402,6 +412,37 @@ export function ItemsPanel() {
     }
   }
 
+  async function updateDueDate(item: Item, dueDate: string) {
+    if (!dueDate) return;
+    const key = `${item.id}:due`;
+    setPendingKey(key);
+    setError(null);
+    try {
+      const response = await fetch(`${apiUrl}/v1/tools/item.update/invoke`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          input: {
+            userId: "local-owner",
+            itemRef: item.id,
+            patch: {
+              dueAt: dateInputToIso(dueDate)
+            }
+          }
+        })
+      });
+      const payload = (await response.json()) as ToolResultResponse;
+      if (!response.ok) throw new Error(updateErrorMessage(payload, `Due date update returned ${response.status}`));
+      await loadDashboard({ background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingKey(null);
+    }
+  }
+
   useEffect(() => {
     void loadDashboard();
     const interval = window.setInterval(() => {
@@ -552,9 +593,13 @@ export function ItemsPanel() {
                           className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900 ${
                             editingScope ? "bg-stone-100 text-stone-900" : ""
                           }`}
-                          aria-label={`Edit area and project for ${item.title}`}
+                          aria-label={
+                            hasRecurrence
+                              ? `Edit area and project for ${item.title}`
+                              : `Edit area, project, and due date for ${item.title}`
+                          }
                           aria-pressed={editingScope}
-                          title="Edit area and project"
+                          title={hasRecurrence ? "Edit area and project" : "Edit area, project, and due date"}
                         >
                           <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
                         </button>
@@ -637,6 +682,28 @@ export function ItemsPanel() {
                               </option>
                             ))}
                           </select>
+
+                          {!hasRecurrence ? (
+                            <>
+                              <label className="sr-only" htmlFor={`due-${item.id}`}>
+                                Due date for {item.title}
+                              </label>
+                              <span className="relative sm:col-span-2">
+                                <CalendarDays
+                                  className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-stone-500"
+                                  aria-hidden="true"
+                                />
+                                <input
+                                  id={`due-${item.id}`}
+                                  type="date"
+                                  defaultValue={dateInputValue(item.dueAt)}
+                                  disabled={pendingKey === `${item.id}:due`}
+                                  onChange={(event) => void updateDueDate(item, event.target.value)}
+                                  className="h-8 w-full min-w-0 rounded-md border border-stone-300 bg-white pl-8 pr-2 text-xs text-stone-800 outline-none focus:border-sky-700 focus:ring-2 focus:ring-sky-100 disabled:cursor-wait disabled:opacity-60"
+                                />
+                              </span>
+                            </>
+                          ) : null}
                         </div>
                       ) : null}
                     </div>

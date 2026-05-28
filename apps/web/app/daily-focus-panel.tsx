@@ -14,6 +14,8 @@ type FocusItem = {
   title: string;
   status: string;
   priority: string;
+  priorityScore: number;
+  prioritySignals: string[];
   dueAt?: string;
   scope?: {
     area?: ScopeLabel;
@@ -73,6 +75,13 @@ function itemMeta(item: FocusItem): string {
 function focusStatus(item: FocusItem): string {
   if (item.completion?.completedToday) return "Done";
   return formatDue(item.dueAt) ?? (item.status === "waiting" ? "Waiting" : "Open");
+}
+
+function candidateTone(item: FocusItem, selected: boolean): string {
+  if (selected) return "bg-sky-100 text-sky-950 ring-sky-300";
+  if (item.priorityScore >= 60) return "bg-amber-50 text-amber-950 ring-amber-200 hover:bg-amber-100";
+  if (item.priorityScore >= 30) return "bg-sky-50 text-sky-950 ring-sky-200 hover:bg-sky-100";
+  return "bg-white text-stone-700 ring-stone-200 hover:bg-stone-50";
 }
 
 export function DailyFocusPanel() {
@@ -225,12 +234,22 @@ export function DailyFocusPanel() {
 
   const candidateItems = useMemo(() => {
     if (!payload) return [];
-    const ids = new Set([
-      ...selectedItemIds,
-      ...payload.plan.suggestedItemIds,
-      ...payload.dueItems.map((item) => item.id)
-    ]);
-    return payload.items.filter((item) => ids.has(item.id)).slice(0, 8);
+    const ids = new Set<string>();
+    const candidates: FocusItem[] = [];
+    const include = (item: FocusItem | undefined) => {
+      if (!item || ids.has(item.id)) return;
+      ids.add(item.id);
+      candidates.push(item);
+    };
+    const byId = new Map(payload.items.map((item) => [item.id, item]));
+    for (const itemId of selectedItemIds) include(byId.get(itemId));
+    for (const itemId of payload.plan.suggestedItemIds) include(byId.get(itemId));
+    for (const item of payload.dueItems) include(byId.get(item.id));
+    for (const item of payload.items) {
+      if (item.status !== "done") include(item);
+      if (candidates.length >= 12) break;
+    }
+    return candidates;
   }, [payload, selectedItemIds]);
 
   const remainingDueItems = useMemo(() => {
@@ -375,13 +394,11 @@ export function DailyFocusPanel() {
                     type="button"
                     onClick={() => toggleItem(item.id)}
                     disabled={savingSelection}
-                    className={`rounded-md px-2.5 py-1 text-xs font-medium ring-1 transition disabled:cursor-wait disabled:opacity-70 ${
-                      selected
-                        ? "bg-sky-100 text-sky-900 ring-sky-200"
-                        : "bg-white text-stone-700 ring-stone-200 hover:bg-stone-50"
-                    }`}
+                    className={`inline-flex max-w-full items-center gap-2 rounded-md px-2.5 py-1 text-xs font-medium ring-1 transition disabled:cursor-wait disabled:opacity-70 ${candidateTone(item, selected)}`}
+                    title={`Priority score ${item.priorityScore}: ${item.prioritySignals.join(", ")}`}
                   >
-                    {item.title}
+                    <span className="truncate">{item.title}</span>
+                    <span className="shrink-0 text-[11px] opacity-75">{focusStatus(item)}</span>
                   </button>
                 );
               })}

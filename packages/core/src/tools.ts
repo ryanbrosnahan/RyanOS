@@ -1,5 +1,5 @@
 import { ToolRegistry, toolEnvelopeSchema } from "@ryanos/ai";
-import { nowIso } from "@ryanos/shared";
+import { addDaysIso, nowIso } from "@ryanos/shared";
 import { z } from "zod";
 import { calculateRecurrenceState, isBeforeMinimumInterval } from "./recurrence.js";
 import type { ItemCreateData, ItemPatch, RyanStore } from "./store.js";
@@ -15,6 +15,15 @@ const recurrenceTypeSchema = z.preprocess(
 
 function asJsonObject(value: unknown): JsonObject {
   return JSON.parse(JSON.stringify(value ?? {})) as JsonObject;
+}
+
+function defaultDueAtForOneOff(kind: ItemCreateData["kind"], now: string): string | undefined {
+  if (kind === "habit" || kind === "note") return undefined;
+  return addDaysIso(now, 14);
+}
+
+function isDefaultDueMetadata(metadata: JsonObject): boolean {
+  return metadata.defaultDueAt === true;
 }
 
 function cleanLabel(value: string): string {
@@ -449,15 +458,26 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
         title: input.title,
         priority: input.priority
       };
+      const metadata: Record<string, unknown> = {};
       if (area !== undefined) createData.areaId = area.id;
       if (project !== undefined) {
         createData.projectId = project.id;
         if (area === undefined && project.areaId !== undefined) createData.areaId = project.areaId;
       }
-      if (input.dueAt !== undefined) createData.dueAt = input.dueAt;
+      if (input.dueAt !== undefined) {
+        createData.dueAt = input.dueAt;
+      } else {
+        const defaultDueAt = defaultDueAtForOneOff(input.kind, nowIso());
+        if (defaultDueAt !== undefined) {
+          createData.dueAt = defaultDueAt;
+          metadata.defaultDueAt = true;
+          metadata.defaultDueDays = 14;
+        }
+      }
       if (input.startAt !== undefined) createData.startAt = input.startAt;
       if (input.estimateMinutes !== undefined) createData.estimateMinutes = input.estimateMinutes;
       if (input.body !== undefined) createData.body = input.body;
+      if (Object.keys(metadata).length > 0) createData.metadata = asJsonObject(metadata);
 
       const item = await store.createItem(createData);
       const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
@@ -975,6 +995,17 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       if (input.policy.preferredDays !== undefined) policyInput.preferredDays = input.policy.preferredDays;
       if (input.policy.preferredTime !== undefined) policyInput.preferredTime = input.policy.preferredTime;
       const policy = await store.upsertRecurrencePolicy(policyInput);
+      let item = best.record;
+      if (isDefaultDueMetadata(best.record.metadata)) {
+        item = await store.updateItem(best.record.id, {
+          dueAt: null,
+          metadata: asJsonObject({
+            ...best.record.metadata,
+            defaultDueAt: false,
+            defaultDueClearedForRecurrenceAt: nowIso()
+          })
+        });
+      }
       const events = await store.listRecurrenceEvents(policy.id);
       const state = calculateRecurrenceState(policy, events);
       await store.updateRecurrenceState(state);
@@ -990,7 +1021,7 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
         status: "applied",
         data: { policy, recurrenceState: state },
         auditId: auditLog.id,
-        messageForUser: `Updated recurrence for "${best.record.title}".`
+        messageForUser: `Updated recurrence for "${item.title}".`
       };
     }
   });

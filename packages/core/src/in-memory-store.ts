@@ -221,6 +221,7 @@ export class InMemoryRyanStore implements RyanStore {
     if (patch.body !== undefined) updated.body = patch.body;
     if (patch.status !== undefined) updated.status = patch.status;
     if (patch.priority !== undefined) updated.priority = patch.priority;
+    if (patch.metadata !== undefined) updated.metadata = patch.metadata;
     if (patch.estimateMinutes !== undefined) updated.estimateMinutes = patch.estimateMinutes;
     if (patch.areaId !== undefined) {
       if (patch.areaId === null) delete updated.areaId;

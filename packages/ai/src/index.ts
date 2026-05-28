@@ -395,6 +395,15 @@ function setupMessage(status: AiProviderStatus): string {
     : `${firstAction.title}.`;
 }
 
+function conciseBridgeError(value: string | undefined, fallback = "unknown error"): string {
+  const normalized = (value ?? fallback).replace(/\s+/g, " ").trim();
+  if (normalized.length === 0) return fallback;
+  const maxLength = 900;
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength - 1)}...`
+    : normalized;
+}
+
 export class CodexLoginAiProvider implements AiProvider {
   readonly name = "codex-login";
   readonly mode = "codex-login";
@@ -524,9 +533,13 @@ export class CodexLoginAiProvider implements AiProvider {
 
       if (!result.ok) {
         return {
-          text: `Codex bridge failed: ${result.stderr || result.message || "unknown error"}`,
+          text: "Codex bridge failed before returning structured intent.",
           toolCalls: [],
-          warnings: ["Codex bridge command returned a non-zero exit status."]
+          warnings: [
+            `Codex bridge command returned a non-zero exit status: ${conciseBridgeError(
+              result.stderr || result.message
+            )}`
+          ]
         };
       }
 
@@ -638,10 +651,11 @@ export class CodexLoginBridgeAiProvider implements AiProvider {
       }
       return normalizeAiProviderResult(codexBridgeOutputSchema.parse(await response.json()));
     } catch (err) {
+      const warning = conciseBridgeError(err instanceof Error ? err.message : String(err));
       return {
         text: "Codex bridge failed before returning structured intent.",
         toolCalls: [],
-        warnings: [err instanceof Error ? err.message : String(err)]
+        warnings: [warning]
       };
     }
   }

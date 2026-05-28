@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ScriptedAiProvider } from "@ryanos/ai";
 import { buildApp } from "../src/app.js";
 
 describe("setup status", () => {
@@ -122,6 +123,122 @@ describe("setup status", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ messages: [] });
+  });
+
+  it("runs an AI smoke probe without exposing tool execution", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp({
+      ai: new ScriptedAiProvider([
+        {
+          matchText:
+            "Setup check only: reply that the Codex bridge is working. Do not create tasks or use tools.",
+          result: {
+            text: "The Codex bridge is working.",
+            toolCalls: []
+          }
+        }
+      ])
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/ai/smoke",
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      ok: true,
+      interpreted: {
+        text: "The Codex bridge is working.",
+        toolCalls: []
+      }
+    });
+  });
+
+  it("uses the AI provider path to create recurrence state from a natural language message", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const text = "I want to change my bed sheets once a week. I changed them yesterday.";
+
+    const app = buildApp({
+      ai: new ScriptedAiProvider([
+        {
+          matchText: text,
+          result: {
+            text: "Recorded your weekly bed sheet habit.",
+            toolCalls: [
+              {
+                name: "item.create",
+                input: {
+                  title: "Change bed sheets",
+                  kind: "habit",
+                  areaRef: "Home"
+                }
+              },
+              {
+                name: "recurrence.setPolicy",
+                input: {
+                  itemRef: "Change bed sheets",
+                  policy: {
+                    type: "completion_based",
+                    intervalDays: 7,
+                    resetFromCompletion: true
+                  }
+                }
+              },
+              {
+                name: "recurrence.recordEvent",
+                input: {
+                  recurrenceRef: "Change bed sheets",
+                  eventType: "completed",
+                  occurredAt: "2026-05-26T12:00:00.000Z"
+                }
+              }
+            ]
+          }
+        }
+      ])
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/messages",
+      payload: {
+        provider: "web",
+        chatId: "dashboard",
+        userId: "local-owner",
+        text,
+        timestamp: "2026-05-27T14:00:00.000Z"
+      }
+    });
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-05-27&timezone=UTC&includeHidden=true"
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().toolResults.map((result: { result: { status: string } }) => result.result.status)).toEqual([
+      "applied",
+      "applied",
+      "applied"
+    ]);
+    expect(listed.json().items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: "Change bed sheets",
+          hiddenUntil: "2026-06-01",
+          recurrence: expect.objectContaining({
+            state: expect.objectContaining({
+              lastCompletedAt: "2026-05-26T12:00:00.000Z",
+              nextDueAt: "2026-06-02T12:00:00.000Z"
+            })
+          })
+        })
+      ])
+    );
   });
 
   it("lists dashboard items from the active store", async () => {

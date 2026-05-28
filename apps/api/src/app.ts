@@ -1,4 +1,10 @@
-import { createAiProviderFromEnv, type AiProviderStatus, type IncomingMessage, type ToolResult } from "@ryanos/ai";
+import {
+  createAiProviderFromEnv,
+  type AiProvider,
+  type AiProviderStatus,
+  type IncomingMessage,
+  type ToolResult
+} from "@ryanos/ai";
 import {
   createCoreToolRegistry,
   InMemoryRyanStore,
@@ -8,7 +14,8 @@ import {
   type Project,
   type RecurrenceEvent,
   type RecurrencePolicy,
-  type RecurrenceState
+  type RecurrenceState,
+  type RyanStore
 } from "@ryanos/core";
 import {
   createDb,
@@ -72,6 +79,21 @@ const dailyPlanBodySchema = z.object({
   response: z.string().optional(),
   successCriteria: z.array(z.string()).default([]),
   selectedItemIds: z.array(z.string()).default([])
+});
+
+const dailyPlanPromptBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  sendTelegram: z.boolean().default(false),
+  telegramChatId: z.string().optional()
+});
+
+const aiSmokeBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  text: z
+    .string()
+    .default("Setup check only: reply that the Codex bridge is working. Do not create tasks or use tools.")
 });
 
 const itemActionParamsSchema = z.object({
@@ -318,7 +340,12 @@ function projectForDashboard(project: Project) {
   };
 }
 
-function enrichToolInput(input: unknown, message: IncomingMessage, toolName: string): unknown {
+function enrichToolInput(
+  input: unknown,
+  message: IncomingMessage,
+  toolName: string,
+  callIndex = 0
+): unknown {
   const record = asRecord(input);
   if (!record) return input;
   const enriched: Record<string, unknown> = {
@@ -332,7 +359,7 @@ function enrichToolInput(input: unknown, message: IncomingMessage, toolName: str
     enriched.userId = message.userId;
   }
   if (typeof enriched.idempotencyKey !== "string") {
-    enriched.idempotencyKey = `${message.provider}:${message.chatId}:${message.id}:${toolName}`;
+    enriched.idempotencyKey = `${message.provider}:${message.chatId}:${message.id}:${toolName}:${callIndex}`;
   }
   return enriched;
 }
@@ -526,18 +553,62 @@ function aiSetupStatus(status: AiProviderStatus): SetupStatus {
   };
 }
 
-export function buildApp() {
+export function buildApp(options: { ai?: AiProvider; store?: RyanStore } = {}) {
   const app = Fastify({
     logger: true
   });
   const corsOrigins = corsOriginsFromEnv();
   const database = process.env.DATABASE_URL ? createDb() : undefined;
-  const store = database
+  const store = options.store ?? (database
     ? new PostgresRyanStore(database.db)
-    : new InMemoryRyanStore();
+    : new InMemoryRyanStore());
   const messageStore = database ? new PostgresMessageStore(database.db) : undefined;
   const tools = createCoreToolRegistry(store);
-  const ai = createAiProviderFromEnv();
+  const ai = options.ai ?? createAiProviderFromEnv();
+
+  async function runAiSmoke(input: { userId: string; text: string }) {
+    const status = await ai.getStatus();
+    const startedAt = Date.now();
+    if (!status.ready || ai.name === "none") {
+      const firstAction = status.setupActions[0];
+      const firstInstruction = firstAction?.instructions[0];
+      return {
+        ok: false,
+        status,
+        interpreted: {
+          text: firstAction
+            ? `${firstAction.title}${firstInstruction ? `: ${firstInstruction}` : "."}`
+            : "AI interpretation is not configured.",
+          toolCalls: []
+        },
+        latencyMs: 0
+      };
+    }
+
+    const message: IncomingMessage = {
+      id: `ai-smoke:${crypto.randomUUID()}`,
+      provider: "system",
+      chatId: "ai-smoke",
+      userId: input.userId,
+      text: input.text,
+      timestamp: nowIso(),
+      attachments: [],
+      metadata: {
+        kind: "ai_smoke"
+      }
+    };
+    const interpreted = await ai.interpret(message, []);
+    return {
+      ok:
+        !interpreted.setupRequired &&
+        interpreted.toolCalls.length === 0 &&
+        interpreted.text !== undefined &&
+        interpreted.text.trim().length > 0,
+      status,
+      interpreted,
+      latencyMs: Date.now() - startedAt
+    };
+  }
 
   if (database) {
     app.addHook("onClose", async () => {
@@ -580,6 +651,13 @@ export function buildApp() {
   }));
 
   app.get("/v1/ai/status", async () => ai.getStatus());
+
+  app.post("/v1/ai/smoke", async (request, reply) => {
+    const body = aiSmokeBodySchema.parse(request.body ?? {});
+    const result = await runAiSmoke(body);
+    if (!result.ok) reply.code(503);
+    return result;
+  });
 
   app.get("/v1/setup/status", async () => {
     const aiStatus = await ai.getStatus();
@@ -677,6 +755,9 @@ export function buildApp() {
         signals.push("due tomorrow");
       } else if (daysUntilDue <= 7) {
         score += Math.max(2, 10 - daysUntilDue);
+        signals.push(`due in ${daysUntilDue}d`);
+      } else if (daysUntilDue <= 14) {
+        score += Math.max(1, 8 - Math.ceil(daysUntilDue / 2));
         signals.push(`due in ${daysUntilDue}d`);
       }
     }
@@ -894,19 +975,99 @@ export function buildApp() {
     return dashboardItems.filter(itemVisibleByDefault).sort(compareDashboardItems);
   }
 
-  async function ensureDailyPlanPromptMessage(userId: string, dateKey: string) {
-    if (!messageStore) return;
-    await messageStore.saveOutgoingMessage({
-      provider: "web",
-      chatId: "dashboard",
-      userId,
+  async function ensureDailyPlanPromptMessage(input: {
+    userId: string;
+    dateKey: string;
+    provider?: "web" | "telegram";
+    chatId?: string;
+  }): Promise<StoredMessage | undefined> {
+    if (!messageStore) return undefined;
+    const provider = input.provider ?? "web";
+    const chatId = input.chatId ?? "dashboard";
+    return messageStore.saveOutgoingMessage({
+      provider,
+      chatId,
+      userId: input.userId,
       text: dailyPlanPrompt,
-      providerMessageId: `daily-plan-prompt:${dateKey}`,
+      providerMessageId:
+        provider === "web" && chatId === "dashboard"
+          ? `daily-plan-prompt:${input.dateKey}`
+          : `daily-plan-prompt:${provider}:${chatId}:${input.dateKey}`,
       metadata: {
         kind: "daily_plan_prompt",
-        dateKey
+        dateKey: input.dateKey
       }
     });
+  }
+
+  async function sendDailyPlanPromptToTelegram(input: {
+    userId: string;
+    dateKey: string;
+    telegramChatId?: string | undefined;
+  }): Promise<AssistantDelivery> {
+    const chatId = input.telegramChatId ?? csvValues(process.env.TELEGRAM_ALLOWED_USER_IDS)[0];
+    if (!chatId) {
+      return {
+        provider: "telegram",
+        status: "skipped",
+        reason: "telegram_chat_id_missing"
+      };
+    }
+    const storedMessage = await ensureDailyPlanPromptMessage({
+      userId: input.userId,
+      dateKey: input.dateKey,
+      provider: "telegram",
+      chatId
+    });
+    if (!storedMessage) {
+      return {
+        provider: "telegram",
+        status: "skipped",
+        reason: "message_store_missing"
+      };
+    }
+    if (storedMessage.duplicate) {
+      return {
+        provider: "telegram",
+        status: "skipped",
+        reason: "duplicate_prompt"
+      };
+    }
+
+    const tokenResolutionInput: { db?: RyanDb } = {};
+    if (database) tokenResolutionInput.db = database.db;
+    const tokenResolution = await resolveTelegramBotToken(tokenResolutionInput);
+    if (!tokenResolution.token) {
+      return {
+        provider: "telegram",
+        status: "skipped",
+        reason: "telegram_token_missing",
+        warnings: tokenResolution.warnings
+      };
+    }
+
+    try {
+      const result = await sendTelegramMessage({
+        token: tokenResolution.token,
+        chatId,
+        text: dailyPlanPrompt
+      });
+      return {
+        provider: "telegram",
+        status: "sent",
+        ...(tokenResolution.source ? { source: tokenResolution.source } : {}),
+        ...(result.providerMessageId ? { providerMessageId: result.providerMessageId } : {}),
+        ...(tokenResolution.warnings.length > 0 ? { warnings: tokenResolution.warnings } : {})
+      };
+    } catch (err) {
+      return {
+        provider: "telegram",
+        status: "failed",
+        ...(tokenResolution.source ? { source: tokenResolution.source } : {}),
+        error: err instanceof Error ? err.message : String(err),
+        ...(tokenResolution.warnings.length > 0 ? { warnings: tokenResolution.warnings } : {})
+      };
+    }
   }
 
   async function dailyPlanPayload(input: { userId: string; timezone: string; dateKey: string }) {
@@ -946,12 +1107,43 @@ export function buildApp() {
   app.get("/v1/daily-plan", async (request) => {
     const query = dailyPlanQuerySchema.parse(request.query);
     const dateKey = query.date ?? localDateKey(new Date(), query.timezone);
-    await ensureDailyPlanPromptMessage(query.userId, dateKey);
+    await ensureDailyPlanPromptMessage({ userId: query.userId, dateKey });
     return dailyPlanPayload({
       userId: query.userId,
       timezone: query.timezone,
       dateKey
     });
+  });
+
+  app.post("/v1/daily-plan/prompt", async (request) => {
+    const body = dailyPlanPromptBodySchema.parse(request.body ?? {});
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const webMessage = await ensureDailyPlanPromptMessage({
+      userId: body.userId,
+      dateKey
+    });
+    const telegram = body.sendTelegram
+      ? await sendDailyPlanPromptToTelegram({
+          userId: body.userId,
+          dateKey,
+          telegramChatId: body.telegramChatId
+        })
+      : undefined;
+    return {
+      date: dateKey,
+      timezone: body.timezone,
+      prompt: dailyPlanPrompt,
+      web: webMessage
+        ? {
+            status: webMessage.duplicate ? "duplicate" : "stored",
+            messageId: webMessage.id
+          }
+        : {
+            status: "skipped",
+            reason: "message_store_missing"
+          },
+      ...(telegram ? { telegram } : {})
+    };
   });
 
   app.post("/v1/daily-plan", async (request) => {
@@ -1049,6 +1241,8 @@ export function buildApp() {
             status: item.status,
             priority: item.priority,
             dueAt: item.dueAt,
+            priorityScore: item.priorityScore,
+            prioritySignals: item.prioritySignals,
             effort: itemEffort(item),
             needsAttentionToday: itemNeedsAttentionToday(item, body.timezone, dateKey),
             scope: item.scope
@@ -1080,7 +1274,7 @@ export function buildApp() {
       delete suggestedInput.successCriteria;
       const result = await tools.execute(
         toolCall.name,
-        enrichToolInput(suggestedInput, suggestionMessage, toolCall.name)
+        enrichToolInput(suggestedInput, suggestionMessage, toolCall.name, 0)
       );
       toolResults.push({ name: toolCall.name, result });
     }
@@ -1208,10 +1402,10 @@ export function buildApp() {
   ) {
     const interpreted = await ai.interpret(message, tools.list());
     const toolResults: Array<{ name: string; result: ToolResult }> = [];
-    for (const toolCall of interpreted.toolCalls) {
+    for (const [index, toolCall] of interpreted.toolCalls.entries()) {
       const result = await tools.execute(
         toolCall.name,
-        enrichToolInput(toolCall.input, message, toolCall.name)
+        enrichToolInput(toolCall.input, message, toolCall.name, index)
       );
       toolResults.push({ name: toolCall.name, result });
     }
@@ -1262,7 +1456,7 @@ export function buildApp() {
     if (body.toolCall) {
       const result = await tools.execute(
         body.toolCall.name,
-        enrichToolInput(body.toolCall.input, message, body.toolCall.name)
+        enrichToolInput(body.toolCall.input, message, body.toolCall.name, 0)
       );
       const response = await persistAssistantResponse(
         message,

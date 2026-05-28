@@ -108,6 +108,7 @@ services:
       CI: "true"
       NODE_ENV: ${NODE_ENV:-development}
       RYANOS_AI_PROVIDER: ${RYANOS_AI_PROVIDER:-none}
+      RYANOS_API_URL: http://api:4000
       DATABASE_URL: postgres://${DB_USER:-ryanos}:${DB_PASSWORD:-ryanos}@postgres:5432/${DB_NAME:-ryanos}
       RYANOS_MASTER_KEY_FILE: ${RYANOS_MASTER_KEY_FILE:-/app/secrets/master-key}
     volumes:
