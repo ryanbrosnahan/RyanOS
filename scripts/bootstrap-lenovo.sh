@@ -130,8 +130,20 @@ install_codex_bridge_service() {
 }
 
 configure_tailscale_serve() {
+  if ! timeout 20s sudo tailscale serve --bg --https=443 localhost:3100; then
+    cat <<'TAILSCALE_SERVE_NOTICE'
+
+Tailscale Serve could not be configured automatically.
+If Tailscale printed an enable URL, open it in a browser, enable Serve for this
+tailnet, then run:
+
   sudo tailscale serve --bg --https=443 localhost:3100
-  tailscale serve status
+
+The RyanOS Docker deployment can continue before Serve is enabled.
+TAILSCALE_SERVE_NOTICE
+    return 0
+  fi
+  timeout 10s tailscale serve status || true
 }
 
 install_docker

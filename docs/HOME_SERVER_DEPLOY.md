@@ -124,6 +124,9 @@ sudo tailscale serve --bg --https=443 localhost:3100
 tailscale serve status
 ```
 
+If Tailscale says Serve is not enabled, open the URL it prints, enable Serve for
+the tailnet, then rerun the `tailscale serve` command.
+
 Open the reported HTTPS URL from the phone. Do not use Tailscale Funnel for
 RyanOS until real owner authentication is implemented.
 
