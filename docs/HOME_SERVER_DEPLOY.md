@@ -104,7 +104,7 @@ On `lenovo`:
 cd /opt/ryanos
 docker compose -f docker-compose.server.yml build
 docker compose -f docker-compose.server.yml up -d postgres
-docker compose -f docker-compose.server.yml exec -T postgres sh -lc 'hba="${PGDATA:-/var/lib/postgresql/data}/pg_hba.conf"; grep -Eq "^[[:space:]]*host[[:space:]]+all[[:space:]]+all[[:space:]]+0\\.0\\.0\\.0/0" "$hba" || printf "\n# RyanOS Docker network access\nhost    all             all             0.0.0.0/0               scram-sha-256\nhost    all             all             ::/0                    scram-sha-256\n" >> "$hba"; pg_ctl reload -D "${PGDATA:-/var/lib/postgresql/data}"'
+scripts/ensure-postgres-docker-auth.sh docker-compose.server.yml
 docker compose -f docker-compose.server.yml run --rm migrate
 docker compose -f docker-compose.server.yml up -d api web worker
 curl -fsS http://127.0.0.1:3100/api/health
