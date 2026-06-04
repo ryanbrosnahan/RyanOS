@@ -27,8 +27,17 @@ export async function resolveUserId(db: RyanDb, userId: UUID): Promise<UUID> {
         email: `${userId}@ryanos.local`,
         displayName: userId
       })
+      .onConflictDoNothing({
+        target: schema.users.id
+      })
       .returning({ id: schema.users.id });
-    if (!created) throw new Error("Failed to create user");
+    if (!created) {
+      const conflicted = await db.query.users.findFirst({
+        where: eq(schema.users.id, userId)
+      });
+      if (!conflicted) throw new Error("User insert conflicted but existing row was not found");
+      return conflicted.id;
+    }
     return created.id;
   }
 
@@ -43,7 +52,18 @@ export async function resolveUserId(db: RyanDb, userId: UUID): Promise<UUID> {
       email: localOwnerEmail,
       displayName: "Local Owner"
     })
+    .onConflictDoNothing({
+      target: schema.users.email
+    })
     .returning({ id: schema.users.id });
-  if (!created) throw new Error("Failed to create local owner user");
+  if (!created) {
+    const conflicted = await db.query.users.findFirst({
+      where: eq(schema.users.email, localOwnerEmail)
+    });
+    if (!conflicted) {
+      throw new Error("Local owner insert conflicted but existing row was not found");
+    }
+    return conflicted.id;
+  }
   return created.id;
 }
