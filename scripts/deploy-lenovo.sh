@@ -56,6 +56,18 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
   fi
   docker compose -f '$COMPOSE_FILE' build
   docker compose -f '$COMPOSE_FILE' up -d postgres
+  docker compose -f '$COMPOSE_FILE' exec -T postgres sh -lc '\"'\"'
+    set -e
+    hba=\"\${PGDATA:-/var/lib/postgresql/data}/pg_hba.conf\"
+    if ! grep -Eq \"^[[:space:]]*host[[:space:]]+all[[:space:]]+all[[:space:]]+0\\.0\\.0\\.0/0\" \"\$hba\"; then
+      {
+        printf \"\\n# RyanOS Docker network access\\n\"
+        printf \"host    all             all             0.0.0.0/0               scram-sha-256\\n\"
+        printf \"host    all             all             ::/0                    scram-sha-256\\n\"
+      } >> \"\$hba\"
+    fi
+    pg_ctl reload -D \"\${PGDATA:-/var/lib/postgresql/data}\"
+  '\"'\"'
   docker compose -f '$COMPOSE_FILE' run --rm migrate
   docker compose -f '$COMPOSE_FILE' up -d --remove-orphans api web worker
   docker compose -f '$COMPOSE_FILE' ps
