@@ -18,8 +18,11 @@ quote() {
   printf "%q" "$1"
 }
 
-ssh -t "$REMOTE" \
-  "RYANOS_REMOTE_DIR=$(quote "$REMOTE_DIR") RYANOS_REPO_URL=$(quote "$REPO_URL") RYANOS_BRANCH=$(quote "$BRANCH") bash -s" <<'REMOTE_SCRIPT'
+local_remote_script="$(mktemp -t ryanos-bootstrap.XXXXXX)"
+remote_script="/tmp/ryanos-bootstrap-$$.sh"
+trap 'rm -f "$local_remote_script"' EXIT
+
+cat > "$local_remote_script" <<'REMOTE_SCRIPT'
 set -euo pipefail
 
 REMOTE_DIR="${RYANOS_REMOTE_DIR:?}"
@@ -143,3 +146,13 @@ Run `codex --login` on lenovo if the Codex bridge status reports that Codex is
 not authenticated.
 DONE
 REMOTE_SCRIPT
+
+scp -q "$local_remote_script" "$REMOTE:$remote_script"
+ssh -tt "$REMOTE" "\
+  status=0; \
+  RYANOS_REMOTE_DIR=$(quote "$REMOTE_DIR") \
+  RYANOS_REPO_URL=$(quote "$REPO_URL") \
+  RYANOS_BRANCH=$(quote "$BRANCH") \
+  bash $(quote "$remote_script") || status=\$?; \
+  rm -f $(quote "$remote_script"); \
+  exit \$status"
