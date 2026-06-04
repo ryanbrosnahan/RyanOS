@@ -1,0 +1,133 @@
+name: ryanos
+
+x-app-service: &app-service
+  image: ryanos-app:server
+  build:
+    context: .
+    dockerfile: docker/app.Dockerfile
+    args:
+      NODE_VERSION: 20.20.0-slim
+      PNPM_VERSION: 10.11.0
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
+      RYANOS_INTERNAL_API_URL: ${RYANOS_INTERNAL_API_URL:-http://api:4000}
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  restart: unless-stopped
+
+x-app-env: &app-env
+  CI: "true"
+  NODE_ENV: production
+  DATABASE_URL: postgres://${DB_USER:-ryanos}:${DB_PASSWORD:-ryanos}@postgres:5432/${DB_NAME:-ryanos}
+  RYANOS_MASTER_KEY_FILE: ${RYANOS_MASTER_KEY_FILE:-/app/secrets/master-key}
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ryanos-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-ryanos}
+      POSTGRES_USER: ${DB_USER:-ryanos}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-ryanos}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ryanos} -d ${DB_NAME:-ryanos}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    <<: *app-service
+    container_name: ryanos-migrate
+    restart: "no"
+    environment:
+      <<: *app-env
+    volumes:
+      - ./secrets:/app/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["pnpm", "db:migrate"]
+
+  api:
+    <<: *app-service
+    container_name: ryanos-api
+    environment:
+      <<: *app-env
+      API_HOST: 0.0.0.0
+      API_PORT: 4000
+      RYANOS_AI_PROVIDER: ${RYANOS_AI_PROVIDER:-none}
+      RYANOS_CODEX_COMMAND: ${RYANOS_CODEX_COMMAND:-codex}
+      RYANOS_CODEX_BRIDGE_URL: ${RYANOS_CODEX_BRIDGE_URL:-}
+      RYANOS_CODEX_BRIDGE_TOKEN: ${RYANOS_CODEX_BRIDGE_TOKEN:-}
+      RYANOS_CODEX_WORKDIR: ${RYANOS_CODEX_WORKDIR:-}
+      RYANOS_CODEX_TIMEOUT_MS: ${RYANOS_CODEX_TIMEOUT_MS:-180000}
+      RYANOS_CORS_ORIGINS: ${RYANOS_CORS_ORIGINS:-}
+      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    volumes:
+      - ./secrets:/app/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["node", "apps/api/dist/index.js"]
+
+  web:
+    <<: *app-service
+    container_name: ryanos-web
+    environment:
+      CI: "true"
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
+      RYANOS_INTERNAL_API_URL: ${RYANOS_INTERNAL_API_URL:-http://api:4000}
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3100}:3000"
+    depends_on:
+      api:
+        condition: service_started
+    command: ["node", "apps/web/.next/standalone/apps/web/server.js"]
+
+  worker:
+    <<: *app-service
+    container_name: ryanos-worker
+    environment:
+      <<: *app-env
+      RYANOS_API_URL: http://api:4000
+    volumes:
+      - ./secrets:/app/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+    command: ["node", "apps/worker/dist/index.js"]
+
+  telegram-poller:
+    <<: *app-service
+    container_name: ryanos-telegram-poller
+    profiles: ["telegram"]
+    environment:
+      <<: *app-env
+      RYANOS_API_URL: http://api:4000
+      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_POLL_TIMEOUT_SECONDS: ${TELEGRAM_POLL_TIMEOUT_SECONDS:-25}
+      TELEGRAM_POLL_LIMIT: ${TELEGRAM_POLL_LIMIT:-20}
+      TELEGRAM_SEND_TYPING: ${TELEGRAM_SEND_TYPING:-true}
+      TELEGRAM_TYPING_INTERVAL_MS: ${TELEGRAM_TYPING_INTERVAL_MS:-4500}
+    volumes:
+      - ./secrets:/app/secrets:ro
+    depends_on:
+      api:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    command: ["node", "apps/api/dist/telegram-poll-cli.js"]
+
+volumes:
+  postgres-data:

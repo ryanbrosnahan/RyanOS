@@ -28,6 +28,8 @@
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
     "docker:telegram": "docker compose --profile telegram up -d --build telegram-poller",
+    "bootstrap:lenovo": "scripts/bootstrap-lenovo.sh",
+    "deploy:lenovo": "scripts/deploy-lenovo.sh",
     "secrets:generate-key": "node scripts/generate-master-key.mjs",
     "telegram:poll": "pnpm --filter @ryanos/api telegram:poll",
     "telegram:store-token": "pnpm --filter @ryanos/api telegram:store-token"

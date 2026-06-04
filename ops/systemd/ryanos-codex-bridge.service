@@ -1,0 +1,16 @@
+[Unit]
+Description=RyanOS Codex Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ryanos
+EnvironmentFile=/opt/ryanos/.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+ExecStart=/usr/bin/env pnpm codex:bridge
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
