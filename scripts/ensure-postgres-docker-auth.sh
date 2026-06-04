@@ -13,5 +13,5 @@ docker compose -f "$COMPOSE_FILE" exec -T postgres sh -lc '
       printf "host    all             all             ::/0                    scram-sha-256\n"
     } >> "$hba"
   fi
-  pg_ctl reload -D "${PGDATA:-/var/lib/postgresql/data}"
+  psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-postgres}" -c "SELECT pg_reload_conf();"
 '
