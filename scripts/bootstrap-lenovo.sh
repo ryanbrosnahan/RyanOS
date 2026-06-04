@@ -58,6 +58,12 @@ install_docker() {
 install_node_and_cli() {
   node_major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"
   if [ "$node_major" -lt 20 ]; then
+    # Linux Mint/Ubuntu distro Node packages can leave libnode-dev headers that
+    # conflict with the NodeSource nodejs package.
+    sudo apt-get remove -y nodejs npm libnode-dev libnode72 nodejs-doc || true
+    sudo apt-get autoremove -y || true
+    sudo dpkg --configure -a
+    sudo apt-get install -f -y
     curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
     sudo apt-get install -y nodejs
   fi
