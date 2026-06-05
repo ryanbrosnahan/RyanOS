@@ -21,6 +21,7 @@ x-app-env: &app-env
   DATABASE_URL: postgres://${DB_USER:-ryanos}:${DB_PASSWORD:-ryanos}@postgres:5432/${DB_NAME:-ryanos}
   RYANOS_MASTER_KEY_FILE: ${RYANOS_MASTER_KEY_FILE:-/app/secrets/master-key}
   GOG_HOME: ${GOG_HOME:-/app/.gogcli}
+  XDG_CONFIG_HOME: ${XDG_CONFIG_HOME:-/app/.gogcli}
   GOG_KEYRING_BACKEND: ${GOG_KEYRING_BACKEND:-file}
   GOG_KEYRING_PASSWORD: ${GOG_KEYRING_PASSWORD:-}
   EMAIL_TRIAGE_ENABLED: ${EMAIL_TRIAGE_ENABLED:-true}

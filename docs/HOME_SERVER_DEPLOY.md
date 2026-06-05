@@ -81,6 +81,7 @@ set:
 ```bash
 GOGCLI_VERSION=v0.15.0
 GOG_HOME=/app/.gogcli
+XDG_CONFIG_HOME=/app/.gogcli
 GOG_KEYRING_BACKEND=file
 GOG_KEYRING_PASSWORD=<long-random-password>
 EMAIL_TRIAGE_ENABLED=true
