@@ -423,12 +423,29 @@ export async function scanGmailInbox(input: {
     Math.max(input.maxPerAccount ?? DEFAULT_EMAIL_SCAN_MAX_PER_ACCOUNT, 1),
     100
   );
+  const result: EmailScanResult = {
+    query,
+    maxPerAccount,
+    accountsScanned: 0,
+    accountsSkipped: 0,
+    messagesSeen: 0,
+    messagesFetched: 0,
+    proposalsCreatedOrUpdated: 0,
+    errors: []
+  };
   if (input.syncAccounts !== false) {
-    await syncGmailAccounts({
-      store: input.store,
-      client: input.client,
-      userId: input.userId
-    });
+    try {
+      await syncGmailAccounts({
+        store: input.store,
+        client: input.client,
+        userId: input.userId
+      });
+    } catch (err) {
+      result.errors.push({
+        error: `Gmail account sync failed: ${err instanceof Error ? err.message : String(err)}`
+      });
+      return result;
+    }
   }
   const accounts = await input.store.listProviderAccounts({
     userId: input.userId,
@@ -439,16 +456,7 @@ export async function scanGmailInbox(input: {
     if (input.accountId !== undefined && account.id !== input.accountId) return false;
     return enabledForScan(account);
   });
-  const result: EmailScanResult = {
-    query,
-    maxPerAccount,
-    accountsScanned: 0,
-    accountsSkipped: accounts.length - filteredAccounts.length,
-    messagesSeen: 0,
-    messagesFetched: 0,
-    proposalsCreatedOrUpdated: 0,
-    errors: []
-  };
+  result.accountsSkipped = accounts.length - filteredAccounts.length;
 
   for (const account of filteredAccounts) {
     const email = accountEmail(account);

@@ -293,4 +293,50 @@ describe("email integration API", () => {
     });
     expect(items.json().items).toEqual([]);
   });
+
+  it("returns a scan error instead of throwing when gog auth is incomplete", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const app = buildApp({
+      ai: proposalAi(),
+      emailClient: {
+        async doctor() {
+          return {
+            installed: true,
+            ok: false,
+            error: "credentials missing"
+          };
+        },
+        async listAccounts() {
+          throw new Error("credentials missing");
+        },
+        async searchMessages() {
+          return [];
+        },
+        async getMessage() {
+          throw new Error("not reached");
+        }
+      }
+    });
+
+    const scan = await app.inject({
+      method: "POST",
+      url: "/v1/email/scan",
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    await app.close();
+
+    expect(scan.statusCode).toBe(200);
+    expect(scan.json()).toMatchObject({
+      result: {
+        accountsScanned: 0,
+        errors: [
+          {
+            error: expect.stringContaining("Gmail account sync failed")
+          }
+        ]
+      }
+    });
+  });
 });
