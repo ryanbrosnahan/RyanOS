@@ -114,7 +114,8 @@ const recurrenceDayParamsSchema = itemActionParamsSchema.extend({
 const recurrenceDayBodySchema = z.object({
   userId: z.string().default("local-owner"),
   completed: z.boolean(),
-  timezone: z.string().default("America/Chicago")
+  timezone: z.string().default("America/Chicago"),
+  referenceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
 });
 
 const messageSchema = z.object({
@@ -237,13 +238,6 @@ function localDayBounds(dateKey: string, timeZone: string): { start: string; end
   };
 }
 
-function weekStartDateKey(dateKey: string): string {
-  const { year, month, day } = parseDateKey(dateKey);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  const mondayOffset = (date.getUTCDay() + 6) % 7;
-  return addDaysToDateKey(dateKey, -mondayOffset);
-}
-
 function completionTarget(policy: RecurrencePolicy): number | undefined {
   if (policy.type === "target_frequency") return policy.targetCount;
   if (policy.type === "completion_based" || policy.type === "minimum_interval") return 1;
@@ -257,7 +251,7 @@ function recurrenceProgress(
   timeZone: string,
   referenceDateKey: string
 ) {
-  const startDate = weekStartDateKey(referenceDateKey);
+  const startDate = addDaysToDateKey(referenceDateKey, -6);
   const dateKeys = Array.from({ length: 7 }, (_, index) => addDaysToDateKey(startDate, index));
   const dateKeySet = new Set(dateKeys);
   const latestByDay = new Map<string, RecurrenceEvent>();
@@ -300,7 +294,7 @@ function recurrenceProgress(
     state,
     week: {
       startDate,
-      endDate: addDaysToDateKey(startDate, 6),
+      endDate: referenceDateKey,
       days,
       completedCount,
       targetCount: completionTarget(policy),
@@ -790,7 +784,6 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore } = {}) {
       const target = item.recurrence.week.targetCount ?? item.recurrence.policy.targetCount ?? 0;
       const completed = item.recurrence.week.completedCount;
       const remaining = Math.max(0, target - completed);
-      const daysLeft = daysBetweenDateKeys(referenceDateKey, item.recurrence.week.endDate) + 1;
       const lastCompletedAt = item.recurrence.state?.lastCompletedAt;
       const daysSinceLastCompleted =
         lastCompletedAt === undefined
@@ -809,12 +802,10 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore } = {}) {
         signals.push(`${remaining} left`);
         signals.push(`${daysSinceLastCompleted}d since last`);
 
-        if (remaining > daysLeft) {
-          score += 45;
+        if (remaining > 0) score += 24;
+        if (remaining >= Math.max(2, target)) {
+          score += 21;
           signals.push("behind target");
-        } else if (remaining === daysLeft) {
-          score += 24;
-          signals.push("must do daily");
         }
 
         if (completedToday) {
@@ -1358,9 +1349,10 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore } = {}) {
     if (result.status === "failed" || result.status === "rejected") {
       reply.code(400);
     }
+    const referenceDateKey = body.referenceDate ?? params.dateKey;
     return {
       result,
-      item: await itemForDashboard(item, body.timezone, params.dateKey)
+      item: await itemForDashboard(item, body.timezone, referenceDateKey)
     };
   });
 

@@ -212,6 +212,93 @@ function dayTone(day: RecurrenceDay, isToday: boolean): string {
   return `${base}${todayRing} border-stone-300 bg-white text-stone-600 hover:bg-stone-100`;
 }
 
+function recurrenceDayLabel(day: RecurrenceDay): string {
+  switch (day.weekday) {
+    case "Sunday":
+    case "Sun":
+      return "Su";
+    case "Monday":
+    case "Mon":
+      return "Mo";
+    case "Tuesday":
+    case "Tue":
+      return "Tu";
+    case "Wednesday":
+    case "Wed":
+      return "We";
+    case "Thursday":
+    case "Thu":
+      return "Th";
+    case "Friday":
+    case "Fri":
+      return "Fr";
+    case "Saturday":
+    case "Sat":
+      return "Sa";
+    default:
+      return day.weekday.slice(0, 2);
+  }
+}
+
+function recurrenceCadenceDays(recurrence: RecurrenceProgress): number | undefined {
+  if (recurrence.policy.type === "target_frequency") {
+    return recurrence.policy.targetWindowDays ?? recurrence.week.targetWindowDays;
+  }
+  if (recurrence.policy.type === "completion_based") return recurrence.policy.intervalDays;
+  if (recurrence.policy.type === "minimum_interval") return recurrence.policy.minimumIntervalDays;
+  return undefined;
+}
+
+function shouldShowRecurrenceDays(recurrence: RecurrenceProgress): boolean {
+  const cadenceDays = recurrenceCadenceDays(recurrence);
+  return cadenceDays === undefined || cadenceDays <= 7;
+}
+
+function parseDateKey(dateKey: string): { year: number; month: number; day: number } {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  return { year: year ?? 0, month: month ?? 0, day: day ?? 0 };
+}
+
+function daysBetweenDateKeys(startDateKey: string, endDateKey: string): number {
+  const start = parseDateKey(startDateKey);
+  const end = parseDateKey(endDateKey);
+  const startMs = Date.UTC(start.year, start.month - 1, start.day);
+  const endMs = Date.UTC(end.year, end.month - 1, end.day);
+  return Math.round((endMs - startMs) / (24 * 60 * 60 * 1000));
+}
+
+function dateKeyInTimeZone(value: string, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date(value));
+  const part = (type: string) => parts.find((candidate) => candidate.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function recurrenceLastDoneLabel(
+  recurrence: RecurrenceProgress,
+  dashboardDate: string | null,
+  timezone: string
+): string | undefined {
+  const showDays = shouldShowRecurrenceDays(recurrence);
+  const hasRecentCompletion = recurrence.week.days.some((day) => day.status === "completed");
+  if (showDays && hasRecentCompletion) return undefined;
+
+  const cadenceDays = recurrenceCadenceDays(recurrence);
+  if (showDays && (cadenceDays === undefined || cadenceDays > 7)) return undefined;
+
+  const lastCompletedAt = recurrence.state?.lastCompletedAt;
+  if (!lastCompletedAt) return showDays ? "no history" : "not done yet";
+  if (!dashboardDate) return undefined;
+
+  const lastDateKey = dateKeyInTimeZone(lastCompletedAt, timezone);
+  const daysAgo = Math.max(0, daysBetweenDateKeys(lastDateKey, dashboardDate));
+  return daysAgo === 0 ? "done today" : `last ${daysAgo}d ago`;
+}
+
 function recurrenceSummary(recurrence: RecurrenceProgress): string {
   const target = recurrence.week.targetCount;
   if (target) return `${recurrence.week.completedCount}/${target}`;
@@ -345,7 +432,8 @@ export function ItemsPanel() {
           body: JSON.stringify({
             userId: "local-owner",
             completed: day.status !== "completed",
-            timezone
+            timezone,
+            referenceDate: dashboardDate ?? undefined
           })
         }
       );
@@ -543,6 +631,10 @@ export function ItemsPanel() {
             const nextDue = nextRecurrenceDate(item.recurrence);
             const completed = item.status === "done";
             const hasRecurrence = item.recurrence !== undefined;
+            const showRecurrenceDays = item.recurrence ? shouldShowRecurrenceDays(item.recurrence) : false;
+            const lastDoneLabel = item.recurrence
+              ? recurrenceLastDoneLabel(item.recurrence, dashboardDate, timezone)
+              : undefined;
             const selectedAreaId = item.scope?.area?.id ?? "";
             const selectedProjectId = item.scope?.project?.id ?? "";
             const visibleProjects = projects.filter((project) => {
@@ -739,34 +831,37 @@ export function ItemsPanel() {
                 </div>
 
                 {item.recurrence ? (
-                  <div className="mt-3 flex items-center justify-between gap-3 pl-12">
-                    <div className="flex min-w-0 flex-wrap gap-2">
-                      {item.recurrence.week.days.map((day) => {
-                        const today = day.date === dashboardDate;
-                        const key = `${item.id}:${day.date}`;
-                        return (
-                          <button
-                            key={day.date}
-                            type="button"
-                            disabled={pendingKey === key}
-                            onClick={() => void toggleRecurrenceDay(item, day)}
-                            className={`${dayTone(day, today)} disabled:cursor-wait disabled:opacity-60`}
-                            aria-label={`${day.status === "completed" ? "Undo" : "Mark"} ${item.title} on ${day.weekday} ${day.date}`}
-                            title={`${day.weekday} ${day.date}`}
-                          >
-                            {day.status === "completed" ? (
-                              <Check className="mx-auto h-4 w-4" aria-hidden="true" />
-                            ) : (
-                              day.weekday.slice(0, 1)
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <span className="shrink-0 text-xs font-medium text-stone-600">
-                      {item.recurrence.week.completedCount}
-                      {item.recurrence.week.targetCount ? ` of ${item.recurrence.week.targetCount}` : ""}
-                    </span>
+                  <div className="mt-2 flex items-center gap-2 pl-12">
+                    {showRecurrenceDays ? (
+                      <div className="flex min-w-0 flex-wrap gap-1.5">
+                        {item.recurrence.week.days.map((day) => {
+                          const today = day.date === dashboardDate;
+                          const key = `${item.id}:${day.date}`;
+                          return (
+                            <button
+                              key={day.date}
+                              type="button"
+                              disabled={pendingKey === key}
+                              onClick={() => void toggleRecurrenceDay(item, day)}
+                              className={`${dayTone(day, today)} disabled:cursor-wait disabled:opacity-60`}
+                              aria-label={`${day.status === "completed" ? "Undo" : "Mark"} ${item.title} on ${day.weekday} ${day.date}`}
+                              title={`${day.weekday} ${day.date}`}
+                            >
+                              {day.status === "completed" ? (
+                                <Check className="mx-auto h-4 w-4" aria-hidden="true" />
+                              ) : (
+                                recurrenceDayLabel(day)
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    {lastDoneLabel ? (
+                      <span className="shrink-0 rounded-md bg-stone-100 px-2 py-1 text-xs font-medium text-stone-700">
+                        {lastDoneLabel}
+                      </span>
+                    ) : null}
                   </div>
                 ) : null}
               </div>

@@ -338,7 +338,7 @@ describe("setup status", () => {
     expect(saved.json().plan.suggestionSource).toBe("user");
   });
 
-  it("returns weekly recurrence progress and toggles day completion", async () => {
+  it("returns rolling seven-day recurrence progress and toggles day completion", async () => {
     vi.stubEnv("DATABASE_URL", "");
 
     const app = buildApp();
@@ -377,6 +377,18 @@ describe("setup status", () => {
           userId: "local-owner",
           recurrenceRef: "Go to the gym",
           eventType: "completed",
+          occurredAt: "2026-05-22T12:00:00.000Z"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.recordEvent/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          recurrenceRef: "Go to the gym",
+          eventType: "completed",
           occurredAt: "2026-05-26T12:00:00.000Z"
         }
       }
@@ -403,6 +415,8 @@ describe("setup status", () => {
         id: string;
         recurrence: {
           week: {
+            startDate: string;
+            endDate: string;
             completedCount: number;
             targetCount: number;
             days: Array<{ date: string; status: string }>;
@@ -411,10 +425,22 @@ describe("setup status", () => {
       }>;
     };
     const item = listedBody.items[0];
-    expect(item?.recurrence.week.completedCount).toBe(2);
+    expect(item?.recurrence.week.startDate).toBe("2026-05-21");
+    expect(item?.recurrence.week.endDate).toBe("2026-05-27");
+    expect(item?.recurrence.week.days.map((day) => day.date)).toEqual([
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-23",
+      "2026-05-24",
+      "2026-05-25",
+      "2026-05-26",
+      "2026-05-27"
+    ]);
+    expect(item?.recurrence.week.completedCount).toBe(3);
     expect(item?.recurrence.week.targetCount).toBe(5);
     expect(item?.recurrence.week.days).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({ date: "2026-05-22", status: "completed" }),
         expect.objectContaining({ date: "2026-05-26", status: "completed" }),
         expect.objectContaining({ date: "2026-05-27", status: "completed" })
       ])
@@ -430,7 +456,7 @@ describe("setup status", () => {
       }
     });
     expect(toggled.statusCode).toBe(200);
-    expect(toggled.json().item.recurrence.week.completedCount).toBe(3);
+    expect(toggled.json().item.recurrence.week.completedCount).toBe(4);
 
     const undone = await app.inject({
       method: "POST",
@@ -442,7 +468,7 @@ describe("setup status", () => {
       }
     });
     expect(undone.statusCode).toBe(200);
-    expect(undone.json().item.recurrence.week.completedCount).toBe(2);
+    expect(undone.json().item.recurrence.week.completedCount).toBe(3);
     expect(undone.json().item.recurrence.week.days).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ date: "2026-05-28", status: "uncompleted" })
