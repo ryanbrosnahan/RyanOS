@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ChatPanel } from "./chat-panel";
 import { DailyFocusPanel } from "./daily-focus-panel";
+import { EmailProposalsPanel } from "./email-proposals-panel";
 import { ItemsPanel } from "./items-panel";
 
 export default function Home() {
@@ -30,7 +31,10 @@ export default function Home() {
 
         <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
           <ChatPanel />
-          <ItemsPanel />
+          <div className="space-y-6">
+            <EmailProposalsPanel />
+            <ItemsPanel />
+          </div>
         </div>
       </section>
     </main>

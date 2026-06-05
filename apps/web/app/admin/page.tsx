@@ -10,6 +10,7 @@ import {
 import Link from "next/link";
 import { SetupStatusPanel } from "../setup-status-panel";
 import { AiDiagnosticsPanel, AttentionDebugPanel } from "../admin-diagnostics";
+import { EmailIntegrationPanel } from "./email-integration-panel";
 
 const systemStatus = [
   { label: "Assistant intake", value: "Chat + Telegram", icon: Brain },
@@ -44,6 +45,7 @@ export default function AdminPage() {
       <section className="mx-auto grid max-w-7xl gap-6 px-5 py-6 sm:px-8 lg:grid-cols-[1fr_0.8fr] lg:px-10">
         <div className="space-y-6">
           <AiDiagnosticsPanel />
+          <EmailIntegrationPanel />
           <AttentionDebugPanel />
 
           <div className="rounded-md border border-stone-300 bg-white p-4 shadow-sm">

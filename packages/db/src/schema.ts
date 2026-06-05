@@ -318,7 +318,51 @@ export const externalSources = pgTable("external_sources", {
   metadata: jsonb("metadata").notNull().default({}),
   ...timestamps,
   ...softDelete
-});
+}, (table) => ({
+  providerExternalIdx: uniqueIndex("external_sources_provider_external_idx").on(
+    table.provider,
+    table.providerAccountId,
+    table.externalId
+  ),
+  userProviderOccurredIdx: index("external_sources_user_provider_occurred_idx").on(
+    table.userId,
+    table.provider,
+    table.occurredAt
+  )
+}));
+
+export const emailActionProposals = pgTable("email_action_proposals", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  sourceId: uuid("source_id").notNull().references(() => externalSources.id),
+  providerAccountId: uuid("provider_account_id").references(() => providerAccounts.id),
+  idempotencyKey: text("idempotency_key").notNull(),
+  actionType: text("action_type").notNull(),
+  status: text("status").notNull().default("proposed"),
+  title: text("title").notNull(),
+  body: text("body"),
+  priority: priorityEnum("priority").notNull().default("normal"),
+  dueAt: timestamp("due_at", { withTimezone: true }),
+  draftReplyText: text("draft_reply_text"),
+  rationale: text("rationale"),
+  confidence: integer("confidence"),
+  acceptedItemId: uuid("accepted_item_id").references(() => items.id),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+  rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  idempotencyIdx: uniqueIndex("email_action_proposals_idempotency_idx").on(
+    table.idempotencyKey
+  ),
+  userStatusIdx: index("email_action_proposals_user_status_idx").on(
+    table.userId,
+    table.status,
+    table.createdAt
+  ),
+  sourceIdx: index("email_action_proposals_source_idx").on(table.sourceId)
+}));
 
 export const opportunities = pgTable("opportunities", {
   id: uuid("id").primaryKey().defaultRandom(),

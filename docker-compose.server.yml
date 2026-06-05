@@ -8,6 +8,7 @@ x-app-service: &app-service
     args:
       NODE_VERSION: 20.20.0-slim
       PNPM_VERSION: 10.11.0
+      GOGCLI_VERSION: ${GOGCLI_VERSION:-v0.15.0}
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
       RYANOS_INTERNAL_API_URL: ${RYANOS_INTERNAL_API_URL:-http://api:4000}
   extra_hosts:
@@ -19,6 +20,13 @@ x-app-env: &app-env
   NODE_ENV: production
   DATABASE_URL: postgres://${DB_USER:-ryanos}:${DB_PASSWORD:-ryanos}@postgres:5432/${DB_NAME:-ryanos}
   RYANOS_MASTER_KEY_FILE: ${RYANOS_MASTER_KEY_FILE:-/app/secrets/master-key}
+  GOG_HOME: ${GOG_HOME:-/app/.gogcli}
+  GOG_KEYRING_BACKEND: ${GOG_KEYRING_BACKEND:-file}
+  GOG_KEYRING_PASSWORD: ${GOG_KEYRING_PASSWORD:-}
+  EMAIL_TRIAGE_ENABLED: ${EMAIL_TRIAGE_ENABLED:-true}
+  EMAIL_SCAN_QUERY: ${EMAIL_SCAN_QUERY:-in:inbox is:unread newer_than:7d}
+  EMAIL_SCAN_MAX_PER_ACCOUNT: ${EMAIL_SCAN_MAX_PER_ACCOUNT:-25}
+  EMAIL_SCAN_INTERVAL_MINUTES: ${EMAIL_SCAN_INTERVAL_MINUTES:-60}
 
 services:
   postgres:
@@ -46,6 +54,7 @@ services:
       <<: *app-env
     volumes:
       - ./secrets:/app/secrets:ro
+      - gogcli-state:/app/.gogcli
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,6 +78,7 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
     volumes:
       - ./secrets:/app/secrets:ro
+      - gogcli-state:/app/.gogcli
     depends_on:
       postgres:
         condition: service_healthy
@@ -100,6 +110,7 @@ services:
       RYANOS_API_URL: http://api:4000
     volumes:
       - ./secrets:/app/secrets:ro
+      - gogcli-state:/app/.gogcli
     depends_on:
       postgres:
         condition: service_healthy
@@ -131,3 +142,4 @@ services:
 
 volumes:
   postgres-data:
+  gogcli-state:

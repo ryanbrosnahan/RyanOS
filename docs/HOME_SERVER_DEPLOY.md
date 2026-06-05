@@ -72,6 +72,45 @@ If restoring an existing deployment, restore both the Postgres data and the
 matching `secrets/master-key`. Encrypted integration tokens cannot be decrypted
 without the original master key.
 
+## Gmail via gog
+
+The server image includes `gog` pinned by `GOGCLI_VERSION` and keeps its auth
+state in the Docker volume mounted at `/app/.gogcli`. In `/opt/ryanos/.env`,
+set:
+
+```bash
+GOGCLI_VERSION=v0.15.0
+GOG_HOME=/app/.gogcli
+GOG_KEYRING_BACKEND=file
+GOG_KEYRING_PASSWORD=<long-random-password>
+EMAIL_TRIAGE_ENABLED=true
+EMAIL_SCAN_QUERY=in:inbox is:unread newer_than:7d
+EMAIL_SCAN_MAX_PER_ACCOUNT=25
+EMAIL_SCAN_INTERVAL_MINUTES=60
+```
+
+Create or download a Google OAuth desktop client JSON and put it on Lenovo at:
+
+```bash
+/opt/ryanos/secrets/google-oauth-client.json
+```
+
+Register credentials and authorize each Gmail account from inside the API
+container:
+
+```bash
+cd /opt/ryanos
+docker compose -f docker-compose.server.yml exec api gog auth credentials /app/secrets/google-oauth-client.json
+docker compose -f docker-compose.server.yml exec api gog auth add account@gmail.com --services gmail --manual
+docker compose -f docker-compose.server.yml exec api gog auth doctor --check
+```
+
+Then open RyanOS Admin, use Gmail sync, enable the desired accounts, and run
+Scan now. RyanOS V1 reads unread inbox mail from the last 7 days, stores
+proposed to-dos, and only creates a normal RyanOS item after accepting a
+proposal. It does not mark messages read, label messages, create Gmail drafts,
+or send mail.
+
 ## Codex bridge
 
 The API calls Codex through a host-side bridge, not by exposing Codex to the

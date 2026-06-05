@@ -11,6 +11,7 @@ import {
   type Area,
   type DailyPlan,
   type Item,
+  type ProviderAccount,
   type Project,
   type RecurrenceEvent,
   type RecurrencePolicy,
@@ -26,9 +27,22 @@ import {
   type RyanDb,
   type StoredMessage
 } from "@ryanos/db";
-import { nowIso } from "@ryanos/shared";
+import { nowIso, type JsonObject } from "@ryanos/shared";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
+import {
+  acceptEmailProposal,
+  DEFAULT_EMAIL_SCAN_QUERY,
+  emailTriageSettings,
+  gmailProposalCounts,
+  parseScanMax,
+  proposalView,
+  rejectEmailProposal,
+  scanGmailInbox,
+  syncGmailAccounts,
+  type GmailClientLike
+} from "./email-triage.js";
+import { GogGmailClient } from "./gog-gmail.js";
 import { sendTelegramMessage } from "./telegram-client.js";
 import { resolveTelegramBotToken } from "./telegram-credentials.js";
 import { getTelegramSenderId, normalizeTelegramUpdate } from "./telegram.js";
@@ -94,6 +108,41 @@ const aiSmokeBodySchema = z.object({
   text: z
     .string()
     .default("Setup check only: reply that the Codex bridge is working. Do not create tasks or use tools.")
+});
+
+const emailAccountsQuerySchema = z.object({
+  userId: z.string().default("local-owner")
+});
+
+const emailAccountParamsSchema = z.object({
+  id: z.string().min(1)
+});
+
+const emailAccountSettingsBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  enabled: z.boolean()
+});
+
+const emailScanBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  accountId: z.string().optional(),
+  query: z.string().optional(),
+  maxPerAccount: z.number().int().min(1).max(100).optional(),
+  syncAccounts: z.boolean().default(true)
+});
+
+const emailProposalsQuerySchema = z.object({
+  userId: z.string().default("local-owner"),
+  status: z.enum(["proposed", "accepted", "rejected"]).default("proposed"),
+  limit: z.coerce.number().int().min(1).max(100).default(25)
+});
+
+const emailProposalParamsSchema = z.object({
+  id: z.string().min(1)
+});
+
+const emailProposalActionBodySchema = z.object({
+  userId: z.string().default("local-owner")
 });
 
 const itemActionParamsSchema = z.object({
@@ -306,6 +355,10 @@ function recurrenceProgress(
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   return value as Record<string, unknown>;
+}
+
+function asJsonObject(value: unknown): JsonObject {
+  return JSON.parse(JSON.stringify(value ?? {})) as JsonObject;
 }
 
 function metadataString(metadata: Record<string, unknown>, key: string): string | undefined {
@@ -547,7 +600,155 @@ function aiSetupStatus(status: AiProviderStatus): SetupStatus {
   };
 }
 
-export function buildApp(options: { ai?: AiProvider; store?: RyanStore } = {}) {
+function emailScanConfig() {
+  return {
+    query: process.env.EMAIL_SCAN_QUERY?.trim() || DEFAULT_EMAIL_SCAN_QUERY,
+    maxPerAccount: parseScanMax(process.env.EMAIL_SCAN_MAX_PER_ACCOUNT),
+    cadenceMinutes: Math.min(
+      Math.max(Number(process.env.EMAIL_SCAN_INTERVAL_MINUTES ?? "60") || 60, 5),
+      1440
+    ),
+    enabled: process.env.EMAIL_TRIAGE_ENABLED !== "false"
+  };
+}
+
+async function gmailSetupStatus(emailClient: GmailClientLike): Promise<SetupStatus> {
+  const setupActions: SetupStatus["setupActions"] = [];
+  const warnings: string[] = [];
+  const gogHome = process.env.GOG_HOME?.trim() || "/app/.gogcli";
+  const keyringBackend = process.env.GOG_KEYRING_BACKEND?.trim() || "file";
+  const hasKeyringPassword = Boolean((process.env.GOG_KEYRING_PASSWORD ?? "").trim());
+  const doctor = await emailClient.doctor();
+  let accountCount = 0;
+
+  if (!doctor.installed) {
+    setupActions.push({
+      id: "gmail-gog-install",
+      title: "Install gog in the RyanOS API image",
+      blocking: true,
+      instructions: [
+        "The production Docker image should include gog pinned to GOGCLI_VERSION.",
+        "Rebuild and redeploy RyanOS on Lenovo after pulling the latest code."
+      ],
+      command: "scripts/deploy-lenovo.sh",
+      docs: ["https://gogcli.sh/install.html"]
+    });
+  } else {
+    try {
+      accountCount = (await emailClient.listAccounts()).length;
+    } catch (err) {
+      warnings.push(
+        `Could not list gog accounts: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  if (keyringBackend === "file" && !hasKeyringPassword) {
+    setupActions.push({
+      id: "gmail-keyring-password",
+      title: "Set gog file keyring password",
+      blocking: true,
+      instructions: [
+        "Set GOG_KEYRING_PASSWORD in /opt/ryanos/.env on Lenovo.",
+        "Restart the API and worker containers after changing the environment."
+      ],
+      command: "ssh lenovo 'cd /opt/ryanos && ${EDITOR:-nano} .env && docker compose -f docker-compose.server.yml up -d api worker'"
+    });
+  }
+
+  if (doctor.installed && (!doctor.ok || accountCount === 0)) {
+    setupActions.push({
+      id: "gmail-oauth-credentials",
+      title: "Install Google OAuth client credentials",
+      blocking: true,
+      instructions: [
+        "Place a desktop OAuth client JSON at /opt/ryanos/secrets/google-oauth-client.json on Lenovo.",
+        "Register the credentials inside the API container before adding Gmail accounts."
+      ],
+      command: "ssh lenovo 'cd /opt/ryanos && docker compose -f docker-compose.server.yml exec api gog auth credentials /app/secrets/google-oauth-client.json'",
+      docs: ["https://gogcli.sh/quickstart.html"]
+    });
+    setupActions.push({
+      id: "gmail-auth-account",
+      title: "Authorize each Gmail account with gog",
+      blocking: true,
+      instructions: [
+        "Run the manual gog auth command from the API container for each Gmail account.",
+        "Then run the sync command from RyanOS Admin or the API route."
+      ],
+      command: "ssh lenovo 'cd /opt/ryanos && docker compose -f docker-compose.server.yml exec api gog auth add account@gmail.com --services gmail --manual'",
+      docs: ["https://gogcli.sh/quickstart.html"]
+    });
+  }
+
+  if (doctor.installed && !doctor.ok) {
+    setupActions.push({
+      id: "gmail-auth-doctor",
+      title: "Run gog auth doctor",
+      blocking: false,
+      instructions: [
+        "Run gog auth doctor from the same API container environment RyanOS uses."
+      ],
+      command: "ssh lenovo 'cd /opt/ryanos && docker compose -f docker-compose.server.yml exec api gog auth doctor --check'"
+    });
+  }
+
+  if (doctor.error) warnings.push(doctor.error);
+  if (doctor.stderr) warnings.push(doctor.stderr);
+
+  const ready = doctor.installed && doctor.ok && (keyringBackend !== "file" || hasKeyringPassword) && accountCount > 0;
+  return {
+    id: "gmail",
+    name: "Gmail via gog",
+    configured: doctor.installed && accountCount > 0,
+    ready,
+    setupRequired: setupActions.length > 0,
+    setupActions,
+    warnings
+  };
+}
+
+async function gmailAccountView(store: RyanStore, account: ProviderAccount) {
+  const [proposed, accepted, rejected] = await Promise.all([
+    store.listEmailActionProposals({
+      userId: account.userId,
+      providerAccountId: account.id,
+      status: "proposed",
+      limit: 200
+    }),
+    store.listEmailActionProposals({
+      userId: account.userId,
+      providerAccountId: account.id,
+      status: "accepted",
+      limit: 200
+    }),
+    store.listEmailActionProposals({
+      userId: account.userId,
+      providerAccountId: account.id,
+      status: "rejected",
+      limit: 200
+    })
+  ]);
+  return {
+    id: account.id,
+    provider: account.provider,
+    externalAccountId: account.externalAccountId,
+    displayName: account.displayName,
+    email: account.email,
+    status: account.status,
+    scopes: account.scopes,
+    settings: emailTriageSettings(account),
+    proposalCounts: {
+      proposed: proposed.length,
+      accepted: accepted.length,
+      rejected: rejected.length
+    },
+    createdAt: account.createdAt,
+    updatedAt: account.updatedAt
+  };
+}
+
+export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailClient?: GmailClientLike } = {}) {
   const app = Fastify({
     logger: true
   });
@@ -559,6 +760,7 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore } = {}) {
   const messageStore = database ? new PostgresMessageStore(database.db) : undefined;
   const tools = createCoreToolRegistry(store);
   const ai = options.ai ?? createAiProviderFromEnv();
+  const emailClient = options.emailClient ?? new GogGmailClient();
 
   async function runAiSmoke(input: { userId: string; text: string }) {
     const status = await ai.getStatus();
@@ -615,7 +817,7 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore } = {}) {
     if (typeof origin === "string" && corsOrigins.has(origin)) {
       reply.header("Access-Control-Allow-Origin", origin);
       reply.header("Vary", "Origin");
-      reply.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+      reply.header("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
       reply.header(
         "Access-Control-Allow-Headers",
         typeof request.headers["access-control-request-headers"] === "string"
@@ -657,8 +859,156 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore } = {}) {
     const aiStatus = await ai.getStatus();
     return {
       ai: aiSetupStatus(aiStatus),
-      integrations: [await telegramSetupStatus(database?.db)]
+      integrations: [
+        await telegramSetupStatus(database?.db),
+        await gmailSetupStatus(emailClient)
+      ]
     };
+  });
+
+  app.get("/v1/email/accounts", async (request) => {
+    const query = emailAccountsQuerySchema.parse(request.query);
+    const [setup, accounts, counts] = await Promise.all([
+      gmailSetupStatus(emailClient),
+      store.listProviderAccounts({
+        userId: query.userId,
+        provider: "gmail",
+        limit: 200
+      }),
+      gmailProposalCounts(store, query.userId)
+    ]);
+    return {
+      setup,
+      config: emailScanConfig(),
+      counts,
+      accounts: await Promise.all(accounts.map((account) => gmailAccountView(store, account)))
+    };
+  });
+
+  app.post("/v1/email/accounts/sync", async (request, reply) => {
+    const query = emailAccountsQuerySchema.parse(request.body ?? {});
+    try {
+      await syncGmailAccounts({
+        store,
+        client: emailClient,
+        userId: query.userId
+      });
+      const accounts = await store.listProviderAccounts({
+        userId: query.userId,
+        provider: "gmail",
+        limit: 200
+      });
+      return {
+        accounts: await Promise.all(accounts.map((account) => gmailAccountView(store, account)))
+      };
+    } catch (err) {
+      reply.code(503);
+      return {
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
+  });
+
+  app.patch("/v1/email/accounts/:id/settings", async (request, reply) => {
+    const params = emailAccountParamsSchema.parse(request.params);
+    const body = emailAccountSettingsBodySchema.parse(request.body);
+    const account = await store.getProviderAccount(params.id);
+    if (!account || account.userId !== body.userId || account.provider !== "gmail") {
+      reply.code(404);
+      return { error: `Gmail account not found: ${params.id}` };
+    }
+    const updated = await store.updateProviderAccount(account.id, {
+      status: body.enabled ? "active" : "disabled",
+      metadata: asJsonObject({
+        ...account.metadata,
+        emailTriage: {
+          ...(asRecord(account.metadata.emailTriage) ?? {}),
+          enabled: body.enabled
+        }
+      })
+    });
+    return {
+      account: await gmailAccountView(store, updated)
+    };
+  });
+
+  app.post("/v1/email/scan", async (request, reply) => {
+    const body = emailScanBodySchema.parse(request.body ?? {});
+    const status = await ai.getStatus();
+    if (!status.ready) {
+      reply.code(503);
+      return {
+        error: "AI provider is not ready.",
+        status
+      };
+    }
+    const scanInput: Parameters<typeof scanGmailInbox>[0] = {
+      ai,
+      store,
+      client: emailClient,
+      userId: body.userId,
+      query: body.query ?? emailScanConfig().query,
+      maxPerAccount: body.maxPerAccount ?? emailScanConfig().maxPerAccount,
+      syncAccounts: body.syncAccounts
+    };
+    if (body.accountId !== undefined) scanInput.accountId = body.accountId;
+    const result = await scanGmailInbox(scanInput);
+    return {
+      result
+    };
+  });
+
+  app.get("/v1/email/proposals", async (request) => {
+    const query = emailProposalsQuerySchema.parse(request.query);
+    const proposals = await store.listEmailActionProposals({
+      userId: query.userId,
+      status: query.status,
+      limit: query.limit
+    });
+    return {
+      proposals: await Promise.all(proposals.map((proposal) => proposalView(store, proposal)))
+    };
+  });
+
+  app.post("/v1/email/proposals/:id/accept", async (request, reply) => {
+    const params = emailProposalParamsSchema.parse(request.params);
+    const body = emailProposalActionBodySchema.parse(request.body ?? {});
+    try {
+      const result = await acceptEmailProposal({
+        store,
+        userId: body.userId,
+        proposalId: params.id
+      });
+      return {
+        proposal: await proposalView(store, result.proposal),
+        item: result.item
+      };
+    } catch (err) {
+      reply.code(400);
+      return {
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
+  });
+
+  app.post("/v1/email/proposals/:id/reject", async (request, reply) => {
+    const params = emailProposalParamsSchema.parse(request.params);
+    const body = emailProposalActionBodySchema.parse(request.body ?? {});
+    try {
+      const proposal = await rejectEmailProposal({
+        store,
+        userId: body.userId,
+        proposalId: params.id
+      });
+      return {
+        proposal: await proposalView(store, proposal)
+      };
+    } catch (err) {
+      reply.code(400);
+      return {
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
   });
 
   app.get("/v1/messages", async (request) => {

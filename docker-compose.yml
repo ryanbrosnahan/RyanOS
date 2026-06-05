@@ -49,6 +49,13 @@ services:
       RYANOS_CORS_ORIGINS: ${RYANOS_CORS_ORIGINS:-http://localhost:3100,http://127.0.0.1:3100}
       DATABASE_URL: postgres://${DB_USER:-ryanos}:${DB_PASSWORD:-ryanos}@postgres:5432/${DB_NAME:-ryanos}
       RYANOS_MASTER_KEY_FILE: ${RYANOS_MASTER_KEY_FILE:-/app/secrets/master-key}
+      GOG_HOME: ${GOG_HOME:-/app/.gogcli}
+      GOG_KEYRING_BACKEND: ${GOG_KEYRING_BACKEND:-file}
+      GOG_KEYRING_PASSWORD: ${GOG_KEYRING_PASSWORD:-}
+      EMAIL_TRIAGE_ENABLED: ${EMAIL_TRIAGE_ENABLED:-true}
+      EMAIL_SCAN_QUERY: ${EMAIL_SCAN_QUERY:-in:inbox is:unread newer_than:7d}
+      EMAIL_SCAN_MAX_PER_ACCOUNT: ${EMAIL_SCAN_MAX_PER_ACCOUNT:-25}
+      EMAIL_SCAN_INTERVAL_MINUTES: ${EMAIL_SCAN_INTERVAL_MINUTES:-60}
       TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
     ports:
@@ -64,6 +71,7 @@ services:
       - db-package-node-modules:/app/packages/db/node_modules
       - shared-package-node-modules:/app/packages/shared/node_modules
       - pnpm-store:/app/.pnpm-store
+      - gogcli-state:/app/.gogcli
     depends_on:
       postgres:
         condition: service_healthy
@@ -111,6 +119,13 @@ services:
       RYANOS_API_URL: http://api:4000
       DATABASE_URL: postgres://${DB_USER:-ryanos}:${DB_PASSWORD:-ryanos}@postgres:5432/${DB_NAME:-ryanos}
       RYANOS_MASTER_KEY_FILE: ${RYANOS_MASTER_KEY_FILE:-/app/secrets/master-key}
+      GOG_HOME: ${GOG_HOME:-/app/.gogcli}
+      GOG_KEYRING_BACKEND: ${GOG_KEYRING_BACKEND:-file}
+      GOG_KEYRING_PASSWORD: ${GOG_KEYRING_PASSWORD:-}
+      EMAIL_TRIAGE_ENABLED: ${EMAIL_TRIAGE_ENABLED:-true}
+      EMAIL_SCAN_QUERY: ${EMAIL_SCAN_QUERY:-in:inbox is:unread newer_than:7d}
+      EMAIL_SCAN_MAX_PER_ACCOUNT: ${EMAIL_SCAN_MAX_PER_ACCOUNT:-25}
+      EMAIL_SCAN_INTERVAL_MINUTES: ${EMAIL_SCAN_INTERVAL_MINUTES:-60}
     volumes:
       - ./:/app
       - worker-node-modules:/app/node_modules
@@ -122,6 +137,7 @@ services:
       - db-package-node-modules:/app/packages/db/node_modules
       - shared-package-node-modules:/app/packages/shared/node_modules
       - pnpm-store:/app/.pnpm-store
+      - gogcli-state:/app/.gogcli
     depends_on:
       postgres:
         condition: service_healthy
@@ -180,4 +196,5 @@ volumes:
   shared-package-node-modules:
   telegram-poller-node-modules:
   pnpm-store:
+  gogcli-state:
   postgres-data:

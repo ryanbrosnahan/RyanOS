@@ -533,12 +533,19 @@ export function ItemsPanel() {
 
   useEffect(() => {
     void loadDashboard();
+    const handleExternalRefresh = () => {
+      void loadDashboard({ background: true });
+    };
+    window.addEventListener("ryanos-items-refresh", handleExternalRefresh);
     const interval = window.setInterval(() => {
       if (document.visibilityState === "visible") {
         void loadDashboard({ background: true });
       }
     }, 30000);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("ryanos-items-refresh", handleExternalRefresh);
+    };
   }, []);
 
   return (

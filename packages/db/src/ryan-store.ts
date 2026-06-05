@@ -4,9 +4,18 @@ import type {
   AuditLog,
   Area,
   DailyPlan,
+  EmailActionProposal,
+  EmailActionProposalListFilters,
+  EmailActionProposalPatch,
+  EmailActionProposalUpsertData,
+  ExternalSource,
+  ExternalSourceUpsertData,
   Item,
   ItemEvent,
   Policy,
+  ProviderAccount,
+  ProviderAccountPatch,
+  ProviderAccountUpsertData,
   Project,
   RecurrenceEvent,
   RecurrencePolicy,
@@ -19,7 +28,9 @@ import type {
   ItemPatch,
   PolicyUpsertData,
   ProjectUpsertData,
-  SearchMatch
+  SearchMatch,
+  SourceLink,
+  SourceLinkCreateData
 } from "@ryanos/core";
 import { isUuid, resolveUserId, type RyanDb } from "./identity.js";
 import * as schema from "./schema.js";
@@ -260,6 +271,94 @@ function dailyPlanFromRow(row: typeof schema.dailyPlans.$inferSelect): DailyPlan
   const deletedAt = toIso(row.deletedAt);
   if (deletedAt !== undefined) plan.deletedAt = deletedAt;
   return plan;
+}
+
+function providerAccountFromRow(row: typeof schema.providerAccounts.$inferSelect): ProviderAccount {
+  const account: ProviderAccount = {
+    id: row.id,
+    userId: row.userId,
+    provider: row.provider,
+    status: row.status,
+    scopes: stringArray(row.scopes),
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.externalAccountId !== null) account.externalAccountId = row.externalAccountId;
+  if (row.displayName !== null) account.displayName = row.displayName;
+  if (row.email !== null) account.email = row.email;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) account.deletedAt = deletedAt;
+  return account;
+}
+
+function externalSourceFromRow(row: typeof schema.externalSources.$inferSelect): ExternalSource {
+  const source: ExternalSource = {
+    id: row.id,
+    userId: row.userId,
+    provider: row.provider,
+    retentionClass: row.retentionClass,
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.providerAccountId !== null) source.providerAccountId = row.providerAccountId;
+  if (row.externalId !== null) source.externalId = row.externalId;
+  if (row.url !== null) source.url = row.url;
+  if (row.title !== null) source.title = row.title;
+  if (row.summary !== null) source.summary = row.summary;
+  const occurredAt = toIso(row.occurredAt);
+  if (occurredAt !== undefined) source.occurredAt = occurredAt;
+  const rawPayloadExpiresAt = toIso(row.rawPayloadExpiresAt);
+  if (rawPayloadExpiresAt !== undefined) source.rawPayloadExpiresAt = rawPayloadExpiresAt;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) source.deletedAt = deletedAt;
+  return source;
+}
+
+function sourceLinkFromRow(row: typeof schema.sourceLinks.$inferSelect): SourceLink {
+  return {
+    id: row.id,
+    userId: row.userId,
+    sourceId: row.sourceId,
+    targetType: row.targetType,
+    targetId: row.targetId,
+    relation: row.relation,
+    createdAt: row.createdAt.toISOString()
+  };
+}
+
+function emailActionProposalFromRow(
+  row: typeof schema.emailActionProposals.$inferSelect
+): EmailActionProposal {
+  const proposal: EmailActionProposal = {
+    id: row.id,
+    userId: row.userId,
+    sourceId: row.sourceId,
+    idempotencyKey: row.idempotencyKey,
+    actionType: row.actionType as EmailActionProposal["actionType"],
+    status: row.status as EmailActionProposal["status"],
+    title: row.title,
+    priority: row.priority,
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.providerAccountId !== null) proposal.providerAccountId = row.providerAccountId;
+  if (row.body !== null) proposal.body = row.body;
+  const dueAt = toIso(row.dueAt);
+  if (dueAt !== undefined) proposal.dueAt = dueAt;
+  if (row.draftReplyText !== null) proposal.draftReplyText = row.draftReplyText;
+  if (row.rationale !== null) proposal.rationale = row.rationale;
+  if (row.confidence !== null) proposal.confidence = row.confidence;
+  if (row.acceptedItemId !== null) proposal.acceptedItemId = row.acceptedItemId;
+  const acceptedAt = toIso(row.acceptedAt);
+  if (acceptedAt !== undefined) proposal.acceptedAt = acceptedAt;
+  const rejectedAt = toIso(row.rejectedAt);
+  if (rejectedAt !== undefined) proposal.rejectedAt = rejectedAt;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) proposal.deletedAt = deletedAt;
+  return proposal;
 }
 
 export class PostgresRyanStore implements RyanStore {
@@ -906,6 +1005,279 @@ export class PostgresRyanStore implements RyanStore {
     return dailyPlanFromRow(row);
   }
 
+  async upsertProviderAccount(data: ProviderAccountUpsertData): Promise<ProviderAccount> {
+    const userId = await this.resolveUserId(data.userId);
+    const externalCondition =
+      data.externalAccountId === undefined
+        ? isNull(schema.providerAccounts.externalAccountId)
+        : eq(schema.providerAccounts.externalAccountId, data.externalAccountId);
+    const existing = await this.db.query.providerAccounts.findFirst({
+      where: and(
+        eq(schema.providerAccounts.userId, userId),
+        eq(schema.providerAccounts.provider, data.provider),
+        externalCondition,
+        isNull(schema.providerAccounts.deletedAt)
+      )
+    });
+    const values: typeof schema.providerAccounts.$inferInsert = {
+      userId,
+      provider: data.provider,
+      externalAccountId: data.externalAccountId ?? existing?.externalAccountId ?? null,
+      displayName: data.displayName ?? existing?.displayName ?? null,
+      email: data.email ?? existing?.email ?? null,
+      status: data.status ?? existing?.status ?? "active",
+      scopes: data.scopes ?? existing?.scopes ?? [],
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      updatedAt: new Date()
+    };
+
+    if (existing) {
+      const [row] = await this.db
+        .update(schema.providerAccounts)
+        .set(values)
+        .where(eq(schema.providerAccounts.id, existing.id))
+        .returning();
+      if (!row) throw new Error(`Provider account not found: ${existing.id}`);
+      return providerAccountFromRow(row);
+    }
+
+    const [row] = await this.db.insert(schema.providerAccounts).values(values).returning();
+    if (!row) throw new Error("Failed to upsert provider account");
+    return providerAccountFromRow(row);
+  }
+
+  async listProviderAccounts(filters: { userId: UUID; provider?: string; limit?: number }): Promise<ProviderAccount[]> {
+    const resolvedUserId = await this.resolveUserId(filters.userId);
+    const conditions = [
+      eq(schema.providerAccounts.userId, resolvedUserId),
+      isNull(schema.providerAccounts.deletedAt)
+    ];
+    if (filters.provider !== undefined) {
+      conditions.push(eq(schema.providerAccounts.provider, filters.provider));
+    }
+    const rows = await this.db
+      .select()
+      .from(schema.providerAccounts)
+      .where(and(...conditions))
+      .orderBy(asc(schema.providerAccounts.displayName), asc(schema.providerAccounts.email))
+      .limit(Math.min(Math.max(filters.limit ?? 100, 1), 200));
+    return rows.map(providerAccountFromRow);
+  }
+
+  async getProviderAccount(accountId: UUID): Promise<ProviderAccount | undefined> {
+    const row = await this.db.query.providerAccounts.findFirst({
+      where: eq(schema.providerAccounts.id, accountId)
+    });
+    return row ? providerAccountFromRow(row) : undefined;
+  }
+
+  async updateProviderAccount(accountId: UUID, patch: ProviderAccountPatch): Promise<ProviderAccount> {
+    const values: Partial<typeof schema.providerAccounts.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.externalAccountId !== undefined) values.externalAccountId = patch.externalAccountId;
+    if (patch.displayName !== undefined) values.displayName = patch.displayName;
+    if (patch.email !== undefined) values.email = patch.email;
+    if (patch.status !== undefined) values.status = patch.status;
+    if (patch.scopes !== undefined) values.scopes = patch.scopes;
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    const [row] = await this.db
+      .update(schema.providerAccounts)
+      .set(values)
+      .where(eq(schema.providerAccounts.id, accountId))
+      .returning();
+    if (!row) throw new Error(`Provider account not found: ${accountId}`);
+    return providerAccountFromRow(row);
+  }
+
+  async upsertExternalSource(data: ExternalSourceUpsertData): Promise<ExternalSource> {
+    const userId = await this.resolveUserId(data.userId);
+    const accountCondition =
+      data.providerAccountId === undefined
+        ? isNull(schema.externalSources.providerAccountId)
+        : eq(schema.externalSources.providerAccountId, data.providerAccountId);
+    const externalCondition =
+      data.externalId === undefined
+        ? isNull(schema.externalSources.externalId)
+        : eq(schema.externalSources.externalId, data.externalId);
+    const existing = await this.db.query.externalSources.findFirst({
+      where: and(
+        eq(schema.externalSources.userId, userId),
+        eq(schema.externalSources.provider, data.provider),
+        accountCondition,
+        externalCondition,
+        isNull(schema.externalSources.deletedAt)
+      )
+    });
+
+    const values: typeof schema.externalSources.$inferInsert = {
+      userId,
+      provider: data.provider,
+      providerAccountId: data.providerAccountId ?? existing?.providerAccountId ?? null,
+      externalId: data.externalId ?? existing?.externalId ?? null,
+      url: data.url ?? existing?.url ?? null,
+      title: data.title ?? existing?.title ?? null,
+      summary: data.summary ?? existing?.summary ?? null,
+      occurredAt: data.occurredAt !== undefined ? toDate(data.occurredAt) : existing?.occurredAt ?? null,
+      retentionClass: data.retentionClass ?? existing?.retentionClass ?? "summary",
+      rawPayloadExpiresAt:
+        data.rawPayloadExpiresAt !== undefined
+          ? toDate(data.rawPayloadExpiresAt)
+          : existing?.rawPayloadExpiresAt ?? null,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      updatedAt: new Date()
+    };
+
+    if (existing) {
+      const [row] = await this.db
+        .update(schema.externalSources)
+        .set(values)
+        .where(eq(schema.externalSources.id, existing.id))
+        .returning();
+      if (!row) throw new Error(`External source not found: ${existing.id}`);
+      return externalSourceFromRow(row);
+    }
+
+    const [row] = await this.db.insert(schema.externalSources).values(values).returning();
+    if (!row) throw new Error("Failed to upsert external source");
+    return externalSourceFromRow(row);
+  }
+
+  async getExternalSource(sourceId: UUID): Promise<ExternalSource | undefined> {
+    const row = await this.db.query.externalSources.findFirst({
+      where: eq(schema.externalSources.id, sourceId)
+    });
+    return row ? externalSourceFromRow(row) : undefined;
+  }
+
+  async addSourceLink(link: SourceLinkCreateData): Promise<SourceLink> {
+    const userId = await this.resolveUserId(link.userId);
+    const existing = await this.db.query.sourceLinks.findFirst({
+      where: and(
+        eq(schema.sourceLinks.userId, userId),
+        eq(schema.sourceLinks.sourceId, link.sourceId),
+        eq(schema.sourceLinks.targetType, link.targetType),
+        eq(schema.sourceLinks.targetId, link.targetId),
+        eq(schema.sourceLinks.relation, link.relation)
+      )
+    });
+    if (existing) return sourceLinkFromRow(existing);
+
+    const [row] = await this.db
+      .insert(schema.sourceLinks)
+      .values({
+        userId,
+        sourceId: link.sourceId,
+        targetType: link.targetType,
+        targetId: link.targetId,
+        relation: link.relation
+      })
+      .returning();
+    if (!row) throw new Error("Failed to add source link");
+    return sourceLinkFromRow(row);
+  }
+
+  async upsertEmailActionProposal(data: EmailActionProposalUpsertData): Promise<EmailActionProposal> {
+    const userId = await this.resolveUserId(data.userId);
+    const existing = await this.db.query.emailActionProposals.findFirst({
+      where: and(
+        eq(schema.emailActionProposals.idempotencyKey, data.idempotencyKey),
+        isNull(schema.emailActionProposals.deletedAt)
+      )
+    });
+    const values: typeof schema.emailActionProposals.$inferInsert = {
+      userId,
+      sourceId: data.sourceId,
+      providerAccountId: data.providerAccountId ?? existing?.providerAccountId ?? null,
+      idempotencyKey: data.idempotencyKey,
+      actionType: data.actionType,
+      status: data.status ?? existing?.status ?? "proposed",
+      title: data.title,
+      body: data.body ?? existing?.body ?? null,
+      priority: data.priority ?? existing?.priority ?? "normal",
+      dueAt: data.dueAt !== undefined ? toDate(data.dueAt) : existing?.dueAt ?? null,
+      draftReplyText: data.draftReplyText ?? existing?.draftReplyText ?? null,
+      rationale: data.rationale ?? existing?.rationale ?? null,
+      confidence: data.confidence ?? existing?.confidence ?? null,
+      acceptedItemId: data.acceptedItemId ?? existing?.acceptedItemId ?? null,
+      acceptedAt: data.acceptedAt !== undefined ? toDate(data.acceptedAt) : existing?.acceptedAt ?? null,
+      rejectedAt: data.rejectedAt !== undefined ? toDate(data.rejectedAt) : existing?.rejectedAt ?? null,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      updatedAt: new Date()
+    };
+
+    if (existing) {
+      const [row] = await this.db
+        .update(schema.emailActionProposals)
+        .set(values)
+        .where(eq(schema.emailActionProposals.id, existing.id))
+        .returning();
+      if (!row) throw new Error(`Email action proposal not found: ${existing.id}`);
+      return emailActionProposalFromRow(row);
+    }
+
+    const [row] = await this.db.insert(schema.emailActionProposals).values(values).returning();
+    if (!row) throw new Error("Failed to upsert email action proposal");
+    return emailActionProposalFromRow(row);
+  }
+
+  async listEmailActionProposals(filters: EmailActionProposalListFilters): Promise<EmailActionProposal[]> {
+    const resolvedUserId = await this.resolveUserId(filters.userId);
+    const conditions = [
+      eq(schema.emailActionProposals.userId, resolvedUserId),
+      isNull(schema.emailActionProposals.deletedAt)
+    ];
+    if (filters.status !== undefined) {
+      conditions.push(eq(schema.emailActionProposals.status, filters.status));
+    }
+    if (filters.providerAccountId !== undefined) {
+      conditions.push(eq(schema.emailActionProposals.providerAccountId, filters.providerAccountId));
+    }
+    const rows = await this.db
+      .select()
+      .from(schema.emailActionProposals)
+      .where(and(...conditions))
+      .orderBy(desc(schema.emailActionProposals.createdAt))
+      .limit(Math.min(Math.max(filters.limit ?? 50, 1), 200));
+    return rows.map(emailActionProposalFromRow);
+  }
+
+  async getEmailActionProposal(proposalId: UUID): Promise<EmailActionProposal | undefined> {
+    const row = await this.db.query.emailActionProposals.findFirst({
+      where: eq(schema.emailActionProposals.id, proposalId)
+    });
+    return row ? emailActionProposalFromRow(row) : undefined;
+  }
+
+  async updateEmailActionProposal(proposalId: UUID, patch: EmailActionProposalPatch): Promise<EmailActionProposal> {
+    const values: Partial<typeof schema.emailActionProposals.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.status !== undefined) values.status = patch.status;
+    if (patch.title !== undefined) values.title = patch.title;
+    if (patch.body !== undefined) values.body = patch.body;
+    if (patch.priority !== undefined) values.priority = patch.priority;
+    if (patch.dueAt !== undefined) values.dueAt = patch.dueAt === null ? null : toDate(patch.dueAt);
+    if (patch.draftReplyText !== undefined) values.draftReplyText = patch.draftReplyText;
+    if (patch.rationale !== undefined) values.rationale = patch.rationale;
+    if (patch.confidence !== undefined) values.confidence = patch.confidence;
+    if (patch.acceptedItemId !== undefined) values.acceptedItemId = patch.acceptedItemId;
+    if (patch.acceptedAt !== undefined) {
+      values.acceptedAt = patch.acceptedAt === null ? null : toDate(patch.acceptedAt);
+    }
+    if (patch.rejectedAt !== undefined) {
+      values.rejectedAt = patch.rejectedAt === null ? null : toDate(patch.rejectedAt);
+    }
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    const [row] = await this.db
+      .update(schema.emailActionProposals)
+      .set(values)
+      .where(eq(schema.emailActionProposals.id, proposalId))
+      .returning();
+    if (!row) throw new Error(`Email action proposal not found: ${proposalId}`);
+    return emailActionProposalFromRow(row);
+  }
+
   async addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog> {
     const userId = await this.resolveUserId(log.userId);
     const values: typeof schema.auditLogs.$inferInsert = {
@@ -940,6 +1312,15 @@ export class PostgresRyanStore implements RyanStore {
     const [sessionCount] = await this.db.select({ value: count() }).from(schema.sessions);
     const [messageCount] = await this.db.select({ value: count() }).from(schema.messages);
     const [policyCount] = await this.db.select({ value: count() }).from(schema.policies);
+    const [providerAccountCount] = await this.db
+      .select({ value: count() })
+      .from(schema.providerAccounts);
+    const [externalSourceCount] = await this.db
+      .select({ value: count() })
+      .from(schema.externalSources);
+    const [emailActionProposalCount] = await this.db
+      .select({ value: count() })
+      .from(schema.emailActionProposals);
 
     return {
       storeType: "postgres",
@@ -951,7 +1332,10 @@ export class PostgresRyanStore implements RyanStore {
       dailyPlanCount: dailyPlanCount?.value ?? 0,
       sessionCount: sessionCount?.value ?? 0,
       messageCount: messageCount?.value ?? 0,
-      policyCount: policyCount?.value ?? 0
+      policyCount: policyCount?.value ?? 0,
+      providerAccountCount: providerAccountCount?.value ?? 0,
+      externalSourceCount: externalSourceCount?.value ?? 0,
+      emailActionProposalCount: emailActionProposalCount?.value ?? 0
     };
   }
 }

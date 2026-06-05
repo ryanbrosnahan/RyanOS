@@ -204,3 +204,80 @@ export type DailyPlan = {
   updatedAt: ISODateString;
   deletedAt?: ISODateString;
 };
+
+export type ProviderAccount = {
+  id: UUID;
+  userId: UUID;
+  provider: string;
+  externalAccountId?: string;
+  displayName?: string;
+  email?: string;
+  status: string;
+  scopes: string[];
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type ExternalSource = {
+  id: UUID;
+  userId: UUID;
+  provider: string;
+  providerAccountId?: UUID;
+  externalId?: string;
+  url?: string;
+  title?: string;
+  summary?: string;
+  occurredAt?: ISODateString;
+  retentionClass: string;
+  rawPayloadExpiresAt?: ISODateString;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type SourceLink = {
+  id: UUID;
+  userId: UUID;
+  sourceId: UUID;
+  targetType: string;
+  targetId: UUID;
+  relation: string;
+  createdAt: ISODateString;
+};
+
+export type EmailActionProposalStatus = "proposed" | "accepted" | "rejected";
+
+export type EmailActionType =
+  | "reply"
+  | "task"
+  | "follow_up"
+  | "schedule"
+  | "delegate"
+  | "other";
+
+export type EmailActionProposal = {
+  id: UUID;
+  userId: UUID;
+  sourceId: UUID;
+  providerAccountId?: UUID;
+  idempotencyKey: string;
+  actionType: EmailActionType;
+  status: EmailActionProposalStatus;
+  title: string;
+  body?: string;
+  priority: Priority;
+  dueAt?: ISODateString;
+  draftReplyText?: string;
+  rationale?: string;
+  confidence?: number;
+  acceptedItemId?: UUID;
+  acceptedAt?: ISODateString;
+  rejectedAt?: ISODateString;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};

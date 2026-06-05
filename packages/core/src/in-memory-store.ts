@@ -1,12 +1,18 @@
 import { createId, nowIso } from "@ryanos/shared";
 import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
+  EmailActionProposalListFilters,
+  EmailActionProposalPatch,
+  EmailActionProposalUpsertData,
+  ExternalSourceUpsertData,
   AreaUpsertData,
   DailyPlanUpsertData,
   ItemCreateData,
   ItemListFilters,
   ItemPatch,
   PolicyUpsertData,
+  ProviderAccountPatch,
+  ProviderAccountUpsertData,
   ProjectUpsertData,
   RyanStore,
   SearchMatch
@@ -15,13 +21,17 @@ import type {
   AuditLog,
   Area,
   DailyPlan,
+  EmailActionProposal,
+  ExternalSource,
   Item,
   ItemEvent,
   Policy,
+  ProviderAccount,
   Project,
   RecurrenceEvent,
   RecurrencePolicy,
-  RecurrenceState
+  RecurrenceState,
+  SourceLink
 } from "./types.js";
 
 function cleanQuery(value: string): string {
@@ -38,6 +48,10 @@ export class InMemoryRyanStore implements RyanStore {
   readonly recurrenceStates = new Map<UUID, RecurrenceState>();
   readonly policies = new Map<UUID, Policy>();
   readonly dailyPlans = new Map<UUID, DailyPlan>();
+  readonly providerAccounts = new Map<UUID, ProviderAccount>();
+  readonly externalSources = new Map<UUID, ExternalSource>();
+  readonly sourceLinks: SourceLink[] = [];
+  readonly emailActionProposals = new Map<UUID, EmailActionProposal>();
   readonly auditLogs: AuditLog[] = [];
 
   async upsertArea(data: AreaUpsertData): Promise<Area> {
@@ -432,6 +446,221 @@ export class InMemoryRyanStore implements RyanStore {
     return stored;
   }
 
+  async upsertProviderAccount(data: ProviderAccountUpsertData): Promise<ProviderAccount> {
+    const timestamp = nowIso();
+    const existing = [...this.providerAccounts.values()].find(
+      (account) =>
+        account.provider === data.provider &&
+        account.externalAccountId === data.externalAccountId &&
+        !account.deletedAt
+    );
+    const account: ProviderAccount = {
+      ...existing,
+      id: existing?.id ?? createId("provider_account"),
+      userId: data.userId,
+      provider: data.provider,
+      status: data.status ?? existing?.status ?? "active",
+      scopes: data.scopes ?? existing?.scopes ?? [],
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    if (data.externalAccountId !== undefined) account.externalAccountId = data.externalAccountId;
+    else if (existing?.externalAccountId !== undefined) account.externalAccountId = existing.externalAccountId;
+    if (data.displayName !== undefined) account.displayName = data.displayName;
+    else if (existing?.displayName !== undefined) account.displayName = existing.displayName;
+    if (data.email !== undefined) account.email = data.email;
+    else if (existing?.email !== undefined) account.email = existing.email;
+    this.providerAccounts.set(account.id, account);
+    return account;
+  }
+
+  async listProviderAccounts(filters: { userId: UUID; provider?: string; limit?: number }): Promise<ProviderAccount[]> {
+    return [...this.providerAccounts.values()]
+      .filter((account) => {
+        if (account.userId !== filters.userId || account.deletedAt) return false;
+        return filters.provider === undefined || account.provider === filters.provider;
+      })
+      .sort((a, b) => {
+        const aName = a.displayName ?? a.email ?? a.externalAccountId ?? a.id;
+        const bName = b.displayName ?? b.email ?? b.externalAccountId ?? b.id;
+        return aName.localeCompare(bName);
+      })
+      .slice(0, Math.min(Math.max(filters.limit ?? 100, 1), 200));
+  }
+
+  async getProviderAccount(accountId: UUID): Promise<ProviderAccount | undefined> {
+    return this.providerAccounts.get(accountId);
+  }
+
+  async updateProviderAccount(accountId: UUID, patch: ProviderAccountPatch): Promise<ProviderAccount> {
+    const existing = this.providerAccounts.get(accountId);
+    if (!existing) throw new Error(`Provider account not found: ${accountId}`);
+    const updated: ProviderAccount = {
+      ...existing,
+      updatedAt: nowIso()
+    };
+    if (patch.externalAccountId !== undefined) {
+      if (patch.externalAccountId === null) delete updated.externalAccountId;
+      else updated.externalAccountId = patch.externalAccountId;
+    }
+    if (patch.displayName !== undefined) updated.displayName = patch.displayName;
+    if (patch.email !== undefined) updated.email = patch.email;
+    if (patch.status !== undefined) updated.status = patch.status;
+    if (patch.scopes !== undefined) updated.scopes = patch.scopes;
+    if (patch.metadata !== undefined) updated.metadata = patch.metadata;
+    this.providerAccounts.set(accountId, updated);
+    return updated;
+  }
+
+  async upsertExternalSource(data: ExternalSourceUpsertData): Promise<ExternalSource> {
+    const timestamp = nowIso();
+    const existing = [...this.externalSources.values()].find(
+      (source) =>
+        source.provider === data.provider &&
+        source.providerAccountId === data.providerAccountId &&
+        source.externalId === data.externalId &&
+        !source.deletedAt
+    );
+    const source: ExternalSource = {
+      ...existing,
+      id: existing?.id ?? createId("external_source"),
+      userId: data.userId,
+      provider: data.provider,
+      retentionClass: data.retentionClass ?? existing?.retentionClass ?? "summary",
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    if (data.providerAccountId !== undefined) source.providerAccountId = data.providerAccountId;
+    else if (existing?.providerAccountId !== undefined) source.providerAccountId = existing.providerAccountId;
+    if (data.externalId !== undefined) source.externalId = data.externalId;
+    else if (existing?.externalId !== undefined) source.externalId = existing.externalId;
+    if (data.url !== undefined) source.url = data.url;
+    else if (existing?.url !== undefined) source.url = existing.url;
+    if (data.title !== undefined) source.title = data.title;
+    else if (existing?.title !== undefined) source.title = existing.title;
+    if (data.summary !== undefined) source.summary = data.summary;
+    else if (existing?.summary !== undefined) source.summary = existing.summary;
+    if (data.occurredAt !== undefined) source.occurredAt = data.occurredAt;
+    else if (existing?.occurredAt !== undefined) source.occurredAt = existing.occurredAt;
+    if (data.rawPayloadExpiresAt !== undefined) source.rawPayloadExpiresAt = data.rawPayloadExpiresAt;
+    else if (existing?.rawPayloadExpiresAt !== undefined) source.rawPayloadExpiresAt = existing.rawPayloadExpiresAt;
+    this.externalSources.set(source.id, source);
+    return source;
+  }
+
+  async getExternalSource(sourceId: UUID): Promise<ExternalSource | undefined> {
+    return this.externalSources.get(sourceId);
+  }
+
+  async addSourceLink(link: Omit<SourceLink, "id" | "createdAt">): Promise<SourceLink> {
+    const existing = this.sourceLinks.find(
+      (candidate) =>
+        candidate.userId === link.userId &&
+        candidate.sourceId === link.sourceId &&
+        candidate.targetType === link.targetType &&
+        candidate.targetId === link.targetId &&
+        candidate.relation === link.relation
+    );
+    if (existing) return existing;
+    const created: SourceLink = {
+      ...link,
+      id: createId("source_link"),
+      createdAt: nowIso()
+    };
+    this.sourceLinks.push(created);
+    return created;
+  }
+
+  async upsertEmailActionProposal(data: EmailActionProposalUpsertData): Promise<EmailActionProposal> {
+    const timestamp = nowIso();
+    const existing = [...this.emailActionProposals.values()].find(
+      (proposal) => proposal.idempotencyKey === data.idempotencyKey && !proposal.deletedAt
+    );
+    const proposal: EmailActionProposal = {
+      ...existing,
+      id: existing?.id ?? createId("email_proposal"),
+      userId: data.userId,
+      sourceId: data.sourceId,
+      idempotencyKey: data.idempotencyKey,
+      actionType: data.actionType,
+      status: data.status ?? existing?.status ?? "proposed",
+      title: data.title,
+      priority: data.priority ?? existing?.priority ?? "normal",
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    if (data.providerAccountId !== undefined) proposal.providerAccountId = data.providerAccountId;
+    else if (existing?.providerAccountId !== undefined) proposal.providerAccountId = existing.providerAccountId;
+    if (data.body !== undefined) proposal.body = data.body;
+    else if (existing?.body !== undefined) proposal.body = existing.body;
+    if (data.dueAt !== undefined) proposal.dueAt = data.dueAt;
+    else if (existing?.dueAt !== undefined) proposal.dueAt = existing.dueAt;
+    if (data.draftReplyText !== undefined) proposal.draftReplyText = data.draftReplyText;
+    else if (existing?.draftReplyText !== undefined) proposal.draftReplyText = existing.draftReplyText;
+    if (data.rationale !== undefined) proposal.rationale = data.rationale;
+    else if (existing?.rationale !== undefined) proposal.rationale = existing.rationale;
+    if (data.confidence !== undefined) proposal.confidence = data.confidence;
+    else if (existing?.confidence !== undefined) proposal.confidence = existing.confidence;
+    if (data.acceptedItemId !== undefined) proposal.acceptedItemId = data.acceptedItemId;
+    else if (existing?.acceptedItemId !== undefined) proposal.acceptedItemId = existing.acceptedItemId;
+    if (data.acceptedAt !== undefined) proposal.acceptedAt = data.acceptedAt;
+    else if (existing?.acceptedAt !== undefined) proposal.acceptedAt = existing.acceptedAt;
+    if (data.rejectedAt !== undefined) proposal.rejectedAt = data.rejectedAt;
+    else if (existing?.rejectedAt !== undefined) proposal.rejectedAt = existing.rejectedAt;
+    this.emailActionProposals.set(proposal.id, proposal);
+    return proposal;
+  }
+
+  async listEmailActionProposals(filters: EmailActionProposalListFilters): Promise<EmailActionProposal[]> {
+    return [...this.emailActionProposals.values()]
+      .filter((proposal) => {
+        if (proposal.userId !== filters.userId || proposal.deletedAt) return false;
+        if (filters.status !== undefined && proposal.status !== filters.status) return false;
+        return filters.providerAccountId === undefined || proposal.providerAccountId === filters.providerAccountId;
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, Math.min(Math.max(filters.limit ?? 50, 1), 200));
+  }
+
+  async getEmailActionProposal(proposalId: UUID): Promise<EmailActionProposal | undefined> {
+    return this.emailActionProposals.get(proposalId);
+  }
+
+  async updateEmailActionProposal(proposalId: UUID, patch: EmailActionProposalPatch): Promise<EmailActionProposal> {
+    const existing = this.emailActionProposals.get(proposalId);
+    if (!existing) throw new Error(`Email action proposal not found: ${proposalId}`);
+    const updated: EmailActionProposal = {
+      ...existing,
+      updatedAt: nowIso()
+    };
+    if (patch.status !== undefined) updated.status = patch.status;
+    if (patch.title !== undefined) updated.title = patch.title;
+    if (patch.body !== undefined) updated.body = patch.body;
+    if (patch.priority !== undefined) updated.priority = patch.priority;
+    if (patch.draftReplyText !== undefined) updated.draftReplyText = patch.draftReplyText;
+    if (patch.rationale !== undefined) updated.rationale = patch.rationale;
+    if (patch.confidence !== undefined) updated.confidence = patch.confidence;
+    if (patch.acceptedItemId !== undefined) updated.acceptedItemId = patch.acceptedItemId;
+    if (patch.metadata !== undefined) updated.metadata = patch.metadata;
+    if (patch.dueAt !== undefined) {
+      if (patch.dueAt === null) delete updated.dueAt;
+      else updated.dueAt = patch.dueAt;
+    }
+    if (patch.acceptedAt !== undefined) {
+      if (patch.acceptedAt === null) delete updated.acceptedAt;
+      else updated.acceptedAt = patch.acceptedAt;
+    }
+    if (patch.rejectedAt !== undefined) {
+      if (patch.rejectedAt === null) delete updated.rejectedAt;
+      else updated.rejectedAt = patch.rejectedAt;
+    }
+    this.emailActionProposals.set(proposalId, updated);
+    return updated;
+  }
+
   async addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog> {
     const created: AuditLog = {
       ...log,
@@ -452,6 +681,9 @@ export class InMemoryRyanStore implements RyanStore {
       recurrenceEventCount: this.recurrenceEvents.length,
       policyCount: this.policies.size,
       dailyPlanCount: this.dailyPlans.size,
+      providerAccountCount: this.providerAccounts.size,
+      externalSourceCount: this.externalSources.size,
+      emailActionProposalCount: this.emailActionProposals.size,
       auditLogCount: this.auditLogs.length
     };
   }

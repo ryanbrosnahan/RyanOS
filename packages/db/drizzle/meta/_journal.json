@@ -36,6 +36,13 @@
       "when": 1779977788000,
       "tag": "0004_default_one_off_due_dates",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1780012800000,
+      "tag": "0005_gmail_email_triage",
+      "breakpoints": true
     }
   ]
 }

@@ -3,13 +3,17 @@ import type {
   AuditLog,
   Area,
   DailyPlan,
+  EmailActionProposal,
+  ExternalSource,
   Item,
   ItemEvent,
   Policy,
+  ProviderAccount,
   Project,
   RecurrenceEvent,
   RecurrencePolicy,
-  RecurrenceState
+  RecurrenceState,
+  SourceLink
 } from "./types.js";
 
 export type AreaUpsertData = {
@@ -83,6 +87,85 @@ export type DailyPlanUpsertData = Omit<
   "id" | "createdAt" | "updatedAt" | "deletedAt"
 >;
 
+export type ProviderAccountUpsertData = {
+  userId: UUID;
+  provider: string;
+  externalAccountId?: string;
+  displayName?: string;
+  email?: string;
+  status?: string;
+  scopes?: string[];
+  metadata?: JsonObject;
+};
+
+export type ProviderAccountPatch = Partial<
+  Pick<ProviderAccount, "displayName" | "email" | "status" | "scopes" | "metadata">
+> & {
+  externalAccountId?: string | null;
+};
+
+export type ExternalSourceUpsertData = {
+  userId: UUID;
+  provider: string;
+  providerAccountId?: UUID;
+  externalId?: string;
+  url?: string;
+  title?: string;
+  summary?: string;
+  occurredAt?: string;
+  retentionClass?: string;
+  rawPayloadExpiresAt?: string;
+  metadata?: JsonObject;
+};
+
+export type SourceLinkCreateData = Omit<SourceLink, "id" | "createdAt">;
+
+export type EmailActionProposalUpsertData = {
+  userId: UUID;
+  sourceId: UUID;
+  providerAccountId?: UUID;
+  idempotencyKey: string;
+  actionType: EmailActionProposal["actionType"];
+  status?: EmailActionProposal["status"];
+  title: string;
+  body?: string;
+  priority?: EmailActionProposal["priority"];
+  dueAt?: string;
+  draftReplyText?: string;
+  rationale?: string;
+  confidence?: number;
+  acceptedItemId?: UUID;
+  acceptedAt?: string;
+  rejectedAt?: string;
+  metadata?: JsonObject;
+};
+
+export type EmailActionProposalPatch = Partial<
+  Pick<
+    EmailActionProposal,
+    | "status"
+    | "title"
+    | "body"
+    | "priority"
+    | "draftReplyText"
+    | "rationale"
+    | "confidence"
+    | "acceptedItemId"
+    | "metadata"
+  >
+> & {
+  dueAt?: string | null;
+  acceptedAt?: string | null;
+  rejectedAt?: string | null;
+};
+
+export type EmailActionProposalListFilters = {
+  userId: UUID;
+  status?: EmailActionProposal["status"];
+  providerAccountId?: UUID;
+  limit?: number;
+};
+
 export interface RyanStore {
   upsertArea(area: AreaUpsertData): Promise<Area>;
   listAreas(userId: UUID): Promise<Area[]>;
@@ -122,6 +205,20 @@ export interface RyanStore {
   getDailyPlan(userId: UUID, dateKey: string): Promise<DailyPlan | undefined>;
   listDailyPlans(filters: { userId: UUID; beforeDateKey?: string; limit?: number }): Promise<DailyPlan[]>;
   upsertDailyPlan(plan: DailyPlanUpsertData): Promise<DailyPlan>;
+
+  upsertProviderAccount(account: ProviderAccountUpsertData): Promise<ProviderAccount>;
+  listProviderAccounts(filters: { userId: UUID; provider?: string; limit?: number }): Promise<ProviderAccount[]>;
+  getProviderAccount(accountId: UUID): Promise<ProviderAccount | undefined>;
+  updateProviderAccount(accountId: UUID, patch: ProviderAccountPatch): Promise<ProviderAccount>;
+
+  upsertExternalSource(source: ExternalSourceUpsertData): Promise<ExternalSource>;
+  getExternalSource(sourceId: UUID): Promise<ExternalSource | undefined>;
+  addSourceLink(link: SourceLinkCreateData): Promise<SourceLink>;
+
+  upsertEmailActionProposal(proposal: EmailActionProposalUpsertData): Promise<EmailActionProposal>;
+  listEmailActionProposals(filters: EmailActionProposalListFilters): Promise<EmailActionProposal[]>;
+  getEmailActionProposal(proposalId: UUID): Promise<EmailActionProposal | undefined>;
+  updateEmailActionProposal(proposalId: UUID, patch: EmailActionProposalPatch): Promise<EmailActionProposal>;
 
   addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog>;
   snapshot?(): JsonObject | Promise<JsonObject>;
