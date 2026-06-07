@@ -150,7 +150,13 @@ docker compose -f docker-compose.server.yml up -d api web worker
 curl -fsS http://127.0.0.1:3100/api/health
 ```
 
-If Telegram polling is ready:
+If Telegram polling is ready, set this in `/opt/ryanos/.env`:
+
+```bash
+COMPOSE_PROFILES=telegram
+```
+
+Then start or redeploy:
 
 ```bash
 docker compose -f docker-compose.server.yml --profile telegram up -d --build

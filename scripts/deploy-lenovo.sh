@@ -58,7 +58,13 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
   docker compose -f '$COMPOSE_FILE' up -d postgres
   scripts/ensure-postgres-docker-auth.sh '$COMPOSE_FILE'
   docker compose -f '$COMPOSE_FILE' run --rm migrate
-  docker compose -f '$COMPOSE_FILE' up -d --remove-orphans api web worker
+  compose_profile_args=''
+  compose_services='api web worker'
+  if grep -Eq '^COMPOSE_PROFILES=([^#]*,)?telegram(,|$)' .env; then
+    compose_profile_args='--profile telegram'
+    compose_services=\"\$compose_services telegram-poller\"
+  fi
+  docker compose -f '$COMPOSE_FILE' \$compose_profile_args up -d --remove-orphans \$compose_services
   docker compose -f '$COMPOSE_FILE' ps
   curl -fsS http://127.0.0.1:\${WEB_PORT:-3100}/api/health
 "
