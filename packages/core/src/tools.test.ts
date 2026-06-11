@@ -358,6 +358,55 @@ describe("core tools", () => {
     expect([...store.items.values()][0]?.status).toBe("open");
   });
 
+  it("requires an explicit override before minimum interval completions", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Take GLP-1 shot",
+      kind: "habit"
+    });
+    await tools.execute("recurrence.setPolicy", {
+      userId: "user-1",
+      itemRef: "Take GLP-1 shot",
+      policy: {
+        type: "minimum_interval",
+        minimumIntervalDays: 7,
+        resetFromCompletion: true
+      }
+    });
+    await tools.execute("recurrence.recordEvent", {
+      userId: "user-1",
+      recurrenceRef: "Take GLP-1 shot",
+      eventType: "completed",
+      occurredAt: "2026-05-20T12:00:00.000Z"
+    });
+
+    const early = await tools.execute("recurrence.recordEvent", {
+      userId: "user-1",
+      recurrenceRef: "Take GLP-1 shot",
+      eventType: "completed",
+      occurredAt: "2026-05-26T12:00:00.000Z"
+    });
+    expect(early.status).toBe("needs_confirmation");
+    expect(store.recurrenceEvents).toHaveLength(1);
+
+    const overridden = await tools.execute("recurrence.recordEvent", {
+      userId: "user-1",
+      recurrenceRef: "Take GLP-1 shot",
+      eventType: "completed",
+      occurredAt: "2026-05-26T12:00:00.000Z",
+      overrideMinimumInterval: true
+    });
+
+    expect(overridden.status).toBe("applied");
+    expect(store.recurrenceEvents).toHaveLength(2);
+    const state = [...store.recurrenceStates.values()][0];
+    expect(state?.lastCompletedAt).toBe("2026-05-26T12:00:00.000Z");
+    expect(state?.nextDueAt).toBe("2026-06-02T12:00:00.000Z");
+  });
+
   it("sets once-per-week completion-based recurrence from a weekly preference", async () => {
     const store = new InMemoryRyanStore();
     const tools = createCoreToolRegistry(store);

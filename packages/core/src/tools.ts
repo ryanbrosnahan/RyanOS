@@ -1040,6 +1040,7 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       recurrenceRef: z.string().min(1),
       occurredAt: z.string().optional(),
       eventType: z.enum(["completed", "uncompleted", "skipped", "missed", "deferred"]),
+      overrideMinimumInterval: z.boolean().default(false),
       note: z.string().optional()
     }),
     handler: async (input) => {
@@ -1062,6 +1063,7 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       const previousEvents = await store.listRecurrenceEvents(policy.id);
       if (
         input.eventType === "completed" &&
+        !input.overrideMinimumInterval &&
         isBeforeMinimumInterval(policy, occurredAt, previousEvents)
       ) {
         return {

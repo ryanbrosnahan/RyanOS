@@ -194,22 +194,26 @@ function ScopeChip({ scope, variant }: { scope: ScopeLabel; variant: "area" | "p
   );
 }
 
-function dayTone(day: RecurrenceDay, isToday: boolean): string {
+function dayTone(day: RecurrenceDay, isToday: boolean, isIntended: boolean): string {
   const base = "h-8 w-8 shrink-0 rounded-full border text-[11px] font-semibold transition";
-  const todayRing = isToday ? " ring-2 ring-sky-300 ring-offset-1" : "";
+  const dateRing = isIntended
+    ? " ring-2 ring-amber-300 ring-offset-1 shadow-[0_0_14px_rgba(245,158,11,0.35)]"
+    : isToday
+      ? " ring-2 ring-sky-300 ring-offset-1"
+      : "";
   if (day.status === "completed") {
-    return `${base}${todayRing} border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800`;
+    return `${base}${dateRing} border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800`;
   }
   if (day.status === "missed") {
-    return `${base}${todayRing} border-rose-300 bg-rose-50 text-rose-800 hover:bg-rose-100`;
+    return `${base}${dateRing} border-rose-300 bg-rose-50 text-rose-800 hover:bg-rose-100`;
   }
   if (day.status === "skipped" || day.status === "deferred") {
-    return `${base}${todayRing} border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100`;
+    return `${base}${dateRing} border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100`;
   }
   if (day.status === "uncompleted") {
-    return `${base}${todayRing} border-stone-300 bg-stone-100 text-stone-500 hover:bg-stone-200`;
+    return `${base}${dateRing} border-stone-300 bg-stone-100 text-stone-500 hover:bg-stone-200`;
   }
-  return `${base}${todayRing} border-stone-300 bg-white text-stone-600 hover:bg-stone-100`;
+  return `${base}${dateRing} border-stone-300 bg-white text-stone-600 hover:bg-stone-100`;
 }
 
 function recurrenceDayLabel(day: RecurrenceDay): string {
@@ -276,6 +280,24 @@ function dateKeyInTimeZone(value: string, timeZone: string): string {
   }).formatToParts(new Date(value));
   const part = (type: string) => parts.find((candidate) => candidate.type === type)?.value ?? "";
   return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function recurrenceDateKey(value: string | undefined, timeZone: string): string | undefined {
+  return value ? dateKeyInTimeZone(value, timeZone) : undefined;
+}
+
+function recurrenceIntendedDateKey(recurrence: RecurrenceProgress, timeZone: string): string | undefined {
+  return recurrenceDateKey(recurrence.state?.nextDueAt, timeZone);
+}
+
+function isEarlyMinimumRecurrenceDate(
+  recurrence: RecurrenceProgress,
+  dateKey: string,
+  timeZone: string
+): boolean {
+  if (recurrence.policy.minimumIntervalDays === undefined) return false;
+  const nextEligibleDateKey = recurrenceDateKey(recurrence.state?.nextEligibleAt, timeZone);
+  return nextEligibleDateKey !== undefined && dateKey < nextEligibleDateKey;
 }
 
 function recurrenceLastDoneLabel(
@@ -432,6 +454,10 @@ export function ItemsPanel() {
           body: JSON.stringify({
             userId: "local-owner",
             completed: day.status !== "completed",
+            allowEarly:
+              item.recurrence !== undefined &&
+              day.status !== "completed" &&
+              isEarlyMinimumRecurrenceDate(item.recurrence, day.date, timezone),
             timezone,
             referenceDate: dashboardDate ?? undefined
           })
@@ -639,6 +665,9 @@ export function ItemsPanel() {
             const completed = item.status === "done";
             const hasRecurrence = item.recurrence !== undefined;
             const showRecurrenceDays = item.recurrence ? shouldShowRecurrenceDays(item.recurrence) : false;
+            const intendedDateKey = item.recurrence
+              ? recurrenceIntendedDateKey(item.recurrence, timezone)
+              : undefined;
             const lastDoneLabel = item.recurrence
               ? recurrenceLastDoneLabel(item.recurrence, dashboardDate, timezone)
               : undefined;
@@ -822,8 +851,11 @@ export function ItemsPanel() {
                       </span>
                     ) : null}
                     {!due && nextDue ? (
-                      <span className="rounded-md bg-stone-100 px-2 py-1 text-xs font-medium text-stone-700">
-                        {nextDue}
+                      <span
+                        className="rounded-md bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-900 ring-1 ring-amber-200 shadow-[0_0_14px_rgba(245,158,11,0.18)]"
+                        title={intendedDateKey ? `Intended date ${intendedDateKey}` : "Next intended date"}
+                      >
+                        Aim {nextDue}
                       </span>
                     ) : null}
                     {due ? (
@@ -843,6 +875,8 @@ export function ItemsPanel() {
                       <div className="flex min-w-0 flex-wrap gap-1.5">
                         {item.recurrence.week.days.map((day) => {
                           const today = day.date === dashboardDate;
+                          const intended = intendedDateKey === day.date;
+                          const early = isEarlyMinimumRecurrenceDate(item.recurrence!, day.date, timezone);
                           const key = `${item.id}:${day.date}`;
                           return (
                             <button
@@ -850,9 +884,9 @@ export function ItemsPanel() {
                               type="button"
                               disabled={pendingKey === key}
                               onClick={() => void toggleRecurrenceDay(item, day)}
-                              className={`${dayTone(day, today)} disabled:cursor-wait disabled:opacity-60`}
-                              aria-label={`${day.status === "completed" ? "Undo" : "Mark"} ${item.title} on ${day.weekday} ${day.date}`}
-                              title={`${day.weekday} ${day.date}`}
+                              className={`${dayTone(day, today, intended)} disabled:cursor-wait disabled:opacity-60`}
+                              aria-label={`${day.status === "completed" ? "Undo" : "Mark"} ${item.title} on ${day.weekday} ${day.date}${intended ? ", intended day" : early ? ", early" : ""}`}
+                              title={`${day.weekday} ${day.date}${intended ? " · intended" : early ? ` · early, intended ${intendedDateKey ?? ""}` : ""}`}
                             >
                               {day.status === "completed" ? (
                                 <Check className="mx-auto h-4 w-4" aria-hidden="true" />

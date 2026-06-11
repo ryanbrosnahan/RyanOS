@@ -164,6 +164,7 @@ const recurrenceDayBodySchema = z.object({
   userId: z.string().default("local-owner"),
   completed: z.boolean(),
   timezone: z.string().default("America/Chicago"),
+  allowEarly: z.boolean().default(false),
   referenceDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
 });
 
@@ -1694,9 +1695,12 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       userId: body.userId,
       recurrenceRef: params.itemId,
       eventType: body.completed ? "completed" : "uncompleted",
-      occurredAt: localDateTimeToUtcIso(params.dateKey, body.timezone, 12)
+      occurredAt: localDateTimeToUtcIso(params.dateKey, body.timezone, 12),
+      overrideMinimumInterval: body.allowEarly
     });
-    if (result.status === "failed" || result.status === "rejected") {
+    if (result.status === "needs_confirmation") {
+      reply.code(409);
+    } else if (result.status === "failed" || result.status === "rejected") {
       reply.code(400);
     }
     const referenceDateKey = body.referenceDate ?? params.dateKey;

@@ -565,6 +565,86 @@ describe("setup status", () => {
     expect(dayBefore.json().items[1].priorityScore).toBeLessThan(dayBefore.json().items[0].priorityScore);
   });
 
+  it("allows dashboard day toggles to intentionally complete minimum-interval items early", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Take GLP-1 shot",
+          kind: "habit"
+        }
+      }
+    });
+    const itemId = created.json().data.item.id;
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.setPolicy/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          itemRef: "Take GLP-1 shot",
+          policy: {
+            type: "minimum_interval",
+            minimumIntervalDays: 7,
+            resetFromCompletion: true
+          }
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.recordEvent/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          recurrenceRef: "Take GLP-1 shot",
+          eventType: "completed",
+          occurredAt: "2026-05-20T12:00:00.000Z"
+        }
+      }
+    });
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/v1/items/${itemId}/recurrence-days/2026-05-26`,
+      payload: {
+        userId: "local-owner",
+        completed: true,
+        timezone: "UTC",
+        referenceDate: "2026-05-26"
+      }
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json().result.status).toBe("needs_confirmation");
+
+    const completedEarly = await app.inject({
+      method: "POST",
+      url: `/v1/items/${itemId}/recurrence-days/2026-05-26`,
+      payload: {
+        userId: "local-owner",
+        completed: true,
+        allowEarly: true,
+        timezone: "UTC",
+        referenceDate: "2026-05-26"
+      }
+    });
+    await app.close();
+
+    expect(completedEarly.statusCode).toBe(200);
+    expect(completedEarly.json().result.status).toBe("applied");
+    expect(completedEarly.json().item.recurrence.week.days).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ date: "2026-05-26", status: "completed" })
+      ])
+    );
+    expect(completedEarly.json().item.recurrence.state.nextDueAt).toBe("2026-06-02T12:00:00.000Z");
+  });
+
   it("orders target-frequency items by recency and target pressure", async () => {
     vi.stubEnv("DATABASE_URL", "");
 
