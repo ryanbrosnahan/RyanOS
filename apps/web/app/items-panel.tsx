@@ -40,6 +40,7 @@ type RecurrenceProgress = {
     type: string;
     intervalDays?: number;
     minimumIntervalDays?: number;
+    cron?: string;
     targetCount?: number;
     targetWindowDays?: number;
     preferredDays: string[];
@@ -250,6 +251,9 @@ function recurrenceCadenceDays(recurrence: RecurrenceProgress): number | undefin
   }
   if (recurrence.policy.type === "completion_based") return recurrence.policy.intervalDays;
   if (recurrence.policy.type === "minimum_interval") return recurrence.policy.minimumIntervalDays;
+  if (recurrence.policy.type === "fixed_schedule" && monthlyCronDay(recurrence.policy.cron) !== undefined) {
+    return 31;
+  }
   return undefined;
 }
 
@@ -321,9 +325,40 @@ function recurrenceLastDoneLabel(
   return daysAgo === 0 ? "done today" : `last ${daysAgo}d ago`;
 }
 
+function ordinalDay(day: number): string {
+  if (day % 100 >= 11 && day % 100 <= 13) return `${day}th`;
+  switch (day % 10) {
+    case 1:
+      return `${day}st`;
+    case 2:
+      return `${day}nd`;
+    case 3:
+      return `${day}rd`;
+    default:
+      return `${day}th`;
+  }
+}
+
+function monthlyCronDay(cron: string | undefined): number | undefined {
+  const parts = cron?.trim().split(/\s+/);
+  if (parts?.length !== 5) return undefined;
+  const [, , dayOfMonth, month, dayOfWeek] = parts;
+  if (month !== "*" || (dayOfWeek !== "*" && dayOfWeek !== "?")) return undefined;
+  if (!/^\d{1,2}$/.test(dayOfMonth ?? "")) return undefined;
+  const day = Number(dayOfMonth);
+  return day >= 1 && day <= 31 ? day : undefined;
+}
+
 function recurrenceSummary(recurrence: RecurrenceProgress): string {
   const target = recurrence.week.targetCount;
   if (target) return `${recurrence.week.completedCount}/${target}`;
+  if (recurrence.policy.type === "fixed_schedule") {
+    const monthlyDay = monthlyCronDay(recurrence.policy.cron);
+    if (monthlyDay !== undefined) return `Monthly ${ordinalDay(monthlyDay)}`;
+  }
+  const cadenceDays = recurrenceCadenceDays(recurrence);
+  if (recurrence.policy.type === "minimum_interval" && cadenceDays !== undefined) return `Min ${cadenceDays}d`;
+  if (recurrence.policy.type === "completion_based" && cadenceDays !== undefined) return `${cadenceDays}d`;
   return `${recurrence.week.completedCount}`;
 }
 

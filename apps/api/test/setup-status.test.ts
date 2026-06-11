@@ -645,6 +645,50 @@ describe("setup status", () => {
     expect(completedEarly.json().item.recurrence.state.nextDueAt).toBe("2026-06-02T12:00:00.000Z");
   });
 
+  it("exposes fixed-schedule cron cadence to dashboard recurrence payloads", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Pay the HOA",
+          kind: "habit"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.setPolicy/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          itemRef: "Pay the HOA",
+          policy: {
+            type: "fixed_schedule",
+            cron: "0 9 1 * *",
+            resetFromCompletion: false
+          }
+        }
+      }
+    });
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&includeHidden=true&timezone=UTC"
+    });
+    await app.close();
+
+    const item = listed.json().items.find((candidate: { title: string }) => candidate.title === "Pay the HOA");
+    expect(item?.recurrence.policy).toMatchObject({
+      type: "fixed_schedule",
+      cron: "0 9 1 * *"
+    });
+  });
+
   it("orders target-frequency items by recency and target pressure", async () => {
     vi.stubEnv("DATABASE_URL", "");
 

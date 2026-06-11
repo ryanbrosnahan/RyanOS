@@ -337,6 +337,7 @@ function recurrenceProgress(
       type: policy.type,
       intervalDays: policy.intervalDays,
       minimumIntervalDays: policy.minimumIntervalDays,
+      cron: policy.cron,
       targetCount: policy.targetCount,
       targetWindowDays: policy.targetWindowDays,
       preferredDays: policy.preferredDays ?? []
