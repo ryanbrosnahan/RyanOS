@@ -14,6 +14,7 @@ logs/
 .cache/
 tmp/
 .DS_Store
+.idea/
 postgres-data/
 local.properties
 .gradle/

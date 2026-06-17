@@ -4,6 +4,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANDROID_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APK_PATH="${ANDROID_DIR}/app/build/outputs/apk/debug/app-debug.apk"
+ANDROID_STUDIO_JBR="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+
+if [[ -z "${JAVA_HOME:-}" && -x "${ANDROID_STUDIO_JBR}/bin/java" ]]; then
+  export JAVA_HOME="${ANDROID_STUDIO_JBR}"
+fi
 
 cd "${ANDROID_DIR}"
 

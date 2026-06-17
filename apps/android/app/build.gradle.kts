@@ -1,6 +1,5 @@
 plugins {
   id("com.android.application")
-  id("org.jetbrains.kotlin.android")
   id("org.jetbrains.kotlin.plugin.compose")
 }
 
@@ -33,10 +32,6 @@ android {
     targetCompatibility = JavaVersion.VERSION_17
   }
 
-  kotlin {
-    jvmToolchain(17)
-  }
-
   buildFeatures {
     compose = true
   }
@@ -59,4 +54,5 @@ dependencies {
   debugImplementation("androidx.compose.ui:ui-tooling")
 
   testImplementation("junit:junit:4.13.2")
+  testImplementation("org.json:json:20260522")
 }

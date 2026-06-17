@@ -19,6 +19,9 @@ Native Android companion for the RyanOS to-do list. It includes a small setup ap
 - A USB cable or Android wireless debugging if installing from this machine.
 - An HTTPS URL the phone can reach for the RyanOS API.
 
+This project uses AGP 9 built-in Kotlin support. Do not add the old `org.jetbrains.kotlin.android` plugin back to the Gradle files.
+The project includes a Gradle wrapper pinned to Gradle 9.4.1. The helper scripts auto-detect Android Studio's bundled JBR on macOS when `JAVA_HOME` is not set.
+
 Cleartext HTTP is disabled in the Android manifest. Use HTTPS for the API base URL.
 
 ## API Base URL
@@ -74,7 +77,7 @@ The doctor checks local Android build/install tools and, when given a URL, probe
 - `/health`
 - `/v1/mobile/widget-items`
 
-If you are using Android Studio only, missing command-line Gradle or `adb` may be acceptable. Android Studio can provide its own Gradle/JDK and install path.
+If you are using Android Studio only, missing command-line `adb` may be acceptable. Android Studio can provide its own install path.
 
 ## Install With Android Studio
 
@@ -104,7 +107,7 @@ scripts/doctor.sh
 Build the debug APK:
 
 ```sh
-scripts/build-debug-apk.sh
+./gradlew :app:assembleDebug
 ```
 
 Install it on the connected phone:

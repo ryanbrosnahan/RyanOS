@@ -10,7 +10,22 @@ if [[ "${1:-}" == "--skip-build" ]]; then
   SKIP_BUILD="true"
 fi
 
-if ! command -v adb >/dev/null 2>&1; then
+sdk_root() {
+  if [[ -n "${ANDROID_HOME:-}" && -d "${ANDROID_HOME}" ]]; then
+    printf "%s\n" "${ANDROID_HOME}"
+  elif [[ -n "${ANDROID_SDK_ROOT:-}" && -d "${ANDROID_SDK_ROOT}" ]]; then
+    printf "%s\n" "${ANDROID_SDK_ROOT}"
+  elif [[ -f "${ANDROID_DIR}/local.properties" ]]; then
+    sed -n 's/^sdk.dir=//p' "${ANDROID_DIR}/local.properties" | head -n 1
+  fi
+}
+
+SDK_ROOT="$(sdk_root)"
+if command -v adb >/dev/null 2>&1; then
+  ADB_CMD="$(command -v adb)"
+elif [[ -n "${SDK_ROOT}" && -x "${SDK_ROOT}/platform-tools/adb" ]]; then
+  ADB_CMD="${SDK_ROOT}/platform-tools/adb"
+else
   printf "adb is not available. Install Android SDK Platform Tools or use Android Studio's Run button.\n" >&2
   exit 1
 fi
@@ -20,7 +35,7 @@ if [[ "${SKIP_BUILD}" != "true" || ! -f "${APK_PATH}" ]]; then
 fi
 
 printf "Installing %s\n" "${APK_PATH}"
-adb install -r "${APK_PATH}"
+"${ADB_CMD}" install -r "${APK_PATH}"
 
 printf "Launching RyanOS\n"
-adb shell am start -n com.ryanos.android/.MainActivity >/dev/null
+"${ADB_CMD}" shell am start -n com.ryanos.android/.MainActivity >/dev/null
