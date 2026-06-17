@@ -887,4 +887,213 @@ describe("setup status", () => {
     });
     await app.close();
   });
+
+  it("returns compact mobile widget items and toggles normal tasks", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Buy coffee beans",
+          kind: "task",
+          priority: "high",
+          dueAt: "2026-05-27T17:00:00.000Z"
+        }
+      }
+    });
+    const itemId = created.json().data.item.id as string;
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toMatchObject({
+      date: "2026-05-27",
+      timezone: "UTC",
+      generatedAt: expect.any(String),
+      items: [
+        {
+          id: itemId,
+          title: "Buy coffee beans",
+          checked: false,
+          priority: "high",
+          dueAt: "2026-05-27T17:00:00.000Z",
+          secondaryText: "2026-05-27",
+          action: {
+            type: "item_complete",
+            itemId
+          }
+        }
+      ]
+    });
+
+    const completed = await app.inject({
+      method: "POST",
+      url: `/v1/mobile/items/${itemId}/toggle`,
+      payload: {
+        userId: "local-owner",
+        completed: true,
+        date: "2026-05-27",
+        timezone: "UTC"
+      }
+    });
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json().item).toMatchObject({
+      id: itemId,
+      checked: true,
+      status: "done"
+    });
+    const listedAfterComplete = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    expect(listedAfterComplete.json().items).toEqual([
+      expect.objectContaining({
+        id: itemId,
+        checked: true,
+        status: "done"
+      })
+    ]);
+
+    const reopened = await app.inject({
+      method: "POST",
+      url: `/v1/mobile/items/${itemId}/toggle`,
+      payload: {
+        userId: "local-owner",
+        completed: false,
+        date: "2026-05-27",
+        timezone: "UTC"
+      }
+    });
+    await app.close();
+
+    expect(reopened.statusCode).toBe(200);
+    expect(reopened.json().item).toMatchObject({
+      id: itemId,
+      checked: false,
+      status: "open"
+    });
+  });
+
+  it("creates mobile items and returns a refreshed widget payload", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/mobile/items",
+      payload: {
+        userId: "local-owner",
+        title: "Text Mom back",
+        kind: "task",
+        priority: "normal",
+        date: "2026-05-27",
+        timezone: "UTC"
+      }
+    });
+    await app.close();
+
+    expect(created.statusCode).toBe(200);
+    expect(created.json()).toMatchObject({
+      result: {
+        status: "applied"
+      },
+      item: {
+        title: "Text Mom back",
+        checked: false,
+        action: {
+          type: "item_complete"
+        }
+      },
+      widget: {
+        date: "2026-05-27",
+        items: [
+          expect.objectContaining({
+            title: "Text Mom back"
+          })
+        ]
+      }
+    });
+  });
+
+  it("maps recurring mobile widget items to recurrence-day toggles", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Go to the gym",
+          kind: "habit"
+        }
+      }
+    });
+    const itemId = created.json().data.item.id as string;
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.setPolicy/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          itemRef: "Go to the gym",
+          policy: {
+            type: "target_frequency",
+            targetCount: 3,
+            targetWindowDays: 7,
+            resetFromCompletion: true
+          }
+        }
+      }
+    });
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().items).toEqual([
+      expect.objectContaining({
+        id: itemId,
+        title: "Go to the gym",
+        checked: false,
+        action: {
+          type: "recurrence_day",
+          itemId,
+          date: "2026-05-27",
+          allowEarly: false
+        }
+      })
+    ]);
+
+    const completed = await app.inject({
+      method: "POST",
+      url: `/v1/mobile/items/${itemId}/toggle`,
+      payload: {
+        userId: "local-owner",
+        completed: true,
+        date: "2026-05-27",
+        timezone: "UTC"
+      }
+    });
+    await app.close();
+
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json().item).toMatchObject({
+      id: itemId,
+      checked: true,
+      status: "open",
+      action: {
+        type: "recurrence_day",
+        date: "2026-05-27"
+      }
+    });
+  });
 });

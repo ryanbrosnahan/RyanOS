@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="app_name">RyanOS</string>
+  <string name="widget_name">RyanOS To-Do</string>
+  <string name="widget_description">See and complete RyanOS to-do items from the home screen.</string>
+</resources>

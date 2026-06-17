@@ -15,3 +15,7 @@ logs/
 tmp/
 .DS_Store
 postgres-data/
+local.properties
+.gradle/
+**/build/
+*.apk

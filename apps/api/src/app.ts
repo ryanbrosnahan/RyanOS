@@ -103,6 +103,32 @@ const dailyPlanPromptBodySchema = z.object({
   telegramChatId: z.string().optional()
 });
 
+const mobileWidgetItemsQuerySchema = z.object({
+  userId: z.string().default("local-owner"),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  limit: z.coerce.number().int().min(1).max(20).default(8)
+});
+
+const mobileCreateItemBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  title: z.string().min(1),
+  kind: z.enum(["task", "reminder", "decision", "note", "waiting", "habit", "opportunity_action", "other"]).default("task"),
+  priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
+  dueAt: z.string().optional(),
+  body: z.string().optional()
+});
+
+const mobileToggleItemBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  completed: z.boolean(),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  allowEarly: z.boolean().default(false)
+});
+
 const aiSmokeBodySchema = z.object({
   userId: z.string().default("local-owner"),
   text: z
@@ -1318,6 +1344,114 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     return dashboardItems.filter(itemVisibleByDefault).sort(compareDashboardItems);
   }
 
+  type MobileWidgetItemAction =
+    | {
+        type: "item_complete";
+        itemId: string;
+      }
+    | {
+        type: "recurrence_day";
+        itemId: string;
+        date: string;
+        allowEarly: boolean;
+      };
+
+  type MobileWidgetItem = {
+    id: string;
+    title: string;
+    kind: Item["kind"];
+    status: Item["status"];
+    checked: boolean;
+    priority: Item["priority"];
+    priorityScore: number;
+    prioritySignals: string[];
+    action: MobileWidgetItemAction;
+    dueAt?: string;
+    secondaryText?: string;
+    scope?: {
+      area?: ReturnType<typeof areaForDashboard>;
+      project?: ReturnType<typeof projectForDashboard>;
+    };
+  };
+
+  function mobileDueAt(item: DashboardItem): string | undefined {
+    return item.dueAt ?? item.recurrence?.state?.nextDueAt;
+  }
+
+  function mobileRecurrenceCompleted(item: DashboardItem, dateKey: string): boolean {
+    return item.recurrence?.week.days.some((day) => day.date === dateKey && day.status === "completed") ?? false;
+  }
+
+  function mobileRecurrenceEarly(item: DashboardItem, dateKey: string, timeZone: string): boolean {
+    const nextEligibleAt = item.recurrence?.state?.nextEligibleAt;
+    if (item.recurrence?.policy.minimumIntervalDays === undefined || nextEligibleAt === undefined) return false;
+    return dateKey < localDateKey(new Date(nextEligibleAt), timeZone);
+  }
+
+  function mobileSecondaryText(item: DashboardItem, timeZone: string): string | undefined {
+    const labels = [item.scope.area?.name, item.scope.project?.name].filter(
+      (label): label is string => label !== undefined
+    );
+    const dueAt = mobileDueAt(item);
+    if (dueAt !== undefined) {
+      labels.unshift(localDateKey(new Date(dueAt), timeZone));
+    }
+    return labels.length === 0 ? undefined : labels.slice(0, 2).join(" / ");
+  }
+
+  function mobileWidgetItemForDashboard(item: DashboardItem, timeZone: string, dateKey: string): MobileWidgetItem {
+    const hasRecurrence = item.recurrence !== undefined;
+    const action: MobileWidgetItemAction = hasRecurrence
+      ? {
+          type: "recurrence_day",
+          itemId: item.id,
+          date: dateKey,
+          allowEarly: mobileRecurrenceEarly(item, dateKey, timeZone)
+        }
+      : {
+          type: "item_complete",
+          itemId: item.id
+        };
+    const widgetItem: MobileWidgetItem = {
+      id: item.id,
+      title: item.title,
+      kind: item.kind,
+      status: item.status,
+      checked: hasRecurrence ? mobileRecurrenceCompleted(item, dateKey) : item.status === "done",
+      priority: item.priority,
+      priorityScore: item.priorityScore,
+      prioritySignals: item.prioritySignals,
+      action
+    };
+    const dueAt = mobileDueAt(item);
+    if (dueAt !== undefined) widgetItem.dueAt = dueAt;
+    const secondaryText = mobileSecondaryText(item, timeZone);
+    if (secondaryText !== undefined) widgetItem.secondaryText = secondaryText;
+    if (item.scope.area !== undefined || item.scope.project !== undefined) {
+      widgetItem.scope = {};
+      if (item.scope.area !== undefined) widgetItem.scope.area = item.scope.area;
+      if (item.scope.project !== undefined) widgetItem.scope.project = item.scope.project;
+    }
+    return widgetItem;
+  }
+
+  async function mobileWidgetPayload(input: {
+    userId: string;
+    timezone: string;
+    dateKey: string;
+    limit: number;
+  }) {
+    const items = await dashboardItemsForDay(input.userId, input.timezone, input.dateKey);
+    return {
+      date: input.dateKey,
+      timezone: input.timezone,
+      generatedAt: nowIso(),
+      items: items
+        .slice(0, input.limit)
+        .map((item) => mobileWidgetItemForDashboard(item, input.timezone, input.dateKey))
+    };
+  }
+
   async function ensureDailyPlanPromptMessage(input: {
     userId: string;
     dateKey: string;
@@ -1629,6 +1763,97 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
         interpreted,
         toolResults
       }
+    };
+  });
+
+  app.get("/v1/mobile/widget-items", async (request) => {
+    const query = mobileWidgetItemsQuerySchema.parse(request.query);
+    const dateKey = query.date ?? localDateKey(new Date(), query.timezone);
+    return mobileWidgetPayload({
+      userId: query.userId,
+      timezone: query.timezone,
+      dateKey,
+      limit: query.limit
+    });
+  });
+
+  app.post("/v1/mobile/items", async (request, reply) => {
+    const body = mobileCreateItemBodySchema.parse(request.body);
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const input: Record<string, unknown> = {
+      userId: body.userId,
+      title: body.title,
+      kind: body.kind,
+      priority: body.priority
+    };
+    if (body.dueAt !== undefined) input.dueAt = body.dueAt;
+    if (body.body !== undefined) input.body = body.body;
+    const result = await tools.execute("item.create", input);
+    if (result.status === "failed" || result.status === "rejected" || result.status === "needs_clarification") {
+      reply.code(400);
+      return { result };
+    }
+    const created = (result.data as { item?: Item } | undefined)?.item;
+    const dashboardItem = created === undefined ? undefined : await itemForDashboard(created, body.timezone, dateKey);
+    return {
+      result,
+      item:
+        dashboardItem === undefined
+          ? undefined
+          : mobileWidgetItemForDashboard(dashboardItem, body.timezone, dateKey),
+      widget: await mobileWidgetPayload({
+        userId: body.userId,
+        timezone: body.timezone,
+        dateKey,
+        limit: 8
+      })
+    };
+  });
+
+  app.post("/v1/mobile/items/:itemId/toggle", async (request, reply) => {
+    const params = itemActionParamsSchema.parse(request.params);
+    const body = mobileToggleItemBodySchema.parse(request.body);
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const item = await store.getItem(params.itemId);
+    if (!item) {
+      reply.code(404);
+      return {
+        result: {
+          status: "failed",
+          messageForUser: `Item not found: ${params.itemId}`
+        }
+      };
+    }
+
+    const dashboardItem = await itemForDashboard(item, body.timezone, dateKey);
+    const result =
+      dashboardItem.recurrence === undefined
+        ? await tools.execute(body.completed ? "item.complete" : "item.uncomplete", {
+            userId: body.userId,
+            itemRef: params.itemId,
+            completedAt: body.completed ? localDateTimeToUtcIso(dateKey, body.timezone, 12) : undefined
+          })
+        : await tools.execute("recurrence.recordEvent", {
+            userId: body.userId,
+            recurrenceRef: params.itemId,
+            eventType: body.completed ? "completed" : "uncompleted",
+            occurredAt: localDateTimeToUtcIso(dateKey, body.timezone, 12),
+            overrideMinimumInterval: body.allowEarly
+          });
+    if (result.status === "needs_confirmation") {
+      reply.code(409);
+    } else if (result.status === "failed" || result.status === "rejected" || result.status === "needs_clarification") {
+      reply.code(400);
+    }
+    const updated = await store.getItem(params.itemId);
+    const updatedDashboardItem =
+      updated === undefined ? undefined : await itemForDashboard(updated, body.timezone, dateKey);
+    return {
+      result,
+      item:
+        updatedDashboardItem === undefined
+          ? undefined
+          : mobileWidgetItemForDashboard(updatedDashboardItem, body.timezone, dateKey)
     };
   });
 

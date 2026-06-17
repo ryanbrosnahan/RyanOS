@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <color name="ryanos_accent">#256D5A</color>
+  <color name="widget_preview_background">#FBFCF8</color>
+  <color name="widget_preview_text">#17201C</color>
+  <color name="widget_preview_muted">#5B6962</color>
+</resources>
