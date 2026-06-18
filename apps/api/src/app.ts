@@ -127,6 +127,7 @@ const mobileToggleItemBodySchema = z.object({
   completed: z.boolean(),
   timezone: z.string().default("America/Chicago"),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  toggle: z.boolean().default(false),
   allowEarly: z.boolean().default(false)
 });
 
@@ -1976,17 +1977,18 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     }
 
     const dashboardItem = await itemForDashboard(item, body.timezone, dateKey);
+    const completed = body.toggle ? !dashboardItemCheckedForMobile(dashboardItem, dateKey) : body.completed;
     const result =
       dashboardItem.recurrence === undefined
-        ? await tools.execute(body.completed ? "item.complete" : "item.uncomplete", {
+        ? await tools.execute(completed ? "item.complete" : "item.uncomplete", {
             userId: body.userId,
             itemRef: params.itemId,
-            completedAt: body.completed ? localDateTimeToUtcIso(dateKey, body.timezone, 12) : undefined
+            completedAt: completed ? localDateTimeToUtcIso(dateKey, body.timezone, 12) : undefined
           })
         : await tools.execute("recurrence.recordEvent", {
             userId: body.userId,
             recurrenceRef: params.itemId,
-            eventType: body.completed ? "completed" : "uncompleted",
+            eventType: completed ? "completed" : "uncompleted",
             occurredAt: localDateTimeToUtcIso(dateKey, body.timezone, 12),
             overrideMinimumInterval: body.allowEarly
           });

@@ -97,7 +97,7 @@ class RyanOsTodoWidget : GlanceAppWidget() {
           ) {
             items(
               items = orderedItems,
-              itemId = { item -> stableItemId(item.id) }
+              itemId = { item -> stableItemId(item) }
             ) { item ->
               Column(modifier = GlanceModifier.fillMaxWidth()) {
                 WidgetItemRow(
@@ -371,7 +371,8 @@ class RyanOsTodoWidget : GlanceAppWidget() {
               WidgetActionKeys.Completed to (day.status != "completed").toString(),
               WidgetActionKeys.Date to day.date,
               WidgetActionKeys.AllowEarly to day.allowEarly.toString(),
-              WidgetActionKeys.KeepExpanded to "true"
+              WidgetActionKeys.KeepExpanded to "true",
+              WidgetActionKeys.ToggleExisting to "true"
             )
           )
         ),
@@ -435,8 +436,29 @@ class RyanOsTodoWidget : GlanceAppWidget() {
       night = Color(0xFF151C19)
     )
 
-    private fun stableItemId(id: String): Long {
-      val hash = id.fold(1125899906842597L) { acc, char -> 31L * acc + char.code }
+    private fun stableItemId(item: WidgetItem): Long =
+      stableItemId(
+        buildString {
+          append(item.id)
+          append(':')
+          append(item.status)
+          append(':')
+          append(item.checked)
+          item.recurrence?.let { recurrence ->
+            append(':')
+            append(recurrence.summary)
+            recurrence.days.forEach { day ->
+              append('|')
+              append(day.date)
+              append('=')
+              append(day.status)
+            }
+          }
+        }
+      )
+
+    private fun stableItemId(seed: String): Long {
+      val hash = seed.fold(1125899906842597L) { acc, char -> 31L * acc + char.code }
       val positiveHash = hash and Long.MAX_VALUE
       return if (positiveHash == 0L) 1L else positiveHash
     }

@@ -12,6 +12,7 @@ object WidgetActionKeys {
   val Date = ActionParameters.Key<String>("date")
   val AllowEarly = ActionParameters.Key<String>("allow_early")
   val KeepExpanded = ActionParameters.Key<String>("keep_expanded")
+  val ToggleExisting = ActionParameters.Key<String>("toggle_existing")
 }
 
 class RefreshWidgetAction : ActionCallback {
@@ -36,12 +37,14 @@ class ToggleItemAction : ActionCallback {
     val date = parameters[WidgetActionKeys.Date]?.takeIf { it.isNotBlank() }
     val allowEarly = parameters[WidgetActionKeys.AllowEarly] == "true"
     val keepExpanded = parameters[WidgetActionKeys.KeepExpanded] == "true"
+    val toggleExisting = parameters[WidgetActionKeys.ToggleExisting] == "true"
     val repository = RyanOsRepository.getInstance(context)
     repository.toggleItem(
       itemId = itemId,
       completed = completed,
       date = date,
-      allowEarly = allowEarly
+      allowEarly = allowEarly,
+      toggleExisting = toggleExisting
     )
     if (keepExpanded) {
       repository.setRecurrenceExpanded(itemId = itemId, expanded = true)

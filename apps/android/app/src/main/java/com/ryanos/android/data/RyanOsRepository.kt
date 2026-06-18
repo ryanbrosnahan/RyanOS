@@ -127,7 +127,8 @@ class RyanOsRepository private constructor(context: Context) {
     itemId: String,
     completed: Boolean,
     date: String?,
-    allowEarly: Boolean
+    allowEarly: Boolean,
+    toggleExisting: Boolean = false
   ): WidgetSnapshot = withContext(Dispatchers.IO) {
     val settings = settingsFlow.first()
     if (!settings.isConfigured) return@withContext refresh()
@@ -137,7 +138,8 @@ class RyanOsRepository private constructor(context: Context) {
         itemId = itemId,
         completed = completed,
         date = date,
-        allowEarly = allowEarly
+        allowEarly = allowEarly,
+        toggleExisting = toggleExisting
       )
       refresh()
     }.getOrElse { error ->

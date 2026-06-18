@@ -1301,6 +1301,21 @@ describe("setup status", () => {
       method: "GET",
       url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-27&timezone=UTC"
     });
+    const toggledFromStaleWidget = await app.inject({
+      method: "POST",
+      url: `/v1/mobile/items/${itemId}/toggle`,
+      payload: {
+        userId: "local-owner",
+        completed: true,
+        toggle: true,
+        date: "2026-05-27",
+        timezone: "UTC"
+      }
+    });
+    const listedAfterStaleToggle = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
     await app.close();
 
     expect(completed.statusCode).toBe(200);
@@ -1325,6 +1340,29 @@ describe("setup status", () => {
             expect.objectContaining({
               date: "2026-05-27",
               status: "completed",
+              isToday: true
+            })
+          ])
+        })
+      })
+    ]);
+    expect(toggledFromStaleWidget.statusCode).toBe(200);
+    expect(toggledFromStaleWidget.json().item).toMatchObject({
+      id: itemId,
+      checked: false,
+      status: "open"
+    });
+    expect(listedAfterStaleToggle.statusCode).toBe(200);
+    expect(listedAfterStaleToggle.json().items).toEqual([
+      expect.objectContaining({
+        id: itemId,
+        checked: false,
+        recurrence: expect.objectContaining({
+          summary: "0/3",
+          days: expect.arrayContaining([
+            expect.objectContaining({
+              date: "2026-05-27",
+              status: "uncompleted",
               isToday: true
             })
           ])

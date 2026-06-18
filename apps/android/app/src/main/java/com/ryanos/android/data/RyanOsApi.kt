@@ -70,7 +70,8 @@ object RyanOsApi {
     itemId: String,
     completed: Boolean,
     date: String?,
-    allowEarly: Boolean
+    allowEarly: Boolean,
+    toggleExisting: Boolean = false
   ) {
     val body = JSONObject()
       .put("userId", settings.userId)
@@ -78,6 +79,7 @@ object RyanOsApi {
       .put("timezone", settings.timezone)
       .put("date", date ?: todayDateKey(settings.timezone))
       .put("allowEarly", allowEarly)
+      .put("toggle", toggleExisting)
     request(
       method = "POST",
       url = "${settings.normalizedBaseUrl}/v1/mobile/items/${itemId.urlEncode()}/toggle",
