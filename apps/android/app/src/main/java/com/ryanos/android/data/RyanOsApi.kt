@@ -16,13 +16,15 @@ data class WidgetPayloadResult(
 )
 
 object RyanOsApi {
+  private const val WIDGET_ITEM_LIMIT = 100
+
   fun todayDateKey(timezone: String): String {
     val zone = runCatching { ZoneId.of(timezone) }.getOrElse { ZoneId.systemDefault() }
     return LocalDate.now(zone).toString()
   }
 
   @Throws(IOException::class)
-  fun fetchWidgetPayload(settings: RyanOsSettings, limit: Int = 8): WidgetPayloadResult {
+  fun fetchWidgetPayload(settings: RyanOsSettings, limit: Int = WIDGET_ITEM_LIMIT): WidgetPayloadResult {
     val date = todayDateKey(settings.timezone)
     val query = mapOf(
       "userId" to settings.userId,

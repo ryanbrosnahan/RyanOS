@@ -17,6 +17,8 @@ import androidx.glance.action.actionStartActivity
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.actionRunCallback
+import androidx.glance.appwidget.lazy.LazyColumn
+import androidx.glance.appwidget.lazy.items
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
 import androidx.glance.color.ColorProvider
@@ -46,7 +48,8 @@ class RyanOsTodoWidget : GlanceAppWidget() {
     setOf(
       COMPACT_SIZE,
       WIDE_SIZE,
-      TALL_SIZE
+      TALL_SIZE,
+      EXTRA_TALL_SIZE
     )
   )
 
@@ -63,12 +66,6 @@ class RyanOsTodoWidget : GlanceAppWidget() {
   private fun WidgetContent(snapshot: WidgetSnapshot) {
     val size = LocalSize.current
     val compact = size.width < 220.dp
-    val maxItems = when {
-      size.height < 120.dp -> 1
-      size.height < 180.dp -> 2
-      size.height < 235.dp -> 3
-      else -> 4
-    }
     val showSecondary = !compact && size.height >= 170.dp
 
     Column(
@@ -83,9 +80,20 @@ class RyanOsTodoWidget : GlanceAppWidget() {
         !snapshot.configured -> SetupState()
         snapshot.items.isEmpty() -> EmptyState(snapshot = snapshot)
         else -> {
-          snapshot.items.take(maxItems).forEach { item ->
-            WidgetItemRow(item = item, showSecondary = showSecondary)
-            Spacer(modifier = GlanceModifier.height(4.dp))
+          LazyColumn(
+            modifier = GlanceModifier
+              .defaultWeight()
+              .fillMaxWidth()
+          ) {
+            items(
+              items = snapshot.items,
+              itemId = { item -> stableItemId(item.id) }
+            ) { item ->
+              Column(modifier = GlanceModifier.fillMaxWidth()) {
+                WidgetItemRow(item = item, showSecondary = showSecondary)
+                Spacer(modifier = GlanceModifier.height(4.dp))
+              }
+            }
           }
           if (!compact && snapshot.error != null) {
             Text(
@@ -213,7 +221,8 @@ class RyanOsTodoWidget : GlanceAppWidget() {
   companion object {
     private val COMPACT_SIZE = DpSize(130.dp, 110.dp)
     private val WIDE_SIZE = DpSize(276.dp, 110.dp)
-    private val TALL_SIZE = DpSize(276.dp, 220.dp)
+    private val TALL_SIZE = DpSize(276.dp, 320.dp)
+    private val EXTRA_TALL_SIZE = DpSize(276.dp, 560.dp)
 
     private val WidgetBackground = ColorProvider(
       day = Color(0xFFFBFCF8),
@@ -231,5 +240,11 @@ class RyanOsTodoWidget : GlanceAppWidget() {
       day = Color(0xFF9E2B25),
       night = Color(0xFFFFB4AB)
     )
+
+    private fun stableItemId(id: String): Long {
+      val hash = id.fold(1125899906842597L) { acc, char -> 31L * acc + char.code }
+      val positiveHash = hash and Long.MAX_VALUE
+      return if (positiveHash == 0L) 1L else positiveHash
+    }
   }
 }

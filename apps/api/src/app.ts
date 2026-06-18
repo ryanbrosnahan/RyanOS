@@ -107,7 +107,7 @@ const mobileWidgetItemsQuerySchema = z.object({
   userId: z.string().default("local-owner"),
   timezone: z.string().default("America/Chicago"),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  limit: z.coerce.number().int().min(1).max(20).default(8)
+  limit: z.coerce.number().int().min(1).max(100).default(100)
 });
 
 const mobileCreateItemBodySchema = z.object({
@@ -1344,6 +1344,16 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     return dashboardItems.filter(itemVisibleByDefault).sort(compareDashboardItems);
   }
 
+  async function mobileWidgetItemsForDay(userId: string, timeZone: string, dateKey: string): Promise<DashboardItem[]> {
+    const items = await store.listItems({
+      userId,
+      statuses: ["open", "active", "waiting"],
+      limit: 100
+    });
+    const dashboardItems = await Promise.all(items.map((item) => itemForDashboard(item, timeZone, dateKey)));
+    return dashboardItems.sort(compareDashboardItems);
+  }
+
   type MobileWidgetItemAction =
     | {
         type: "item_complete";
@@ -1441,7 +1451,7 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     dateKey: string;
     limit: number;
   }) {
-    const items = await dashboardItemsForDay(input.userId, input.timezone, input.dateKey);
+    const items = await mobileWidgetItemsForDay(input.userId, input.timezone, input.dateKey);
     return {
       date: input.dateKey,
       timezone: input.timezone,
@@ -1805,7 +1815,7 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
         userId: body.userId,
         timezone: body.timezone,
         dateKey,
-        limit: 8
+        limit: 100
       })
     };
   });

@@ -952,13 +952,7 @@ describe("setup status", () => {
       method: "GET",
       url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-27&timezone=UTC"
     });
-    expect(listedAfterComplete.json().items).toEqual([
-      expect.objectContaining({
-        id: itemId,
-        checked: true,
-        status: "done"
-      })
-    ]);
+    expect(listedAfterComplete.json().items).toEqual([]);
 
     const reopened = await app.inject({
       method: "POST",
@@ -1019,6 +1013,110 @@ describe("setup status", () => {
         ]
       }
     });
+  });
+
+  it("returns more than eight open mobile widget items by default", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    for (let index = 1; index <= 12; index += 1) {
+      await app.inject({
+        method: "POST",
+        url: "/v1/tools/item.create/invoke",
+        payload: {
+          input: {
+            userId: "local-owner",
+            title: `Widget task ${String(index).padStart(2, "0")}`,
+            kind: "task",
+            priority: "normal"
+          }
+        }
+      });
+    }
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    const limited = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-27&timezone=UTC&limit=9"
+    });
+    await app.close();
+
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().items).toHaveLength(12);
+    expect(listed.json().items.map((item: { title: string }) => item.title)).toEqual(
+      expect.arrayContaining(["Widget task 01", "Widget task 12"])
+    );
+    expect(limited.json().items).toHaveLength(9);
+  });
+
+  it("includes recurring mobile widget items that are hidden from the dashboard until later", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Take GLP-1 shot",
+          kind: "habit"
+        }
+      }
+    });
+    const itemId = created.json().data.item.id as string;
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.setPolicy/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          itemRef: "Take GLP-1 shot",
+          policy: {
+            type: "minimum_interval",
+            minimumIntervalDays: 7,
+            resetFromCompletion: true
+          }
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.recordEvent/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          recurrenceRef: "Take GLP-1 shot",
+          eventType: "completed",
+          occurredAt: "2026-05-20T12:00:00.000Z"
+        }
+      }
+    });
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-25&timezone=UTC"
+    });
+    await app.close();
+
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().items).toEqual([
+      expect.objectContaining({
+        id: itemId,
+        title: "Take GLP-1 shot",
+        checked: false,
+        prioritySignals: expect.arrayContaining(["hidden until 2026-05-26", "next due 2026-05-27"]),
+        action: {
+          type: "recurrence_day",
+          itemId,
+          date: "2026-05-25",
+          allowEarly: true
+        }
+      })
+    ]);
   });
 
   it("maps recurring mobile widget items to recurrence-day toggles", async () => {
