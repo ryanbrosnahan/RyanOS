@@ -906,6 +906,19 @@ describe("setup status", () => {
       }
     });
     const itemId = created.json().data.item.id as string;
+    const secondCreated = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Write morning notes",
+          kind: "task",
+          priority: "normal"
+        }
+      }
+    });
+    const secondItemId = secondCreated.json().data.item.id as string;
 
     const listed = await app.inject({
       method: "GET",
@@ -915,9 +928,11 @@ describe("setup status", () => {
     expect(listed.json()).toMatchObject({
       date: "2026-05-27",
       timezone: "UTC",
-      generatedAt: expect.any(String),
-      items: [
-        {
+      generatedAt: expect.any(String)
+    });
+    expect(listed.json().items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
           id: itemId,
           title: "Buy coffee beans",
           checked: false,
@@ -928,9 +943,14 @@ describe("setup status", () => {
             type: "item_complete",
             itemId
           }
-        }
-      ]
-    });
+        }),
+        expect.objectContaining({
+          id: secondItemId,
+          title: "Write morning notes",
+          checked: false
+        })
+      ])
+    );
 
     const completed = await app.inject({
       method: "POST",
@@ -952,7 +972,15 @@ describe("setup status", () => {
       method: "GET",
       url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-27&timezone=UTC"
     });
-    expect(listedAfterComplete.json().items).toEqual([]);
+    expect(listedAfterComplete.json().items.map((item: { id: string }) => item.id)).toEqual([
+      secondItemId,
+      itemId
+    ]);
+    expect(listedAfterComplete.json().items[1]).toMatchObject({
+      id: itemId,
+      checked: true,
+      status: "done"
+    });
 
     const reopened = await app.inject({
       method: "POST",
@@ -1015,6 +1043,53 @@ describe("setup status", () => {
     });
   });
 
+  it("returns mobile widget area and project scope metadata", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Fix the sink",
+          kind: "task",
+          priority: "normal",
+          areaRef: "Home",
+          projectRef: "Repairs"
+        }
+      }
+    });
+    const itemId = created.json().data.item.id as string;
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    await app.close();
+
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().items).toEqual([
+      expect.objectContaining({
+        id: itemId,
+        title: "Fix the sink",
+        scope: {
+          area: expect.objectContaining({
+            name: "Home",
+            icon: "home",
+            color: "amber"
+          }),
+          project: expect.objectContaining({
+            name: "Repairs",
+            icon: "folder-kanban",
+            color: "stone"
+          })
+        }
+      })
+    ]);
+  });
+
   it("returns more than eight open mobile widget items by default", async () => {
     vi.stubEnv("DATABASE_URL", "");
 
@@ -1052,7 +1127,7 @@ describe("setup status", () => {
     expect(limited.json().items).toHaveLength(9);
   });
 
-  it("includes recurring mobile widget items that are hidden from the dashboard until later", async () => {
+  it("hides future recurring mobile widget items until the configured lead window", async () => {
     vi.stubEnv("DATABASE_URL", "");
 
     const app = buildApp();
@@ -1100,10 +1175,16 @@ describe("setup status", () => {
       method: "GET",
       url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-25&timezone=UTC"
     });
+    const listedWithTwoDayLead = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-25&timezone=UTC&recurrenceLeadDays=2"
+    });
     await app.close();
 
     expect(listed.statusCode).toBe(200);
-    expect(listed.json().items).toEqual([
+    expect(listed.json().items).toEqual([]);
+    expect(listedWithTwoDayLead.statusCode).toBe(200);
+    expect(listedWithTwoDayLead.json().items).toEqual([
       expect.objectContaining({
         id: itemId,
         title: "Take GLP-1 shot",
@@ -1114,7 +1195,29 @@ describe("setup status", () => {
           itemId,
           date: "2026-05-25",
           allowEarly: true
-        }
+        },
+        recurrence: expect.objectContaining({
+          summary: "1/1",
+          intendedDate: "2026-05-27",
+          nextDueAt: "2026-05-27T12:00:00.000Z",
+          lastDoneLabel: "last 5d ago",
+          days: expect.arrayContaining([
+            expect.objectContaining({
+              date: "2026-05-20",
+              status: "completed",
+              allowEarly: true,
+              isToday: false,
+              isIntended: false
+            }),
+            expect.objectContaining({
+              date: "2026-05-25",
+              status: "none",
+              allowEarly: true,
+              isToday: true,
+              isIntended: false
+            })
+          ])
+        })
       })
     ]);
   });
@@ -1162,6 +1265,19 @@ describe("setup status", () => {
         id: itemId,
         title: "Go to the gym",
         checked: false,
+        recurrence: expect.objectContaining({
+          summary: "0/3",
+          days: expect.arrayContaining([
+            expect.objectContaining({
+              date: "2026-05-27",
+              weekday: "Wed",
+              status: "none",
+              allowEarly: false,
+              isToday: true,
+              isIntended: false
+            })
+          ])
+        }),
         action: {
           type: "recurrence_day",
           itemId,
@@ -1181,6 +1297,10 @@ describe("setup status", () => {
         timezone: "UTC"
       }
     });
+    const listedAfterComplete = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
     await app.close();
 
     expect(completed.statusCode).toBe(200);
@@ -1193,5 +1313,23 @@ describe("setup status", () => {
         date: "2026-05-27"
       }
     });
+    expect(listedAfterComplete.statusCode).toBe(200);
+    expect(listedAfterComplete.json().items).toEqual([
+      expect.objectContaining({
+        id: itemId,
+        checked: true,
+        status: "open",
+        recurrence: expect.objectContaining({
+          summary: "1/3",
+          days: expect.arrayContaining([
+            expect.objectContaining({
+              date: "2026-05-27",
+              status: "completed",
+              isToday: true
+            })
+          ])
+        })
+      })
+    ]);
   });
 });

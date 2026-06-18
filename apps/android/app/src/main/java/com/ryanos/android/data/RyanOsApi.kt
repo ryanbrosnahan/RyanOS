@@ -30,7 +30,8 @@ object RyanOsApi {
       "userId" to settings.userId,
       "timezone" to settings.timezone,
       "date" to date,
-      "limit" to limit.toString()
+      "limit" to limit.toString(),
+      "recurrenceLeadDays" to clampRecurrenceLeadDays(settings.recurrenceLeadDaysBeforeDue).toString()
     ).toQueryString()
     val rawJson = request(
       method = "GET",
@@ -88,20 +89,32 @@ object RyanOsApi {
     rawJson: String?,
     lastSyncedAt: String? = null,
     configured: Boolean = true,
-    error: String? = null
+    error: String? = null,
+    recurrenceLeadDaysBeforeDue: Int = DEFAULT_RECURRENCE_LEAD_DAYS,
+    showTaskDetails: Boolean = true,
+    colorCodeByArea: Boolean = true,
+    expandedRecurrenceItemIds: Set<String> = emptySet()
   ): WidgetSnapshot {
     if (!configured) {
       return WidgetSnapshot(
         configured = false,
         readOnly = true,
-        error = error
+        error = error,
+        recurrenceLeadDaysBeforeDue = recurrenceLeadDaysBeforeDue,
+        showTaskDetails = showTaskDetails,
+        colorCodeByArea = colorCodeByArea,
+        expandedRecurrenceItemIds = expandedRecurrenceItemIds
       )
     }
     if (rawJson.isNullOrBlank()) {
       return WidgetSnapshot(
         configured = true,
         readOnly = error != null,
-        error = error
+        error = error,
+        recurrenceLeadDaysBeforeDue = recurrenceLeadDaysBeforeDue,
+        showTaskDetails = showTaskDetails,
+        colorCodeByArea = colorCodeByArea,
+        expandedRecurrenceItemIds = expandedRecurrenceItemIds
       )
     }
 
@@ -142,6 +155,8 @@ object RyanOsApi {
                 },
                 dueAt = item.optStringOrNull("dueAt"),
                 secondaryText = item.optStringOrNull("secondaryText"),
+                recurrence = parseRecurrence(item.optJSONObject("recurrence")),
+                scope = parseScope(item.optJSONObject("scope")),
                 action = action
               )
             )
@@ -156,6 +171,10 @@ object RyanOsApi {
         configured = true,
         readOnly = error != null,
         error = error,
+        recurrenceLeadDaysBeforeDue = recurrenceLeadDaysBeforeDue,
+        showTaskDetails = showTaskDetails,
+        colorCodeByArea = colorCodeByArea,
+        expandedRecurrenceItemIds = expandedRecurrenceItemIds,
         items = parsedItems
       )
     }.getOrElse { parseError ->
@@ -163,9 +182,64 @@ object RyanOsApi {
         configured = true,
         readOnly = true,
         lastSyncedAt = lastSyncedAt,
-        error = error ?: "Could not read widget data: ${parseError.message ?: parseError.javaClass.simpleName}"
+        error = error ?: "Could not read widget data: ${parseError.message ?: parseError.javaClass.simpleName}",
+        recurrenceLeadDaysBeforeDue = recurrenceLeadDaysBeforeDue,
+        showTaskDetails = showTaskDetails,
+        colorCodeByArea = colorCodeByArea,
+        expandedRecurrenceItemIds = expandedRecurrenceItemIds
       )
     }
+  }
+
+  private fun parseRecurrence(recurrence: JSONObject?): WidgetRecurrence? {
+    if (recurrence == null) return null
+    val days = recurrence.optJSONArray("days")
+    return WidgetRecurrence(
+      summary = recurrence.optStringOrNull("summary") ?: "",
+      intendedDate = recurrence.optStringOrNull("intendedDate"),
+      nextDueAt = recurrence.optStringOrNull("nextDueAt"),
+      lastDoneLabel = recurrence.optStringOrNull("lastDoneLabel"),
+      days = buildList {
+        if (days != null) {
+          for (index in 0 until days.length()) {
+            val day = days.optJSONObject(index) ?: continue
+            val date = day.optString("date")
+            if (date.isBlank()) continue
+            add(
+              WidgetRecurrenceDay(
+                date = date,
+                weekday = day.optStringOrNull("weekday") ?: "",
+                status = day.optStringOrNull("status") ?: "none",
+                allowEarly = day.optBoolean("allowEarly", false),
+                isToday = day.optBoolean("isToday", false),
+                isIntended = day.optBoolean("isIntended", false)
+              )
+            )
+          }
+        }
+      }
+    )
+  }
+
+  private fun parseScope(scope: JSONObject?): WidgetScope? {
+    if (scope == null) return null
+    val area = parseScopeLabel(scope.optJSONObject("area"))
+    val project = parseScopeLabel(scope.optJSONObject("project"))
+    if (area == null && project == null) return null
+    return WidgetScope(area = area, project = project)
+  }
+
+  private fun parseScopeLabel(scope: JSONObject?): WidgetScopeLabel? {
+    if (scope == null) return null
+    val id = scope.optString("id")
+    val name = scope.optString("name")
+    if (id.isBlank() || name.isBlank()) return null
+    return WidgetScopeLabel(
+      id = id,
+      name = name,
+      icon = scope.optStringOrNull("icon"),
+      color = scope.optStringOrNull("color")
+    )
   }
 
   private fun request(method: String, url: String, body: JSONObject? = null): String {

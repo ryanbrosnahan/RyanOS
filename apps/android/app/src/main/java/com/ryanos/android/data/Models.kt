@@ -5,7 +5,10 @@ import java.time.ZoneId
 data class RyanOsSettings(
   val apiBaseUrl: String = "",
   val userId: String = "local-owner",
-  val timezone: String = defaultTimezone()
+  val timezone: String = defaultTimezone(),
+  val recurrenceLeadDaysBeforeDue: Int = DEFAULT_RECURRENCE_LEAD_DAYS,
+  val showTaskDetails: Boolean = true,
+  val colorCodeByArea: Boolean = true
 ) {
   val isConfigured: Boolean
     get() = apiBaseUrl.isNotBlank()
@@ -22,6 +25,10 @@ data class WidgetSnapshot(
   val configured: Boolean = false,
   val readOnly: Boolean = false,
   val error: String? = null,
+  val recurrenceLeadDaysBeforeDue: Int = DEFAULT_RECURRENCE_LEAD_DAYS,
+  val showTaskDetails: Boolean = true,
+  val colorCodeByArea: Boolean = true,
+  val expandedRecurrenceItemIds: Set<String> = emptySet(),
   val items: List<WidgetItem> = emptyList()
 )
 
@@ -36,6 +43,8 @@ data class WidgetItem(
   val prioritySignals: List<String>,
   val dueAt: String?,
   val secondaryText: String?,
+  val recurrence: WidgetRecurrence?,
+  val scope: WidgetScope?,
   val action: WidgetAction
 )
 
@@ -45,5 +54,38 @@ data class WidgetAction(
   val date: String? = null,
   val allowEarly: Boolean = false
 )
+
+data class WidgetRecurrence(
+  val summary: String,
+  val intendedDate: String?,
+  val nextDueAt: String?,
+  val lastDoneLabel: String?,
+  val days: List<WidgetRecurrenceDay>
+)
+
+data class WidgetRecurrenceDay(
+  val date: String,
+  val weekday: String,
+  val status: String,
+  val allowEarly: Boolean,
+  val isToday: Boolean,
+  val isIntended: Boolean
+)
+
+data class WidgetScope(
+  val area: WidgetScopeLabel? = null,
+  val project: WidgetScopeLabel? = null
+)
+
+data class WidgetScopeLabel(
+  val id: String,
+  val name: String,
+  val icon: String?,
+  val color: String?
+)
+
+const val DEFAULT_RECURRENCE_LEAD_DAYS = 1
+
+fun clampRecurrenceLeadDays(value: Int): Int = value.coerceIn(0, 30)
 
 fun defaultTimezone(): String = ZoneId.systemDefault().id

@@ -43,3 +43,15 @@ class ToggleItemAction : ActionCallback {
     RyanOsTodoWidget().update(context, glanceId)
   }
 }
+
+class ToggleRecurrenceExpandedAction : ActionCallback {
+  override suspend fun onAction(
+    context: Context,
+    glanceId: GlanceId,
+    parameters: ActionParameters
+  ) {
+    val itemId = parameters[WidgetActionKeys.ItemId] ?: return
+    RyanOsRepository.getInstance(context).toggleRecurrenceExpanded(itemId)
+    RyanOsTodoWidget().update(context, glanceId)
+  }
+}

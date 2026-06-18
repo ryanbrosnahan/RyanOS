@@ -21,6 +21,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -36,12 +37,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.glance.appwidget.updateAll
+import com.ryanos.android.data.clampRecurrenceLeadDays
 import com.ryanos.android.data.RyanOsRepository
 import com.ryanos.android.data.RyanOsSettings
 import com.ryanos.android.data.WidgetItem
@@ -91,6 +96,9 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository) {
   var apiBaseUrl by remember { mutableStateOf(settings.apiBaseUrl) }
   var userId by remember { mutableStateOf(settings.userId) }
   var timezone by remember { mutableStateOf(settings.timezone) }
+  var recurrenceLeadDays by remember { mutableStateOf(settings.recurrenceLeadDaysBeforeDue.toString()) }
+  var showTaskDetails by remember { mutableStateOf(settings.showTaskDetails) }
+  var colorCodeByArea by remember { mutableStateOf(settings.colorCodeByArea) }
   var quickAddTitle by remember { mutableStateOf("") }
   var busy by remember { mutableStateOf(false) }
   var statusText by remember { mutableStateOf("") }
@@ -99,6 +107,9 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository) {
     apiBaseUrl = settings.apiBaseUrl
     userId = settings.userId
     timezone = settings.timezone
+    recurrenceLeadDays = settings.recurrenceLeadDaysBeforeDue.toString()
+    showTaskDetails = settings.showTaskDetails
+    colorCodeByArea = settings.colorCodeByArea
   }
 
   fun launchWork(status: String, block: suspend () -> Unit) {
@@ -142,22 +153,41 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository) {
         userId = userId,
         onUserIdChange = { userId = it },
         timezone = timezone,
-        onTimezoneChange = { timezone = it },
-        busy = busy,
-        onSave = {
+        onTimezoneChange = { timezone = it }
+      )
+
+      WidgetDisplaySection(
+        recurrenceLeadDays = recurrenceLeadDays,
+        onRecurrenceLeadDaysChange = { value ->
+          recurrenceLeadDays = value.filter { it.isDigit() }.take(2)
+        },
+        showTaskDetails = showTaskDetails,
+        onShowTaskDetailsChange = { showTaskDetails = it },
+        colorCodeByArea = colorCodeByArea,
+        onColorCodeByAreaChange = { colorCodeByArea = it }
+      )
+
+      Button(
+        enabled = !busy && apiBaseUrl.isNotBlank(),
+        onClick = {
           launchWork("Saving settings") {
             repository.saveSettings(
               RyanOsSettings(
                 apiBaseUrl = apiBaseUrl,
                 userId = userId,
-                timezone = timezone
+                timezone = timezone,
+                recurrenceLeadDaysBeforeDue = clampRecurrenceLeadDays(recurrenceLeadDays.toIntOrNull() ?: 1),
+                showTaskDetails = showTaskDetails,
+                colorCodeByArea = colorCodeByArea
               )
             )
             val refreshed = repository.refresh()
             statusText = refreshed.error ?: "Settings saved"
           }
         }
-      )
+      ) {
+        Text("Save")
+      }
 
       HorizontalDivider()
 
@@ -228,9 +258,7 @@ private fun SettingsSection(
   userId: String,
   onUserIdChange: (String) -> Unit,
   timezone: String,
-  onTimezoneChange: (String) -> Unit,
-  busy: Boolean,
-  onSave: () -> Unit
+  onTimezoneChange: (String) -> Unit
 ) {
   Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
     Text(
@@ -260,12 +288,66 @@ private fun SettingsSection(
       singleLine = true,
       label = { Text("Timezone") }
     )
-    Button(
-      enabled = !busy && apiBaseUrl.isNotBlank(),
-      onClick = onSave
-    ) {
-      Text("Save")
-    }
+  }
+}
+
+@Composable
+private fun WidgetDisplaySection(
+  recurrenceLeadDays: String,
+  onRecurrenceLeadDaysChange: (String) -> Unit,
+  showTaskDetails: Boolean,
+  onShowTaskDetailsChange: (Boolean) -> Unit,
+  colorCodeByArea: Boolean,
+  onColorCodeByAreaChange: (Boolean) -> Unit
+) {
+  Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Text(
+      text = "Widget display",
+      style = MaterialTheme.typography.titleMedium,
+      fontWeight = FontWeight.SemiBold
+    )
+    OutlinedTextField(
+      value = recurrenceLeadDays,
+      onValueChange = onRecurrenceLeadDaysChange,
+      modifier = Modifier.fillMaxWidth(),
+      singleLine = true,
+      label = { Text("Show repeating tasks days before due") },
+      placeholder = { Text("1") },
+      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+    )
+    SettingSwitchRow(
+      label = "Show task details",
+      checked = showTaskDetails,
+      onCheckedChange = onShowTaskDetailsChange
+    )
+    SettingSwitchRow(
+      label = "Color code by area",
+      checked = colorCodeByArea,
+      onCheckedChange = onColorCodeByAreaChange
+    )
+  }
+}
+
+@Composable
+private fun SettingSwitchRow(
+  label: String,
+  checked: Boolean,
+  onCheckedChange: (Boolean) -> Unit
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically
+  ) {
+    Text(
+      text = label,
+      style = MaterialTheme.typography.bodyLarge,
+      modifier = Modifier.weight(1f)
+    )
+    Switch(
+      checked = checked,
+      onCheckedChange = onCheckedChange
+    )
   }
 }
 

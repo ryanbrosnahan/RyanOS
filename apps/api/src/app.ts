@@ -107,7 +107,8 @@ const mobileWidgetItemsQuerySchema = z.object({
   userId: z.string().default("local-owner"),
   timezone: z.string().default("America/Chicago"),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(100)
+  limit: z.coerce.number().int().min(1).max(100).default(100),
+  recurrenceLeadDays: z.coerce.number().int().min(0).max(30).default(1)
 });
 
 const mobileCreateItemBodySchema = z.object({
@@ -1344,14 +1345,50 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     return dashboardItems.filter(itemVisibleByDefault).sort(compareDashboardItems);
   }
 
-  async function mobileWidgetItemsForDay(userId: string, timeZone: string, dateKey: string): Promise<DashboardItem[]> {
+  function dashboardItemCheckedForMobile(item: DashboardItem, dateKey: string): boolean {
+    return item.recurrence?.week.days.some((day) => day.date === dateKey && day.status === "completed") ??
+      (item.status === "done");
+  }
+
+  function mobileWidgetItemVisible(
+    item: DashboardItem,
+    timeZone: string,
+    dateKey: string,
+    recurrenceLeadDays: number
+  ): boolean {
+    if (item.recurrence === undefined) return true;
+    if (dashboardItemCheckedForMobile(item, dateKey)) return true;
+    const cadenceDueKey = cadenceDueDateKey(item, timeZone);
+    if (cadenceDueKey === undefined) return true;
+    return dateKey >= addDaysToDateKey(cadenceDueKey, -recurrenceLeadDays);
+  }
+
+  function compareMobileWidgetItems(a: DashboardItem, b: DashboardItem, dateKey: string): number {
+    const aChecked = dashboardItemCheckedForMobile(a, dateKey);
+    const bChecked = dashboardItemCheckedForMobile(b, dateKey);
+    if (aChecked && !bChecked) return 1;
+    if (!aChecked && bChecked) return -1;
+    return compareDashboardItems(a, b);
+  }
+
+  async function mobileWidgetItemsForDay(
+    userId: string,
+    timeZone: string,
+    dateKey: string,
+    recurrenceLeadDays: number
+  ): Promise<DashboardItem[]> {
+    const dayBounds = localDayBounds(dateKey, timeZone);
     const items = await store.listItems({
       userId,
       statuses: ["open", "active", "waiting"],
+      completedAfter: dayBounds.start,
+      completedBefore: dayBounds.end,
       limit: 100
     });
     const dashboardItems = await Promise.all(items.map((item) => itemForDashboard(item, timeZone, dateKey)));
-    return dashboardItems.sort(compareDashboardItems);
+    return dashboardItems
+      .filter((item) => mobileWidgetItemVisible(item, timeZone, dateKey, recurrenceLeadDays))
+      .sort((a, b) => compareMobileWidgetItems(a, b, dateKey));
   }
 
   type MobileWidgetItemAction =
@@ -1366,6 +1403,23 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
         allowEarly: boolean;
       };
 
+  type MobileWidgetRecurrenceDay = {
+    date: string;
+    weekday: string;
+    status: string;
+    allowEarly: boolean;
+    isToday: boolean;
+    isIntended: boolean;
+  };
+
+  type MobileWidgetRecurrence = {
+    summary: string;
+    days: MobileWidgetRecurrenceDay[];
+    intendedDate?: string;
+    nextDueAt?: string;
+    lastDoneLabel?: string;
+  };
+
   type MobileWidgetItem = {
     id: string;
     title: string;
@@ -1378,18 +1432,59 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     action: MobileWidgetItemAction;
     dueAt?: string;
     secondaryText?: string;
+    recurrence?: MobileWidgetRecurrence;
     scope?: {
       area?: ReturnType<typeof areaForDashboard>;
       project?: ReturnType<typeof projectForDashboard>;
     };
   };
 
+  function ordinalDay(day: number): string {
+    if (day % 100 >= 11 && day % 100 <= 13) return `${day}th`;
+    switch (day % 10) {
+      case 1:
+        return `${day}st`;
+      case 2:
+        return `${day}nd`;
+      case 3:
+        return `${day}rd`;
+      default:
+        return `${day}th`;
+    }
+  }
+
+  function monthlyCronDay(cron: string | undefined): number | undefined {
+    const parts = cron?.trim().split(/\s+/);
+    if (parts?.length !== 5) return undefined;
+    const [, , dayOfMonth, month, dayOfWeek] = parts;
+    if (month !== "*" || (dayOfWeek !== "*" && dayOfWeek !== "?")) return undefined;
+    if (!/^\d{1,2}$/.test(dayOfMonth ?? "")) return undefined;
+    const day = Number(dayOfMonth);
+    return day >= 1 && day <= 31 ? day : undefined;
+  }
+
+  function mobileRecurrenceSummary(recurrence: NonNullable<DashboardItem["recurrence"]>): string {
+    const target = recurrence.week.targetCount;
+    if (target !== undefined) return `${recurrence.week.completedCount}/${target}`;
+    if (recurrence.policy.type === "fixed_schedule") {
+      const monthlyDay = monthlyCronDay(recurrence.policy.cron);
+      if (monthlyDay !== undefined) return `Monthly ${ordinalDay(monthlyDay)}`;
+    }
+    if (recurrence.policy.type === "minimum_interval" && recurrence.policy.minimumIntervalDays !== undefined) {
+      return `Min ${recurrence.policy.minimumIntervalDays}d`;
+    }
+    if (recurrence.policy.type === "completion_based" && recurrence.policy.intervalDays !== undefined) {
+      return `${recurrence.policy.intervalDays}d`;
+    }
+    return `${recurrence.week.completedCount}`;
+  }
+
   function mobileDueAt(item: DashboardItem): string | undefined {
     return item.dueAt ?? item.recurrence?.state?.nextDueAt;
   }
 
   function mobileRecurrenceCompleted(item: DashboardItem, dateKey: string): boolean {
-    return item.recurrence?.week.days.some((day) => day.date === dateKey && day.status === "completed") ?? false;
+    return dashboardItemCheckedForMobile(item, dateKey);
   }
 
   function mobileRecurrenceEarly(item: DashboardItem, dateKey: string, timeZone: string): boolean {
@@ -1407,6 +1502,41 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       labels.unshift(localDateKey(new Date(dueAt), timeZone));
     }
     return labels.length === 0 ? undefined : labels.slice(0, 2).join(" / ");
+  }
+
+  function mobileRecurrenceLastDoneLabel(item: DashboardItem, timeZone: string, dateKey: string): string | undefined {
+    const lastCompletedAt = item.recurrence?.state?.lastCompletedAt;
+    if (lastCompletedAt === undefined) return "not done yet";
+    const lastDateKey = localDateKey(new Date(lastCompletedAt), timeZone);
+    const daysAgo = Math.max(0, daysBetweenDateKeys(lastDateKey, dateKey));
+    return daysAgo === 0 ? "done today" : `last ${daysAgo}d ago`;
+  }
+
+  function mobileRecurrenceForDashboard(
+    item: DashboardItem,
+    timeZone: string,
+    dateKey: string
+  ): MobileWidgetRecurrence | undefined {
+    const recurrence = item.recurrence;
+    if (recurrence === undefined) return undefined;
+    const intendedDate =
+      recurrence.state?.nextDueAt === undefined ? undefined : localDateKey(new Date(recurrence.state.nextDueAt), timeZone);
+    const widgetRecurrence: MobileWidgetRecurrence = {
+      summary: mobileRecurrenceSummary(recurrence),
+      days: recurrence.week.days.map((day) => ({
+        date: day.date,
+        weekday: day.weekday,
+        status: day.status,
+        allowEarly: mobileRecurrenceEarly(item, day.date, timeZone),
+        isToday: day.date === dateKey,
+        isIntended: intendedDate === day.date
+      }))
+    };
+    if (intendedDate !== undefined) widgetRecurrence.intendedDate = intendedDate;
+    if (recurrence.state?.nextDueAt !== undefined) widgetRecurrence.nextDueAt = recurrence.state.nextDueAt;
+    const lastDoneLabel = mobileRecurrenceLastDoneLabel(item, timeZone, dateKey);
+    if (lastDoneLabel !== undefined) widgetRecurrence.lastDoneLabel = lastDoneLabel;
+    return widgetRecurrence;
   }
 
   function mobileWidgetItemForDashboard(item: DashboardItem, timeZone: string, dateKey: string): MobileWidgetItem {
@@ -1437,6 +1567,8 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     if (dueAt !== undefined) widgetItem.dueAt = dueAt;
     const secondaryText = mobileSecondaryText(item, timeZone);
     if (secondaryText !== undefined) widgetItem.secondaryText = secondaryText;
+    const recurrence = mobileRecurrenceForDashboard(item, timeZone, dateKey);
+    if (recurrence !== undefined) widgetItem.recurrence = recurrence;
     if (item.scope.area !== undefined || item.scope.project !== undefined) {
       widgetItem.scope = {};
       if (item.scope.area !== undefined) widgetItem.scope.area = item.scope.area;
@@ -1450,8 +1582,14 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     timezone: string;
     dateKey: string;
     limit: number;
+    recurrenceLeadDays: number;
   }) {
-    const items = await mobileWidgetItemsForDay(input.userId, input.timezone, input.dateKey);
+    const items = await mobileWidgetItemsForDay(
+      input.userId,
+      input.timezone,
+      input.dateKey,
+      input.recurrenceLeadDays
+    );
     return {
       date: input.dateKey,
       timezone: input.timezone,
@@ -1783,7 +1921,8 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       userId: query.userId,
       timezone: query.timezone,
       dateKey,
-      limit: query.limit
+      limit: query.limit,
+      recurrenceLeadDays: query.recurrenceLeadDays
     });
   });
 
@@ -1815,7 +1954,8 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
         userId: body.userId,
         timezone: body.timezone,
         dateKey,
-        limit: 100
+        limit: 100,
+        recurrenceLeadDays: 1
       })
     };
   });
