@@ -152,4 +152,149 @@ class RyanOsApiTest {
     assertNull(snapshot.items[0].scope)
     assertNull(snapshot.items[0].recurrence)
   }
+
+  @Test
+  fun optimisticToggleUpdatesOneOffTask() {
+    val rawJson = """
+      {
+        "date": "2026-06-18",
+        "timezone": "America/Chicago",
+        "generatedAt": "2026-06-18T12:00:00.000Z",
+        "items": [
+          {
+            "id": "item-1",
+            "title": "Buy flowers",
+            "kind": "task",
+            "status": "open",
+            "checked": false,
+            "priority": "normal",
+            "priorityScore": 10,
+            "prioritySignals": [],
+            "action": {
+              "type": "item_complete",
+              "itemId": "item-1"
+            }
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val completedPayload = RyanOsApi.optimisticallyToggleWidgetPayload(
+      rawJson = rawJson,
+      itemId = "item-1",
+      completed = true,
+      date = null,
+      timezone = "America/Chicago",
+      toggleExisting = true
+    )
+    val completedSnapshot = RyanOsApi.parseSnapshot(completedPayload)
+
+    assertTrue(completedSnapshot.items[0].checked)
+    assertEquals("done", completedSnapshot.items[0].status)
+
+    val undonePayload = RyanOsApi.optimisticallyToggleWidgetPayload(
+      rawJson = completedPayload,
+      itemId = "item-1",
+      completed = true,
+      date = null,
+      timezone = "America/Chicago",
+      toggleExisting = true
+    )
+    val undoneSnapshot = RyanOsApi.parseSnapshot(undonePayload)
+
+    assertFalse(undoneSnapshot.items[0].checked)
+    assertEquals("open", undoneSnapshot.items[0].status)
+  }
+
+  @Test
+  fun optimisticToggleUpdatesRecurringTodayAndSummary() {
+    val rawJson = """
+      {
+        "date": "2026-06-18",
+        "timezone": "America/Chicago",
+        "generatedAt": "2026-06-18T12:00:00.000Z",
+        "items": [
+          {
+            "id": "item-2",
+            "title": "Go to the gym",
+            "kind": "habit",
+            "status": "open",
+            "checked": false,
+            "priority": "normal",
+            "priorityScore": 20,
+            "prioritySignals": [],
+            "recurrence": {
+              "summary": "2/5",
+              "intendedDate": "2026-06-18",
+              "nextDueAt": "2026-06-18T12:00:00.000Z",
+              "lastDoneLabel": "last 1d ago",
+              "days": [
+                {
+                  "date": "2026-06-16",
+                  "weekday": "Tue",
+                  "status": "completed",
+                  "allowEarly": false,
+                  "isToday": false,
+                  "isIntended": false
+                },
+                {
+                  "date": "2026-06-17",
+                  "weekday": "Wed",
+                  "status": "completed",
+                  "allowEarly": false,
+                  "isToday": false,
+                  "isIntended": false
+                },
+                {
+                  "date": "2026-06-18",
+                  "weekday": "Thu",
+                  "status": "uncompleted",
+                  "allowEarly": false,
+                  "isToday": true,
+                  "isIntended": true
+                }
+              ]
+            },
+            "action": {
+              "type": "recurrence_day",
+              "itemId": "item-2",
+              "date": "2026-06-18",
+              "allowEarly": false
+            }
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val completedPayload = RyanOsApi.optimisticallyToggleWidgetPayload(
+      rawJson = rawJson,
+      itemId = "item-2",
+      completed = true,
+      date = "2026-06-18",
+      timezone = "America/Chicago",
+      toggleExisting = true
+    )
+    val completedSnapshot = RyanOsApi.parseSnapshot(completedPayload)
+    val completedItem = completedSnapshot.items[0]
+
+    assertTrue(completedItem.checked)
+    assertEquals("open", completedItem.status)
+    assertEquals("3/5", completedItem.recurrence?.summary)
+    assertEquals("completed", completedItem.recurrence?.days?.last()?.status)
+
+    val undonePayload = RyanOsApi.optimisticallyToggleWidgetPayload(
+      rawJson = completedPayload,
+      itemId = "item-2",
+      completed = true,
+      date = "2026-06-18",
+      timezone = "America/Chicago",
+      toggleExisting = true
+    )
+    val undoneSnapshot = RyanOsApi.parseSnapshot(undonePayload)
+    val undoneItem = undoneSnapshot.items[0]
+
+    assertFalse(undoneItem.checked)
+    assertEquals("2/5", undoneItem.recurrence?.summary)
+    assertEquals("uncompleted", undoneItem.recurrence?.days?.last()?.status)
+  }
 }

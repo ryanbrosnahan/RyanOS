@@ -45,13 +45,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
-import androidx.glance.appwidget.updateAll
 import com.ryanos.android.data.clampRecurrenceLeadDays
 import com.ryanos.android.data.RyanOsRepository
 import com.ryanos.android.data.RyanOsSettings
 import com.ryanos.android.data.WidgetItem
 import com.ryanos.android.data.WidgetSnapshot
-import com.ryanos.android.widget.RyanOsTodoWidget
+import com.ryanos.android.widget.RyanOsWidgetRenderer
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -118,7 +117,7 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository) {
       statusText = status
       runCatching {
         block()
-        RyanOsTodoWidget().updateAll(context)
+        RyanOsWidgetRenderer.updateAll(context)
       }.onFailure { error ->
         statusText = error.message ?: "Action failed"
       }

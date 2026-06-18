@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import org.json.JSONArray
 import org.json.JSONObject
 
 data class WidgetPayloadResult(
@@ -85,6 +86,38 @@ object RyanOsApi {
       url = "${settings.normalizedBaseUrl}/v1/mobile/items/${itemId.urlEncode()}/toggle",
       body = body
     )
+  }
+
+  fun optimisticallyToggleWidgetPayload(
+    rawJson: String?,
+    itemId: String,
+    completed: Boolean,
+    date: String?,
+    timezone: String,
+    toggleExisting: Boolean
+  ): String? {
+    if (rawJson.isNullOrBlank()) return rawJson
+    return runCatching {
+      val root = JSONObject(rawJson)
+      val items = root.optJSONArray("items") ?: return rawJson
+      val item = items.findItem(itemId) ?: return rawJson
+      val recurrence = item.optJSONObject("recurrence")
+      val actionDate = item.optJSONObject("action")?.optStringOrNull("date")
+      val dateKey = date ?: actionDate ?: root.optStringOrNull("date") ?: todayDateKey(timezone)
+      val targetCompleted =
+        if (toggleExisting) !item.isLocallyCompleteForDate(dateKey) else completed
+
+      item.put("checked", targetCompleted)
+      if (recurrence == null) {
+        item.put("status", if (targetCompleted) "done" else "open")
+      } else {
+        item.put("status", "open")
+        recurrence.updateDayStatus(dateKey, targetCompleted)
+        recurrence.updateCountSummary()
+      }
+
+      root.toString()
+    }.getOrElse { rawJson }
   }
 
   fun parseSnapshot(
@@ -279,6 +312,46 @@ object RyanOsApi {
 
   private fun String.urlEncode(): String =
     URLEncoder.encode(this, StandardCharsets.UTF_8.name())
+
+  private fun JSONArray.findItem(itemId: String): JSONObject? {
+    for (index in 0 until length()) {
+      val item = optJSONObject(index) ?: continue
+      if (item.optString("id") == itemId) return item
+    }
+    return null
+  }
+
+  private fun JSONObject.isLocallyCompleteForDate(dateKey: String): Boolean {
+    val recurrence = optJSONObject("recurrence") ?: return optBoolean("checked", false)
+    val days = recurrence.optJSONArray("days") ?: return optBoolean("checked", false)
+    val day = days.findDay(dateKey) ?: return optBoolean("checked", false)
+    return day.optString("status") == "completed"
+  }
+
+  private fun JSONArray.findDay(dateKey: String): JSONObject? {
+    for (index in 0 until length()) {
+      val day = optJSONObject(index) ?: continue
+      if (day.optString("date") == dateKey) return day
+    }
+    return null
+  }
+
+  private fun JSONObject.updateDayStatus(dateKey: String, completed: Boolean) {
+    val days = optJSONArray("days") ?: return
+    val day = days.findDay(dateKey) ?: return
+    day.put("status", if (completed) "completed" else "uncompleted")
+  }
+
+  private fun JSONObject.updateCountSummary() {
+    val currentSummary = optStringOrNull("summary") ?: return
+    val match = Regex("""^\d+/(\d+)$""").find(currentSummary) ?: return
+    val days = optJSONArray("days") ?: return
+    var completedCount = 0
+    for (index in 0 until days.length()) {
+      if (days.optJSONObject(index)?.optString("status") == "completed") completedCount += 1
+    }
+    put("summary", "$completedCount/${match.groupValues[1]}")
+  }
 
   private fun JSONObject?.optStringOrNull(name: String): String? {
     if (this == null || isNull(name)) return null

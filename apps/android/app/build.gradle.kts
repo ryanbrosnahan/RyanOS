@@ -47,7 +47,6 @@ dependencies {
   implementation("androidx.compose.ui:ui-tooling-preview")
   implementation("androidx.core:core-ktx:1.16.0")
   implementation("androidx.datastore:datastore-preferences:1.1.7")
-  implementation("androidx.glance:glance-appwidget:1.1.1")
   implementation("androidx.work:work-runtime-ktx:2.10.5")
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 

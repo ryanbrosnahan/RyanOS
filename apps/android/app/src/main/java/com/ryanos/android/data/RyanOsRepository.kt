@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.ryanos.android.util.WidgetTiming
 import java.time.Instant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -29,9 +30,10 @@ class RyanOsRepository private constructor(context: Context) {
 
   val snapshotFlow: Flow<WidgetSnapshot> = dataStore.data
     .map { preferences ->
+      val parseStart = WidgetTiming.now()
       val settings = preferences.toSettings()
       val error = preferences[LAST_ERROR]
-      RyanOsApi.parseSnapshot(
+      val snapshot = RyanOsApi.parseSnapshot(
         rawJson = preferences[CACHED_WIDGET_PAYLOAD],
         lastSyncedAt = preferences[LAST_SYNCED_AT],
         configured = settings.isConfigured,
@@ -41,6 +43,13 @@ class RyanOsRepository private constructor(context: Context) {
         colorCodeByArea = settings.colorCodeByArea,
         expandedRecurrenceItemIds = preferences[EXPANDED_RECURRENCE_IDS] ?: emptySet()
       )
+      WidgetTiming.mark(
+        operation = "repository.snapshotFlow",
+        stage = "parse",
+        startedAt = parseStart,
+        details = "items=${snapshot.items.size} expanded=${snapshot.expandedRecurrenceItemIds.size} payloadChars=${preferences[CACHED_WIDGET_PAYLOAD]?.length ?: 0} error=${snapshot.error != null}"
+      )
+      snapshot
     }
     .catch {
       emit(
@@ -65,47 +74,130 @@ class RyanOsRepository private constructor(context: Context) {
   }
 
   suspend fun toggleRecurrenceExpanded(itemId: String): WidgetSnapshot = withContext(Dispatchers.IO) {
+    val operationStart = WidgetTiming.now()
+    WidgetTiming.event(
+      operation = "repository.toggleRecurrenceExpanded",
+      event = "start",
+      details = "item=${WidgetTiming.shortId(itemId)}"
+    )
+    val editStart = WidgetTiming.now()
     dataStore.edit { preferences ->
       val current = preferences[EXPANDED_RECURRENCE_IDS] ?: emptySet()
       preferences[EXPANDED_RECURRENCE_IDS] =
         if (current.contains(itemId)) current - itemId else current + itemId
     }
-    snapshotFlow.first()
+    WidgetTiming.mark("repository.toggleRecurrenceExpanded", "dataStore.edit", editStart)
+    val snapshotStart = WidgetTiming.now()
+    val snapshot = snapshotFlow.first()
+    WidgetTiming.mark(
+      operation = "repository.toggleRecurrenceExpanded",
+      stage = "snapshotFlow.first",
+      startedAt = snapshotStart,
+      details = "items=${snapshot.items.size} expanded=${snapshot.expandedRecurrenceItemIds.size} total=${WidgetTiming.elapsed(operationStart)}ms"
+    )
+    snapshot
   }
 
   suspend fun setRecurrenceExpanded(itemId: String, expanded: Boolean): WidgetSnapshot = withContext(Dispatchers.IO) {
+    val operationStart = WidgetTiming.now()
+    WidgetTiming.event(
+      operation = "repository.setRecurrenceExpanded",
+      event = "start",
+      details = "item=${WidgetTiming.shortId(itemId)} expanded=$expanded"
+    )
+    val editStart = WidgetTiming.now()
     dataStore.edit { preferences ->
       val current = preferences[EXPANDED_RECURRENCE_IDS] ?: emptySet()
       preferences[EXPANDED_RECURRENCE_IDS] =
         if (expanded) current + itemId else current - itemId
     }
-    snapshotFlow.first()
+    WidgetTiming.mark("repository.setRecurrenceExpanded", "dataStore.edit", editStart)
+    val snapshotStart = WidgetTiming.now()
+    val snapshot = snapshotFlow.first()
+    WidgetTiming.mark(
+      operation = "repository.setRecurrenceExpanded",
+      stage = "snapshotFlow.first",
+      startedAt = snapshotStart,
+      details = "items=${snapshot.items.size} expanded=${snapshot.expandedRecurrenceItemIds.size} total=${WidgetTiming.elapsed(operationStart)}ms"
+    )
+    snapshot
   }
 
   suspend fun refresh(): WidgetSnapshot = withContext(Dispatchers.IO) {
+    val operationStart = WidgetTiming.now()
+    WidgetTiming.event("repository.refresh", "start")
+    val settingsStart = WidgetTiming.now()
     val settings = settingsFlow.first()
+    WidgetTiming.mark(
+      operation = "repository.refresh",
+      stage = "settingsFlow.first",
+      startedAt = settingsStart,
+      details = "configured=${settings.isConfigured}"
+    )
     if (!settings.isConfigured) {
+      val editStart = WidgetTiming.now()
       dataStore.edit { preferences ->
         preferences.remove(CACHED_WIDGET_PAYLOAD)
         preferences.remove(LAST_SYNCED_AT)
         preferences[LAST_ERROR] = "Connect the widget to your RyanOS API."
       }
-      return@withContext snapshotFlow.first()
+      WidgetTiming.mark("repository.refresh", "dataStore.edit.notConfigured", editStart)
+      val snapshotStart = WidgetTiming.now()
+      val snapshot = snapshotFlow.first()
+      WidgetTiming.mark(
+        operation = "repository.refresh",
+        stage = "snapshotFlow.first.notConfigured",
+        startedAt = snapshotStart,
+        details = "total=${WidgetTiming.elapsed(operationStart)}ms"
+      )
+      return@withContext snapshot
     }
 
     runCatching {
+      val fetchStart = WidgetTiming.now()
       val result = RyanOsApi.fetchWidgetPayload(settings)
+      WidgetTiming.mark(
+        operation = "repository.refresh",
+        stage = "api.fetchWidgetPayload",
+        startedAt = fetchStart,
+        details = "items=${result.snapshot.items.size} payloadChars=${result.rawJson.length}"
+      )
+      val editStart = WidgetTiming.now()
       dataStore.edit { preferences ->
         preferences[CACHED_WIDGET_PAYLOAD] = result.rawJson
         preferences[LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()
         preferences.remove(LAST_ERROR)
       }
-      snapshotFlow.first()
+      WidgetTiming.mark("repository.refresh", "dataStore.edit.success", editStart)
+      val snapshotStart = WidgetTiming.now()
+      val snapshot = snapshotFlow.first()
+      WidgetTiming.mark(
+        operation = "repository.refresh",
+        stage = "snapshotFlow.first.success",
+        startedAt = snapshotStart,
+        details = "items=${snapshot.items.size} total=${WidgetTiming.elapsed(operationStart)}ms"
+      )
+      snapshot
     }.getOrElse { error ->
+      WidgetTiming.event(
+        operation = "repository.refresh",
+        event = "error",
+        details = error.userFacingMessage()
+      )
+      val editStart = WidgetTiming.now()
       dataStore.edit { preferences ->
         preferences[LAST_ERROR] = error.userFacingMessage()
       }
-      snapshotFlow.first()
+      WidgetTiming.mark("repository.refresh", "dataStore.edit.error", editStart)
+      val snapshotStart = WidgetTiming.now()
+      val snapshot = snapshotFlow.first()
+      WidgetTiming.mark(
+        operation = "repository.refresh",
+        stage = "snapshotFlow.first.error",
+        startedAt = snapshotStart,
+        details = "items=${snapshot.items.size} total=${WidgetTiming.elapsed(operationStart)}ms"
+      )
+      snapshot
     }
   }
 
@@ -123,16 +215,96 @@ class RyanOsRepository private constructor(context: Context) {
     }
   }
 
-  suspend fun toggleItem(
+  suspend fun toggleItemOptimistically(
+    itemId: String,
+    completed: Boolean,
+    date: String?,
+    allowEarly: Boolean,
+    toggleExisting: Boolean = false,
+    keepExpanded: Boolean = false
+  ): WidgetSnapshot = withContext(Dispatchers.IO) {
+    val operationStart = WidgetTiming.now()
+    WidgetTiming.event(
+      operation = "repository.toggleItemOptimistically",
+      event = "start",
+      details = "item=${WidgetTiming.shortId(itemId)} completed=$completed date=${date ?: "default"} allowEarly=$allowEarly toggleExisting=$toggleExisting keepExpanded=$keepExpanded"
+    )
+    val settingsStart = WidgetTiming.now()
+    val settings = settingsFlow.first()
+    WidgetTiming.mark(
+      operation = "repository.toggleItemOptimistically",
+      stage = "settingsFlow.first",
+      startedAt = settingsStart,
+      details = "configured=${settings.isConfigured}"
+    )
+    if (!settings.isConfigured) return@withContext snapshotFlow.first()
+    val editStart = WidgetTiming.now()
+    dataStore.edit { preferences ->
+      val currentPayload = preferences[CACHED_WIDGET_PAYLOAD]
+      val updatedPayload = RyanOsApi.optimisticallyToggleWidgetPayload(
+        rawJson = currentPayload,
+        itemId = itemId,
+        completed = completed,
+        date = date,
+        timezone = settings.timezone,
+        toggleExisting = toggleExisting
+      )
+      if (!updatedPayload.isNullOrBlank()) {
+        preferences[CACHED_WIDGET_PAYLOAD] = updatedPayload
+      }
+      if (keepExpanded) {
+        val current = preferences[EXPANDED_RECURRENCE_IDS] ?: emptySet()
+        preferences[EXPANDED_RECURRENCE_IDS] = current + itemId
+      }
+      preferences.remove(LAST_ERROR)
+    }
+    WidgetTiming.mark("repository.toggleItemOptimistically", "dataStore.edit", editStart)
+    val snapshotStart = WidgetTiming.now()
+    val snapshot = snapshotFlow.first()
+    WidgetTiming.mark(
+      operation = "repository.toggleItemOptimistically",
+      stage = "snapshotFlow.first",
+      startedAt = snapshotStart,
+      details = "items=${snapshot.items.size} total=${WidgetTiming.elapsed(operationStart)}ms"
+    )
+    snapshot
+  }
+
+  suspend fun cachedCompletionState(itemId: String, date: String?): Boolean? = withContext(Dispatchers.IO) {
+    val snapshot = snapshotFlow.first()
+    val item = snapshot.items.firstOrNull { it.id == itemId } ?: return@withContext null
+    if (date == null) {
+      item.checked
+    } else {
+      item.recurrence?.days?.firstOrNull { it.date == date }?.status?.let { it == "completed" }
+        ?: item.checked
+    }
+  }
+
+  suspend fun sendToggleItem(
     itemId: String,
     completed: Boolean,
     date: String?,
     allowEarly: Boolean,
     toggleExisting: Boolean = false
-  ): WidgetSnapshot = withContext(Dispatchers.IO) {
+  ): Boolean = withContext(Dispatchers.IO) {
+    val operationStart = WidgetTiming.now()
+    WidgetTiming.event(
+      operation = "repository.sendToggleItem",
+      event = "start",
+      details = "item=${WidgetTiming.shortId(itemId)} completed=$completed date=${date ?: "default"} allowEarly=$allowEarly toggleExisting=$toggleExisting"
+    )
+    val settingsStart = WidgetTiming.now()
     val settings = settingsFlow.first()
-    if (!settings.isConfigured) return@withContext refresh()
+    WidgetTiming.mark(
+      operation = "repository.sendToggleItem",
+      stage = "settingsFlow.first",
+      startedAt = settingsStart,
+      details = "configured=${settings.isConfigured}"
+    )
+    if (!settings.isConfigured) return@withContext false
     runCatching {
+      val apiStart = WidgetTiming.now()
       RyanOsApi.toggleItem(
         settings = settings,
         itemId = itemId,
@@ -141,12 +313,90 @@ class RyanOsRepository private constructor(context: Context) {
         allowEarly = allowEarly,
         toggleExisting = toggleExisting
       )
-      refresh()
+      WidgetTiming.mark(
+        operation = "repository.sendToggleItem",
+        stage = "api.toggleItem",
+        startedAt = apiStart,
+        details = "total=${WidgetTiming.elapsed(operationStart)}ms"
+      )
+      true
     }.getOrElse { error ->
+      WidgetTiming.event(
+        operation = "repository.sendToggleItem",
+        event = "error",
+        details = error.userFacingMessage()
+      )
+      val editStart = WidgetTiming.now()
       dataStore.edit { preferences ->
         preferences[LAST_ERROR] = error.userFacingMessage()
       }
-      snapshotFlow.first()
+      WidgetTiming.mark("repository.sendToggleItem", "dataStore.edit.error", editStart)
+      false
+    }
+  }
+
+  suspend fun syncToggleItem(
+    itemId: String,
+    completed: Boolean,
+    date: String?,
+    allowEarly: Boolean,
+    toggleExisting: Boolean = false
+  ): WidgetSnapshot = withContext(Dispatchers.IO) {
+    val operationStart = WidgetTiming.now()
+    WidgetTiming.event(
+      operation = "repository.syncToggleItem",
+      event = "start",
+      details = "item=${WidgetTiming.shortId(itemId)} completed=$completed date=${date ?: "default"} allowEarly=$allowEarly toggleExisting=$toggleExisting"
+    )
+    val settingsStart = WidgetTiming.now()
+    val settings = settingsFlow.first()
+    WidgetTiming.mark(
+      operation = "repository.syncToggleItem",
+      stage = "settingsFlow.first",
+      startedAt = settingsStart,
+      details = "configured=${settings.isConfigured}"
+    )
+    if (!settings.isConfigured) return@withContext refresh()
+    runCatching {
+      val apiStart = WidgetTiming.now()
+      RyanOsApi.toggleItem(
+        settings = settings,
+        itemId = itemId,
+        completed = completed,
+        date = date,
+        allowEarly = allowEarly,
+        toggleExisting = toggleExisting
+      )
+      WidgetTiming.mark("repository.syncToggleItem", "api.toggleItem", apiStart)
+      val refreshStart = WidgetTiming.now()
+      val snapshot = refresh()
+      WidgetTiming.mark(
+        operation = "repository.syncToggleItem",
+        stage = "refresh.afterToggle",
+        startedAt = refreshStart,
+        details = "items=${snapshot.items.size} total=${WidgetTiming.elapsed(operationStart)}ms"
+      )
+      snapshot
+    }.getOrElse { error ->
+      WidgetTiming.event(
+        operation = "repository.syncToggleItem",
+        event = "error",
+        details = error.userFacingMessage()
+      )
+      val editStart = WidgetTiming.now()
+      dataStore.edit { preferences ->
+        preferences[LAST_ERROR] = error.userFacingMessage()
+      }
+      WidgetTiming.mark("repository.syncToggleItem", "dataStore.edit.error", editStart)
+      val snapshotStart = WidgetTiming.now()
+      val snapshot = snapshotFlow.first()
+      WidgetTiming.mark(
+        operation = "repository.syncToggleItem",
+        stage = "snapshotFlow.first.error",
+        startedAt = snapshotStart,
+        details = "items=${snapshot.items.size} total=${WidgetTiming.elapsed(operationStart)}ms"
+      )
+      snapshot
     }
   }
 
