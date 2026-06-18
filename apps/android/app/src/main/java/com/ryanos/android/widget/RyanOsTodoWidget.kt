@@ -7,7 +7,6 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.Button
-import androidx.glance.ButtonDefaults
 import androidx.glance.ColorFilter
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
@@ -248,14 +247,22 @@ class RyanOsTodoWidget : GlanceAppWidget() {
         }
         if (item.recurrence != null && showDetails) {
           Spacer(modifier = GlanceModifier.width(6.dp))
-          Button(
+          Text(
             text = if (expanded) "Hide" else "Days",
-            onClick = actionRunCallback<ToggleRecurrenceExpandedAction>(
-              actionParametersOf(WidgetActionKeys.ItemId to item.id)
-            ),
-            colors = ButtonDefaults.buttonColors(
-              backgroundColor = if (expanded) ButtonSelectedBackground else ButtonBackground,
-              contentColor = if (expanded) ButtonSelectedText else TextSecondary
+            modifier = GlanceModifier
+              .width(54.dp)
+              .height(30.dp)
+              .background(if (expanded) ButtonSelectedBackground else ButtonBackground)
+              .padding(horizontal = 8.dp, vertical = 6.dp)
+              .clickable(
+                actionRunCallback<ToggleRecurrenceExpandedAction>(
+                  actionParametersOf(WidgetActionKeys.ItemId to item.id)
+                )
+              ),
+            style = TextStyle(
+              color = if (expanded) ButtonSelectedText else TextSecondary,
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Medium
             ),
             maxLines = 1
           )
@@ -350,22 +357,28 @@ class RyanOsTodoWidget : GlanceAppWidget() {
 
   @Composable
   private fun RecurrenceDayButton(item: WidgetItem, day: WidgetRecurrenceDay) {
-    Button(
-      text = if (day.status == "completed") "OK" else recurrenceDayLabel(day),
-      onClick = actionRunCallback<ToggleItemAction>(
-        actionParametersOf(
-          WidgetActionKeys.ItemId to item.id,
-          WidgetActionKeys.Completed to (day.status != "completed").toString(),
-          WidgetActionKeys.Date to day.date,
-          WidgetActionKeys.AllowEarly to day.allowEarly.toString()
-        )
-      ),
+    Text(
+      text = if (day.status == "completed") "✓" else recurrenceDayLabel(day),
       modifier = GlanceModifier
-        .width(34.dp)
-        .height(30.dp),
-      colors = ButtonDefaults.buttonColors(
-        backgroundColor = recurrenceDayBackground(day),
-        contentColor = recurrenceDayText(day)
+        .width(30.dp)
+        .height(28.dp)
+        .background(recurrenceDayBackground(day))
+        .padding(horizontal = 9.dp, vertical = 5.dp)
+        .clickable(
+          actionRunCallback<ToggleItemAction>(
+            actionParametersOf(
+              WidgetActionKeys.ItemId to item.id,
+              WidgetActionKeys.Completed to (day.status != "completed").toString(),
+              WidgetActionKeys.Date to day.date,
+              WidgetActionKeys.AllowEarly to day.allowEarly.toString(),
+              WidgetActionKeys.KeepExpanded to "true"
+            )
+          )
+        ),
+      style = TextStyle(
+        color = recurrenceDayText(day),
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Medium
       ),
       maxLines = 1
     )
@@ -433,14 +446,14 @@ class RyanOsTodoWidget : GlanceAppWidget() {
 
     private fun recurrenceDayLabel(day: WidgetRecurrenceDay): String =
       when (day.weekday) {
-        "Sunday", "Sun" -> "Su"
-        "Monday", "Mon" -> "Mo"
-        "Tuesday", "Tue" -> "Tu"
-        "Wednesday", "Wed" -> "We"
-        "Thursday", "Thu" -> "Th"
-        "Friday", "Fri" -> "Fr"
-        "Saturday", "Sat" -> "Sa"
-        else -> day.weekday.take(2).ifBlank { day.date.takeLast(2) }
+        "Sunday", "Sun" -> "S"
+        "Monday", "Mon" -> "M"
+        "Tuesday", "Tue" -> "T"
+        "Wednesday", "Wed" -> "W"
+        "Thursday", "Thu" -> "T"
+        "Friday", "Fri" -> "F"
+        "Saturday", "Sat" -> "S"
+        else -> day.weekday.take(1).ifBlank { day.date.takeLast(1) }
       }
 
     private fun recurrenceDayBackground(day: WidgetRecurrenceDay): GlanceColorProvider =

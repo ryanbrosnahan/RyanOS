@@ -73,6 +73,15 @@ class RyanOsRepository private constructor(context: Context) {
     snapshotFlow.first()
   }
 
+  suspend fun setRecurrenceExpanded(itemId: String, expanded: Boolean): WidgetSnapshot = withContext(Dispatchers.IO) {
+    dataStore.edit { preferences ->
+      val current = preferences[EXPANDED_RECURRENCE_IDS] ?: emptySet()
+      preferences[EXPANDED_RECURRENCE_IDS] =
+        if (expanded) current + itemId else current - itemId
+    }
+    snapshotFlow.first()
+  }
+
   suspend fun refresh(): WidgetSnapshot = withContext(Dispatchers.IO) {
     val settings = settingsFlow.first()
     if (!settings.isConfigured) {
