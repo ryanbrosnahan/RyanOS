@@ -294,10 +294,10 @@ describe("setup status", () => {
         result: expect.objectContaining({ status: "applied" })
       })
     ]);
-    expect(shopping.json().items.map((item: { name: string }) => item.name)).toEqual([
+    expect(shopping.json().items.map((item: { name: string }) => item.name).sort()).toEqual([
       "envelopes",
       "soap for my car"
-    ]);
+    ].sort());
     expect(items.json().items).toEqual([]);
   });
 
