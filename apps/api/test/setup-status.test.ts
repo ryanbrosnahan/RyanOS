@@ -241,6 +241,66 @@ describe("setup status", () => {
     );
   });
 
+  it("uses the AI provider path to add shopping-list items from a natural language message", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const text = "Add some items to my shopping list. I need envelopes, soap for my car";
+
+    const app = buildApp({
+      ai: new ScriptedAiProvider([
+        {
+          matchText: text,
+          result: {
+            text: "Added those to your shopping list.",
+            toolCalls: [
+              {
+                name: "shopping.addItems",
+                input: {
+                  items: [
+                    { name: "envelopes" },
+                    { name: "soap for my car" }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ])
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/messages",
+      payload: {
+        provider: "web",
+        chatId: "dashboard",
+        userId: "local-owner",
+        text,
+        timestamp: "2026-06-20T21:48:10.000Z"
+      }
+    });
+    const shopping = await app.inject({
+      method: "GET",
+      url: "/v1/shopping/list?userId=local-owner&suggestions=0"
+    });
+    const items = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&includeHidden=true"
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().toolResults).toEqual([
+      expect.objectContaining({
+        name: "shopping.addItems",
+        result: expect.objectContaining({ status: "applied" })
+      })
+    ]);
+    expect(shopping.json().items.map((item: { name: string }) => item.name)).toEqual([
+      "envelopes",
+      "soap for my car"
+    ]);
+    expect(items.json().items).toEqual([]);
+  });
+
   it("lists dashboard items from the active store", async () => {
     vi.stubEnv("DATABASE_URL", "");
 

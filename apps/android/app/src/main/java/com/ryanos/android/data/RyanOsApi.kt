@@ -2,8 +2,10 @@ package com.ryanos.android.data
 
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.URLEncoder
+import java.net.UnknownHostException
 import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.time.LocalDate
@@ -19,6 +21,7 @@ data class WidgetPayloadResult(
 object RyanOsApi {
   private const val WIDGET_ITEM_LIMIT = 100
   private const val SHOPPING_SUGGESTION_LIMIT = 12
+  private const val REQUEST_RETRY_DELAY_MS = 500L
 
   fun todayDateKey(timezone: String): String {
     val zone = runCatching { ZoneId.of(timezone) }.getOrElse { ZoneId.systemDefault() }
@@ -455,7 +458,24 @@ object RyanOsApi {
   }
 
   private fun request(method: String, url: String, body: JSONObject? = null): String {
-    val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+    val parsedUrl = URL(url)
+    var lastError: IOException? = null
+    repeat(2) { attempt ->
+      try {
+        return requestOnce(method = method, url = parsedUrl, body = body)
+      } catch (error: IOException) {
+        lastError = error
+        if (!error.isRetryableNetworkError() || attempt == 1) {
+          throw error.toUserFacingNetworkError(parsedUrl)
+        }
+        Thread.sleep(REQUEST_RETRY_DELAY_MS)
+      }
+    }
+    throw (lastError ?: IOException("RyanOS sync failed.")).toUserFacingNetworkError(parsedUrl)
+  }
+
+  private fun requestOnce(method: String, url: URL, body: JSONObject? = null): String {
+    val connection = (url.openConnection() as HttpURLConnection).apply {
       requestMethod = method
       connectTimeout = 8_000
       readTimeout = 12_000
@@ -483,6 +503,25 @@ object RyanOsApi {
       connection.disconnect()
     }
   }
+
+  private fun IOException.isRetryableNetworkError(): Boolean =
+    this is UnknownHostException ||
+      this is SocketTimeoutException ||
+      cause is UnknownHostException ||
+      cause is SocketTimeoutException
+
+  private fun IOException.toUserFacingNetworkError(url: URL): IOException =
+    when {
+      this is UnknownHostException || cause is UnknownHostException -> IOException(
+        "Unable to resolve RyanOS host \"${url.host}\". Check that Tailscale is connected and MagicDNS is enabled, then refresh again.",
+        this
+      )
+      this is SocketTimeoutException || cause is SocketTimeoutException -> IOException(
+        "RyanOS API timed out at \"${url.host}\". Check that the Lenovo server and Tailscale connection are reachable, then refresh again.",
+        this
+      )
+      else -> this
+    }
 
   private fun Map<String, String>.toQueryString(): String =
     entries.joinToString("&") { (key, value) -> "${key.urlEncode()}=${value.urlEncode()}" }

@@ -291,11 +291,11 @@ function inferShoppingCategory(name: string): ShoppingCategory {
   if (/\b(vitamins?|medicine|medications?|supplements?|advil|tylenol|ibuprofen|bandages?)\b/.test(normalized)) {
     return "health";
   }
-  if (/\b(toothpaste|toothbrush|floss|deodorant|shampoo|conditioner|razor|mouthwash)\b/.test(normalized)) {
-    return "personal care";
-  }
-  if (/\b(detergent|dish soap|trash bag|paper towel|toilet paper|cleaner|sponge|battery|laundry)\b/.test(normalized)) {
+  if (/\b(detergent|dish soap|trash bags?|paper towels?|toilet paper|cleaner|sponges?|batter(y|ies)|laundry|car soap|car wash)\b/.test(normalized) || /\bsoap\b.*\bcar\b/.test(normalized)) {
     return "household good";
+  }
+  if (/\b(toothpaste|toothbrush|floss|deodorant|shampoo|conditioner|razor|mouthwash|soap)\b/.test(normalized)) {
+    return "personal care";
   }
   if (/\b(gift|adapter|cable|notebook|misc)\b/.test(normalized)) {
     return "miscellaneous";

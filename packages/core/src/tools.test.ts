@@ -12,6 +12,9 @@ describe("core tools", () => {
     const recurrenceSet = tools
       .list()
       .find((tool) => tool.name === "recurrence.setPolicy");
+    const shoppingAdd = tools
+      .list()
+      .find((tool) => tool.name === "shopping.addItems");
 
     expect(itemCreate?.metadata).toMatchObject({
       sideEffect: "state_write",
@@ -21,6 +24,11 @@ describe("core tools", () => {
     expect(recurrenceRecord?.metadata).toMatchObject({
       sideEffect: "state_write",
       confirmation: "low_confidence",
+      retrySafety: "safe_with_idempotency_key"
+    });
+    expect(shoppingAdd?.metadata).toMatchObject({
+      sideEffect: "state_write",
+      confirmation: "not_required",
       retrySafety: "safe_with_idempotency_key"
     });
     expect(itemCreate?.inputSchema).toMatchObject({
@@ -50,6 +58,93 @@ describe("core tools", () => {
         }
       }
     });
+    expect(shoppingAdd?.inputSchema).toMatchObject({
+      properties: {
+        items: {
+          type: "array"
+        }
+      },
+      required: expect.arrayContaining(["items"])
+    });
+  });
+
+  it("adds shopping-list items without creating task items", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    const added = await tools.execute("shopping.addItems", {
+      userId: "user-1",
+      items: [
+        { name: "envelopes" },
+        { name: "soap for my car" }
+      ],
+      sourceMessageId: "msg-shopping"
+    });
+
+    expect(added.status).toBe("applied");
+    expect(store.items.size).toBe(0);
+    expect([...store.shoppingListItems.values()].map((item) => item.name)).toEqual([
+      "envelopes",
+      "soap for my car"
+    ]);
+    expect([...store.shoppingListItems.values()].map((item) => item.category)).toEqual([
+      "miscellaneous",
+      "household good"
+    ]);
+    expect(store.auditLogs.at(-1)).toMatchObject({
+      action: "shopping.addItems",
+      toolName: "shopping.addItems",
+      sourceMessageId: "msg-shopping"
+    });
+  });
+
+  it("reopens a lingering checked shopping-list item when it is added again", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-20T12:00:00.000Z"));
+    try {
+      const store = new InMemoryRyanStore();
+      const tools = createCoreToolRegistry(store);
+      const list = await store.getDefaultShoppingList("user-1");
+      const existing = await store.createShoppingItem({
+        userId: "user-1",
+        listId: list.id,
+        name: "Toothpaste",
+        normalizedName: "toothpaste",
+        category: "personal care",
+        checkedAt: "2026-06-20T10:00:00.000Z",
+        source: "android"
+      });
+
+      const added = await tools.execute("shopping.addItems", {
+        userId: "user-1",
+        items: [{ name: "toothpaste", quantity: "2" }]
+      });
+
+      expect(added.status).toBe("applied");
+      expect(store.shoppingListItems.size).toBe(1);
+      const updated = store.shoppingListItems.get(existing.id);
+      expect(updated?.checkedAt).toBeUndefined();
+      expect(updated?.quantity).toBe("2");
+      expect(updated?.source).toBe("chat");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects shopping-list requests that are accidentally routed to item.create", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    const created = await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Buy envelopes",
+      kind: "task",
+      projectRef: "Shopping list"
+    });
+
+    expect(created.status).toBe("rejected");
+    expect(created.messageForUser).toContain("shopping.addItems");
+    expect(store.items.size).toBe(0);
   });
 
   it("creates and completes an item through typed tool calls", async () => {

@@ -4,10 +4,19 @@ import { z } from "zod";
 import { calculateRecurrenceState, isBeforeMinimumInterval } from "./recurrence.js";
 import type { ItemCreateData, ItemPatch, RyanStore } from "./store.js";
 import type { JsonObject, UUID } from "@ryanos/shared";
-import type { Area, Project } from "./types.js";
+import type { Area, Project, ShoppingCatalogItem, ShoppingListItem } from "./types.js";
 
 const userIdSchema = z.string().min(1).default("local-owner");
 const dateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const shoppingCategories = [
+  "grocery",
+  "personal care",
+  "household good",
+  "health",
+  "miscellaneous"
+] as const;
+const shoppingCategorySchema = z.enum(shoppingCategories);
+type ShoppingCategory = (typeof shoppingCategories)[number];
 const recurrenceTypeSchema = z.preprocess(
   (value) => (value === "interval" ? "completion_based" : value),
   z.enum(["completion_based", "fixed_schedule", "minimum_interval", "target_frequency", "opportunistic"])
@@ -28,6 +37,40 @@ function isDefaultDueMetadata(metadata: JsonObject): boolean {
 
 function cleanLabel(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function normalizeShoppingName(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, "")
+    .replace(/\s+/g, " ");
+}
+
+function inferShoppingCategory(name: string): ShoppingCategory {
+  const normalized = normalizeShoppingName(name);
+  if (/\b(vitamins?|medicine|medications?|supplements?|advil|tylenol|ibuprofen|bandages?|wart acid)\b/.test(normalized)) {
+    return "health";
+  }
+  if (/\b(detergent|dish soap|trash bags?|paper towels?|toilet paper|cleaner|sponges?|batter(y|ies)|laundry|car soap|car wash)\b/.test(normalized) || /\bsoap\b.*\bcar\b/.test(normalized)) {
+    return "household good";
+  }
+  if (/\b(toothpaste|toothbrush|floss|deodorant|shampoo|conditioner|razor|mouthwash|soap)\b/.test(normalized)) {
+    return "personal care";
+  }
+  if (/\b(gift|adapter|cable|notebooks?|envelopes?|misc)\b/.test(normalized)) {
+    return "miscellaneous";
+  }
+  return "grocery";
+}
+
+function shoppingLingerAfter(hours: number): string {
+  return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+}
+
+function shoppingListReference(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return new Set(["shopping", "shopping list", "grocery", "grocery list", "groceries"]).has(cleanLabel(value));
 }
 
 const areaVisualDefaults: Record<string, { icon: string; color: string }> = {
@@ -139,6 +182,63 @@ async function resolveItemIds(
     ids.push(best.record.id);
   }
   return ids;
+}
+
+async function findShoppingCatalogItem(
+  store: RyanStore,
+  userId: string,
+  normalizedName: string
+): Promise<ShoppingCatalogItem | undefined> {
+  const catalogItems = await store.listShoppingCatalogItems({ userId, limit: 100 });
+  return catalogItems.find((item) => item.normalizedName === normalizedName);
+}
+
+async function upsertShoppingListItem(
+  store: RyanStore,
+  input: {
+    userId: string;
+    listId: string;
+    name: string;
+    category?: ShoppingCategory | undefined;
+    quantity?: string | undefined;
+    note?: string | undefined;
+    source: string;
+  }
+): Promise<ShoppingListItem> {
+  const normalizedName = normalizeShoppingName(input.name);
+  const activeItems = await store.listShoppingItems({
+    userId: input.userId,
+    listId: input.listId,
+    checkedAfter: shoppingLingerAfter(24),
+    limit: 200
+  });
+  const existing = activeItems.find((item) => item.normalizedName === normalizedName);
+  const catalogItem = await findShoppingCatalogItem(store, input.userId, normalizedName);
+  const category = input.category ?? catalogItem?.defaultCategory ?? inferShoppingCategory(input.name);
+  if (existing !== undefined) {
+    return store.updateShoppingItem(existing.id, {
+      name: input.name,
+      normalizedName,
+      category,
+      checkedAt: null,
+      source: input.source,
+      ...(input.quantity !== undefined ? { quantity: input.quantity } : {}),
+      ...(input.note !== undefined ? { note: input.note } : {})
+    });
+  }
+
+  const createData: Parameters<RyanStore["createShoppingItem"]>[0] = {
+    userId: input.userId,
+    listId: input.listId,
+    name: input.name,
+    normalizedName,
+    category,
+    source: input.source
+  };
+  if (catalogItem !== undefined) createData.catalogItemId = catalogItem.id;
+  if (input.quantity !== undefined) createData.quantity = input.quantity;
+  if (input.note !== undefined) createData.note = input.note;
+  return store.createShoppingItem(createData);
 }
 
 type RecurrencePolicyToolInput = {
@@ -441,6 +541,13 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       body: z.string().optional()
     }),
     handler: async (input) => {
+      if (shoppingListReference(input.areaRef) || shoppingListReference(input.projectRef)) {
+        return {
+          status: "rejected",
+          messageForUser: "That sounds like a shopping-list request. Use shopping.addItems so it goes on the shopping list, not the task list."
+        };
+      }
+
       const area = await resolveArea(store, {
         userId: input.userId,
         areaRef: input.areaRef,
@@ -504,6 +611,66 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
         eventIds: [event.id],
         auditId: auditLog.id,
         messageForUser: `Created "${item.title}".`
+      };
+    }
+  });
+
+  registry.register({
+    name: "shopping.addItems",
+    description: "Add one or more things to buy to the shopping list, such as groceries, household goods, personal care, health items, or miscellaneous purchases.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "not_required",
+      retrySafety: "safe_with_idempotency_key",
+      descriptionForModel:
+        "Use this whenever the user says shopping list, grocery list, buy, pick up, need from the store, household supplies, toiletries, medicine, vitamins, or other purchases. Do not use item.create for shopping-list items."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      items: z.array(
+        z.object({
+          name: z.string().trim().min(1),
+          category: shoppingCategorySchema.optional(),
+          quantity: z.string().trim().min(1).optional(),
+          note: z.string().trim().min(1).optional()
+        })
+      ).min(1).max(50),
+      source: z.string().trim().min(1).default("chat")
+    }),
+    handler: async (input) => {
+      const list = await store.getDefaultShoppingList(input.userId);
+      const items: ShoppingListItem[] = [];
+      for (const itemInput of input.items) {
+        items.push(
+          await upsertShoppingListItem(store, {
+            userId: input.userId,
+            listId: list.id,
+            name: itemInput.name,
+            category: itemInput.category,
+            quantity: itemInput.quantity,
+            note: itemInput.note,
+            source: input.source
+          })
+        );
+      }
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "shopping.addItems",
+        toolName: "shopping.addItems",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: {
+          listId: list.id,
+          itemIds: items.map((item) => item.id),
+          itemNames: items.map((item) => item.name)
+        }
+      });
+      const names = items.map((item) => item.name).join(", ");
+      return {
+        status: "applied",
+        data: { list, items },
+        auditId: auditLog.id,
+        messageForUser: `Added to shopping list: ${names}.`
       };
     }
   });
