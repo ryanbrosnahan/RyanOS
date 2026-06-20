@@ -22,7 +22,8 @@
 
     <receiver
       android:name=".widget.RyanOsWidgetReceiver"
-      android:exported="false">
+      android:exported="false"
+      android:label="@string/widget_name">
       <intent-filter>
         <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
       </intent-filter>
@@ -33,6 +34,23 @@
 
     <service
       android:name=".widget.RyanOsWidgetListService"
+      android:exported="false"
+      android:permission="android.permission.BIND_REMOTEVIEWS" />
+
+    <receiver
+      android:name=".widget.RyanOsShoppingWidgetReceiver"
+      android:exported="false"
+      android:label="@string/shopping_widget_name">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+      </intent-filter>
+      <meta-data
+        android:name="android.appwidget.provider"
+        android:resource="@xml/ryanos_shopping_widget_info" />
+    </receiver>
+
+    <service
+      android:name=".widget.RyanOsShoppingWidgetListService"
       android:exported="false"
       android:permission="android.permission.BIND_REMOTEVIEWS" />
   </application>

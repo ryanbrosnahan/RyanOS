@@ -18,6 +18,7 @@ data class WidgetPayloadResult(
 
 object RyanOsApi {
   private const val WIDGET_ITEM_LIMIT = 100
+  private const val SHOPPING_SUGGESTION_LIMIT = 12
 
   fun todayDateKey(timezone: String): String {
     val zone = runCatching { ZoneId.of(timezone) }.getOrElse { ZoneId.systemDefault() }
@@ -50,6 +51,28 @@ object RyanOsApi {
   }
 
   @Throws(IOException::class)
+  fun fetchShoppingPayload(settings: RyanOsSettings, suggestions: Int = SHOPPING_SUGGESTION_LIMIT): ShoppingPayloadResult {
+    val query = mapOf(
+      "userId" to settings.userId,
+      "lingerHours" to "24",
+      "suggestions" to suggestions.toString()
+    ).toQueryString()
+    val rawJson = request(
+      method = "GET",
+      url = "${settings.normalizedBaseUrl}/v1/mobile/shopping/list?$query"
+    )
+    val syncedAt = Instant.now().toString()
+    return ShoppingPayloadResult(
+      rawJson = rawJson,
+      snapshot = parseShoppingSnapshot(
+        rawJson = rawJson,
+        lastSyncedAt = syncedAt,
+        configured = true
+      )
+    )
+  }
+
+  @Throws(IOException::class)
   fun createItem(settings: RyanOsSettings, title: String) {
     val body = JSONObject()
       .put("userId", settings.userId)
@@ -61,6 +84,38 @@ object RyanOsApi {
     request(
       method = "POST",
       url = "${settings.normalizedBaseUrl}/v1/mobile/items",
+      body = body
+    )
+  }
+
+  @Throws(IOException::class)
+  fun createShoppingItem(
+    settings: RyanOsSettings,
+    name: String,
+    category: String?,
+    quantity: String?
+  ) {
+    val body = JSONObject()
+      .put("userId", settings.userId)
+      .put("name", name)
+      .put("source", "android")
+    if (!category.isNullOrBlank()) body.put("category", category)
+    if (!quantity.isNullOrBlank()) body.put("quantity", quantity)
+    request(
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/mobile/shopping/items",
+      body = body
+    )
+  }
+
+  @Throws(IOException::class)
+  fun toggleShoppingItem(settings: RyanOsSettings, itemId: String, checked: Boolean) {
+    val body = JSONObject()
+      .put("userId", settings.userId)
+      .put("checked", checked)
+    request(
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/mobile/shopping/items/${itemId.urlEncode()}/check",
       body = body
     )
   }
@@ -116,6 +171,26 @@ object RyanOsApi {
         recurrence.updateCountSummary()
       }
 
+      root.toString()
+    }.getOrElse { rawJson }
+  }
+
+  fun optimisticallyToggleShoppingPayload(
+    rawJson: String?,
+    itemId: String,
+    checked: Boolean
+  ): String? {
+    if (rawJson.isNullOrBlank()) return rawJson
+    return runCatching {
+      val root = JSONObject(rawJson)
+      val items = root.optJSONArray("items") ?: return rawJson
+      val item = items.findItem(itemId) ?: return rawJson
+      item.put("checked", checked)
+      if (checked) {
+        item.put("checkedAt", Instant.now().toString())
+      } else {
+        item.remove("checkedAt")
+      }
       root.toString()
     }.getOrElse { rawJson }
   }
@@ -225,6 +300,108 @@ object RyanOsApi {
       )
     }
   }
+
+  fun parseShoppingSnapshot(
+    rawJson: String?,
+    lastSyncedAt: String? = null,
+    configured: Boolean = true,
+    error: String? = null
+  ): ShoppingSnapshot {
+    if (!configured) {
+      return ShoppingSnapshot(
+        configured = false,
+        readOnly = true,
+        error = error
+      )
+    }
+    if (rawJson.isNullOrBlank()) {
+      return ShoppingSnapshot(
+        configured = true,
+        readOnly = error != null,
+        lastSyncedAt = lastSyncedAt,
+        error = error
+      )
+    }
+
+    return runCatching {
+      val root = JSONObject(rawJson)
+      ShoppingSnapshot(
+        generatedAt = root.optStringOrNull("generatedAt") ?: "",
+        lastSyncedAt = lastSyncedAt,
+        configured = true,
+        readOnly = error != null,
+        error = error,
+        categories = parseStringArray(root.optJSONArray("categories")),
+        items = parseShoppingItems(root.optJSONArray("items")),
+        suggestions = parseShoppingSuggestions(root.optJSONArray("suggestions"))
+      )
+    }.getOrElse { parseError ->
+      ShoppingSnapshot(
+        configured = true,
+        readOnly = true,
+        lastSyncedAt = lastSyncedAt,
+        error = error ?: "Could not read shopping data: ${parseError.message ?: parseError.javaClass.simpleName}"
+      )
+    }
+  }
+
+  private fun parseShoppingItems(items: JSONArray?): List<ShoppingItem> =
+    buildList {
+      if (items == null) return@buildList
+      for (index in 0 until items.length()) {
+        val item = items.optJSONObject(index) ?: continue
+        val id = item.optString("id")
+        val name = item.optString("name")
+        if (id.isBlank() || name.isBlank()) continue
+        add(
+          ShoppingItem(
+            id = id,
+            name = name,
+            normalizedName = item.optStringOrNull("normalizedName") ?: name.lowercase(),
+            category = item.optStringOrNull("category") ?: "miscellaneous",
+            quantity = item.optStringOrNull("quantity"),
+            note = item.optStringOrNull("note"),
+            checked = item.optBoolean("checked", false),
+            checkedAt = item.optStringOrNull("checkedAt"),
+            source = item.optStringOrNull("source") ?: "manual",
+            sortOrder = item.optInt("sortOrder", 0),
+            catalogItemId = item.optStringOrNull("catalogItemId"),
+            createdAt = item.optStringOrNull("createdAt") ?: "",
+            updatedAt = item.optStringOrNull("updatedAt") ?: ""
+          )
+        )
+      }
+    }
+
+  private fun parseShoppingSuggestions(items: JSONArray?): List<ShoppingSuggestion> =
+    buildList {
+      if (items == null) return@buildList
+      for (index in 0 until items.length()) {
+        val item = items.optJSONObject(index) ?: continue
+        val id = item.optString("id")
+        val name = item.optString("name")
+        if (id.isBlank() || name.isBlank()) continue
+        add(
+          ShoppingSuggestion(
+            id = id,
+            name = name,
+            normalizedName = item.optStringOrNull("normalizedName") ?: name.lowercase(),
+            category = item.optStringOrNull("category") ?: "miscellaneous",
+            lastPurchasedAt = item.optStringOrNull("lastPurchasedAt"),
+            purchaseCount = item.optInt("purchaseCount", 0)
+          )
+        )
+      }
+    }
+
+  private fun parseStringArray(items: JSONArray?): List<String> =
+    buildList {
+      if (items == null) return@buildList
+      for (index in 0 until items.length()) {
+        val value = items.optString(index)
+        if (value.isNotBlank()) add(value)
+      }
+    }
 
   private fun parseRecurrence(recurrence: JSONObject?): WidgetRecurrence? {
     if (recurrence == null) return null

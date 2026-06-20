@@ -297,4 +297,106 @@ class RyanOsApiTest {
     assertEquals("2/5", undoneItem.recurrence?.summary)
     assertEquals("uncompleted", undoneItem.recurrence?.days?.last()?.status)
   }
+
+  @Test
+  fun parsesShoppingPayload() {
+    val snapshot = RyanOsApi.parseShoppingSnapshot(
+      rawJson = """
+        {
+          "categories": ["grocery", "personal care", "household good", "health", "miscellaneous"],
+          "items": [
+            {
+              "id": "shopping-1",
+              "name": "Dish detergent",
+              "normalizedName": "dish detergent",
+              "category": "household good",
+              "quantity": "1",
+              "checked": false,
+              "source": "manual",
+              "sortOrder": 0,
+              "createdAt": "2026-06-19T12:00:00.000Z",
+              "updatedAt": "2026-06-19T12:00:00.000Z"
+            },
+            {
+              "id": "shopping-2",
+              "name": "Toothpaste",
+              "normalizedName": "toothpaste",
+              "category": "personal care",
+              "checked": true,
+              "checkedAt": "2026-06-19T13:00:00.000Z",
+              "source": "manual",
+              "sortOrder": 0,
+              "createdAt": "2026-06-19T12:00:00.000Z",
+              "updatedAt": "2026-06-19T13:00:00.000Z"
+            }
+          ],
+          "suggestions": [
+            {
+              "id": "catalog-1",
+              "name": "Vitamins",
+              "normalizedName": "vitamins",
+              "category": "health",
+              "purchaseCount": 3,
+              "lastPurchasedAt": "2026-06-18T12:00:00.000Z"
+            }
+          ]
+        }
+      """.trimIndent(),
+      lastSyncedAt = "2026-06-19T14:00:00.000Z"
+    )
+
+    assertTrue(snapshot.configured)
+    assertEquals("2026-06-19T14:00:00.000Z", snapshot.lastSyncedAt)
+    assertEquals(5, snapshot.categories.size)
+    assertEquals(2, snapshot.items.size)
+    assertEquals("household good", snapshot.items[0].category)
+    assertEquals("1", snapshot.items[0].quantity)
+    assertFalse(snapshot.items[0].checked)
+    assertTrue(snapshot.items[1].checked)
+    assertEquals("2026-06-19T13:00:00.000Z", snapshot.items[1].checkedAt)
+    assertEquals("Vitamins", snapshot.suggestions[0].name)
+    assertEquals(3, snapshot.suggestions[0].purchaseCount)
+  }
+
+  @Test
+  fun optimisticToggleUpdatesShoppingItem() {
+    val rawJson = """
+      {
+        "items": [
+          {
+            "id": "shopping-1",
+            "name": "Dish detergent",
+            "normalizedName": "dish detergent",
+            "category": "household good",
+            "checked": false,
+            "source": "manual",
+            "sortOrder": 0,
+            "createdAt": "2026-06-19T12:00:00.000Z",
+            "updatedAt": "2026-06-19T12:00:00.000Z"
+          }
+        ],
+        "suggestions": []
+      }
+    """.trimIndent()
+
+    val checkedPayload = RyanOsApi.optimisticallyToggleShoppingPayload(
+      rawJson = rawJson,
+      itemId = "shopping-1",
+      checked = true
+    )
+    val checkedSnapshot = RyanOsApi.parseShoppingSnapshot(checkedPayload)
+
+    assertTrue(checkedSnapshot.items[0].checked)
+    assertTrue(checkedSnapshot.items[0].checkedAt?.isNotBlank() == true)
+
+    val undonePayload = RyanOsApi.optimisticallyToggleShoppingPayload(
+      rawJson = checkedPayload,
+      itemId = "shopping-1",
+      checked = false
+    )
+    val undoneSnapshot = RyanOsApi.parseShoppingSnapshot(undonePayload)
+
+    assertFalse(undoneSnapshot.items[0].checked)
+    assertNull(undoneSnapshot.items[0].checkedAt)
+  }
 }

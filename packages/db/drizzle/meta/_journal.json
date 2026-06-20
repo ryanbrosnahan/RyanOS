@@ -43,6 +43,13 @@
       "when": 1780012800000,
       "tag": "0005_gmail_email_triage",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1780099200000,
+      "tag": "0006_shopping_list",
+      "breakpoints": true
     }
   ]
 }

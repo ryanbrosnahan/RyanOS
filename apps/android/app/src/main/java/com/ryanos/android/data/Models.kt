@@ -84,6 +84,47 @@ data class WidgetScopeLabel(
   val color: String?
 )
 
+data class ShoppingPayloadResult(
+  val rawJson: String,
+  val snapshot: ShoppingSnapshot
+)
+
+data class ShoppingSnapshot(
+  val generatedAt: String = "",
+  val lastSyncedAt: String? = null,
+  val configured: Boolean = false,
+  val readOnly: Boolean = false,
+  val error: String? = null,
+  val categories: List<String> = emptyList(),
+  val items: List<ShoppingItem> = emptyList(),
+  val suggestions: List<ShoppingSuggestion> = emptyList()
+)
+
+data class ShoppingItem(
+  val id: String,
+  val name: String,
+  val normalizedName: String,
+  val category: String,
+  val quantity: String?,
+  val note: String?,
+  val checked: Boolean,
+  val checkedAt: String?,
+  val source: String,
+  val sortOrder: Int,
+  val catalogItemId: String?,
+  val createdAt: String,
+  val updatedAt: String
+)
+
+data class ShoppingSuggestion(
+  val id: String,
+  val name: String,
+  val normalizedName: String,
+  val category: String,
+  val lastPurchasedAt: String?,
+  val purchaseCount: Int
+)
+
 const val DEFAULT_RECURRENCE_LEAD_DAYS = 1
 
 fun clampRecurrenceLeadDays(value: Int): Int = value.coerceIn(0, 30)

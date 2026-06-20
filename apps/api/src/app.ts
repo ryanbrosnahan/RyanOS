@@ -16,7 +16,9 @@ import {
   type RecurrenceEvent,
   type RecurrencePolicy,
   type RecurrenceState,
-  type RyanStore
+  type RyanStore,
+  type ShoppingCatalogItem,
+  type ShoppingListItem
 } from "@ryanos/core";
 import {
   createDb,
@@ -131,6 +133,51 @@ const mobileToggleItemBodySchema = z.object({
   allowEarly: z.boolean().default(false)
 });
 
+const shoppingCategorySchema = z.enum([
+  "grocery",
+  "personal care",
+  "household good",
+  "health",
+  "miscellaneous"
+]);
+
+const shoppingListQuerySchema = z.object({
+  userId: z.string().default("local-owner"),
+  lingerHours: z.coerce.number().int().min(1).max(168).default(24),
+  suggestions: z.coerce.number().int().min(0).max(50).default(12)
+});
+
+const shoppingCreateItemBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  name: z.string().min(1),
+  category: shoppingCategorySchema.optional(),
+  quantity: z.string().optional(),
+  note: z.string().optional(),
+  source: z.string().default("manual")
+});
+
+const shoppingItemParamsSchema = z.object({
+  itemId: z.string().min(1)
+});
+
+const shoppingPatchItemBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  name: z.string().min(1).optional(),
+  category: shoppingCategorySchema.optional(),
+  quantity: z.string().nullable().optional(),
+  note: z.string().nullable().optional()
+});
+
+const shoppingCheckItemBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  checked: z.boolean()
+});
+
+const shoppingSuggestionsQuerySchema = z.object({
+  userId: z.string().default("local-owner"),
+  limit: z.coerce.number().int().min(1).max(50).default(12)
+});
+
 const aiSmokeBodySchema = z.object({
   userId: z.string().default("local-owner"),
   text: z
@@ -219,6 +266,45 @@ function csvValues(value: string | undefined): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+const shoppingCategories = [
+  "grocery",
+  "personal care",
+  "household good",
+  "health",
+  "miscellaneous"
+] as const;
+
+type ShoppingCategory = (typeof shoppingCategories)[number];
+
+function normalizeShoppingName(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, "")
+    .replace(/\s+/g, " ");
+}
+
+function inferShoppingCategory(name: string): ShoppingCategory {
+  const normalized = normalizeShoppingName(name);
+  if (/\b(vitamins?|medicine|medications?|supplements?|advil|tylenol|ibuprofen|bandages?)\b/.test(normalized)) {
+    return "health";
+  }
+  if (/\b(toothpaste|toothbrush|floss|deodorant|shampoo|conditioner|razor|mouthwash)\b/.test(normalized)) {
+    return "personal care";
+  }
+  if (/\b(detergent|dish soap|trash bag|paper towel|toilet paper|cleaner|sponge|battery|laundry)\b/.test(normalized)) {
+    return "household good";
+  }
+  if (/\b(gift|adapter|cable|notebook|misc)\b/.test(normalized)) {
+    return "miscellaneous";
+  }
+  return "grocery";
+}
+
+function shoppingLingerAfter(hours: number): string {
+  return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
 }
 
 function corsOriginsFromEnv(): Set<string> {
@@ -1601,6 +1687,190 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     };
   }
 
+  type ShoppingItemView = {
+    id: string;
+    name: string;
+    normalizedName: string;
+    category: string;
+    quantity?: string;
+    note?: string;
+    checked: boolean;
+    checkedAt?: string;
+    source: string;
+    sortOrder: number;
+    catalogItemId?: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+
+  type ShoppingSuggestionView = {
+    id: string;
+    name: string;
+    normalizedName: string;
+    category: string;
+    lastPurchasedAt?: string;
+    purchaseCount: number;
+  };
+
+  function shoppingItemView(item: ShoppingListItem): ShoppingItemView {
+    const view: ShoppingItemView = {
+      id: item.id,
+      name: item.name,
+      normalizedName: item.normalizedName,
+      category: item.category,
+      checked: item.checkedAt !== undefined,
+      source: item.source,
+      sortOrder: item.sortOrder,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt
+    };
+    if (item.quantity !== undefined) view.quantity = item.quantity;
+    if (item.note !== undefined) view.note = item.note;
+    if (item.checkedAt !== undefined) view.checkedAt = item.checkedAt;
+    if (item.catalogItemId !== undefined) view.catalogItemId = item.catalogItemId;
+    return view;
+  }
+
+  function shoppingSuggestionView(item: ShoppingCatalogItem): ShoppingSuggestionView {
+    const view: ShoppingSuggestionView = {
+      id: item.id,
+      name: item.name,
+      normalizedName: item.normalizedName,
+      category: item.defaultCategory,
+      purchaseCount: item.purchaseCount
+    };
+    if (item.lastPurchasedAt !== undefined) view.lastPurchasedAt = item.lastPurchasedAt;
+    return view;
+  }
+
+  async function shoppingSuggestions(input: {
+    userId: string;
+    activeNormalizedNames: Set<string>;
+    limit: number;
+  }): Promise<ShoppingSuggestionView[]> {
+    const catalogItems = await store.listShoppingCatalogItems({
+      userId: input.userId,
+      limit: Math.max(input.limit * 3, input.limit)
+    });
+    return catalogItems
+      .filter((item) => !input.activeNormalizedNames.has(item.normalizedName))
+      .slice(0, input.limit)
+      .map(shoppingSuggestionView);
+  }
+
+  async function shoppingListPayload(input: {
+    userId: string;
+    lingerHours: number;
+    suggestions: number;
+  }) {
+    const list = await store.getDefaultShoppingList(input.userId);
+    const items = await store.listShoppingItems({
+      userId: input.userId,
+      listId: list.id,
+      checkedAfter: shoppingLingerAfter(input.lingerHours),
+      limit: 200
+    });
+    const activeNormalizedNames = new Set(items.map((item) => item.normalizedName));
+    return {
+      list: {
+        id: list.id,
+        name: list.name
+      },
+      categories: shoppingCategories,
+      lingerHours: input.lingerHours,
+      items: items.map(shoppingItemView),
+      suggestions: await shoppingSuggestions({
+        userId: input.userId,
+        activeNormalizedNames,
+        limit: input.suggestions
+      })
+    };
+  }
+
+  async function findShoppingCatalogItem(userId: string, normalizedName: string): Promise<ShoppingCatalogItem | undefined> {
+    const catalogItems = await store.listShoppingCatalogItems({ userId, limit: 100 });
+    return catalogItems.find((item) => item.normalizedName === normalizedName);
+  }
+
+  async function rememberShoppingPurchase(item: ShoppingListItem, checkedAt: string): Promise<void> {
+    const existing = await findShoppingCatalogItem(item.userId, item.normalizedName);
+    await store.upsertShoppingCatalogItem({
+      userId: item.userId,
+      name: item.name,
+      normalizedName: item.normalizedName,
+      defaultCategory: item.category,
+      lastPurchasedAt: checkedAt,
+      purchaseCount: (existing?.purchaseCount ?? 0) + 1,
+      metadata: existing?.metadata ?? {}
+    });
+  }
+
+  async function createShoppingItemPayload(body: z.infer<typeof shoppingCreateItemBodySchema>) {
+    const list = await store.getDefaultShoppingList(body.userId);
+    const normalizedName = normalizeShoppingName(body.name);
+    const existingItems = await store.listShoppingItems({
+      userId: body.userId,
+      listId: list.id,
+      checkedAfter: shoppingLingerAfter(24),
+      limit: 200
+    });
+    const existing = existingItems.find((item) => item.normalizedName === normalizedName);
+    const catalogItem = await findShoppingCatalogItem(body.userId, normalizedName);
+    const category = body.category ?? catalogItem?.defaultCategory ?? inferShoppingCategory(body.name);
+    if (existing) {
+      const updated = await store.updateShoppingItem(existing.id, {
+        name: body.name.trim(),
+        normalizedName,
+        category,
+        checkedAt: null,
+        ...(body.quantity !== undefined ? { quantity: body.quantity } : {}),
+        ...(body.note !== undefined ? { note: body.note } : {})
+      });
+      return {
+        item: shoppingItemView(updated),
+        ...(await shoppingListPayload({ userId: body.userId, lingerHours: 24, suggestions: 12 }))
+      };
+    }
+
+    const createData: Parameters<typeof store.createShoppingItem>[0] = {
+      userId: body.userId,
+      listId: list.id,
+      name: body.name.trim(),
+      normalizedName,
+      category,
+      source: body.source
+    };
+    if (catalogItem !== undefined) createData.catalogItemId = catalogItem.id;
+    if (body.quantity !== undefined) createData.quantity = body.quantity;
+    if (body.note !== undefined) createData.note = body.note;
+    const created = await store.createShoppingItem(createData);
+    return {
+      item: shoppingItemView(created),
+      ...(await shoppingListPayload({ userId: body.userId, lingerHours: 24, suggestions: 12 }))
+    };
+  }
+
+  async function checkShoppingItemPayload(
+    itemId: string,
+    body: z.infer<typeof shoppingCheckItemBodySchema>,
+    reply: FastifyReply
+  ) {
+    const existing = await store.getShoppingItem(itemId);
+    if (!existing || existing.userId !== body.userId) {
+      reply.code(404);
+      return { error: "Shopping item not found" };
+    }
+    const checkedAt = body.checked ? nowIso() : null;
+    const updated = await store.updateShoppingItem(itemId, { checkedAt });
+    if (body.checked && checkedAt !== null) {
+      await rememberShoppingPurchase(updated, checkedAt);
+    }
+    return {
+      item: shoppingItemView(updated),
+      ...(await shoppingListPayload({ userId: body.userId, lingerHours: 24, suggestions: 12 }))
+    };
+  }
+
   async function ensureDailyPlanPromptMessage(input: {
     userId: string;
     dateKey: string;
@@ -1728,6 +1998,86 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       areas: areas.map(areaForDashboard),
       projects: projects.map(projectForDashboard)
     };
+  });
+
+  app.get("/v1/shopping/list", async (request) => {
+    const query = shoppingListQuerySchema.parse(request.query);
+    return shoppingListPayload({
+      userId: query.userId,
+      lingerHours: query.lingerHours,
+      suggestions: query.suggestions
+    });
+  });
+
+  app.post("/v1/shopping/items", async (request) => {
+    const body = shoppingCreateItemBodySchema.parse(request.body);
+    return createShoppingItemPayload(body);
+  });
+
+  app.patch("/v1/shopping/items/:itemId", async (request, reply) => {
+    const params = shoppingItemParamsSchema.parse(request.params);
+    const body = shoppingPatchItemBodySchema.parse(request.body);
+    const existing = await store.getShoppingItem(params.itemId);
+    if (!existing || existing.userId !== body.userId) {
+      reply.code(404);
+      return { error: "Shopping item not found" };
+    }
+    const patch: Parameters<typeof store.updateShoppingItem>[1] = {};
+    if (body.name !== undefined) {
+      patch.name = body.name.trim();
+      patch.normalizedName = normalizeShoppingName(body.name);
+    }
+    if (body.category !== undefined) patch.category = body.category;
+    if (body.quantity !== undefined) patch.quantity = body.quantity;
+    if (body.note !== undefined) patch.note = body.note;
+    const updated = await store.updateShoppingItem(params.itemId, patch);
+    return {
+      item: shoppingItemView(updated),
+      ...(await shoppingListPayload({ userId: body.userId, lingerHours: 24, suggestions: 12 }))
+    };
+  });
+
+  app.post("/v1/shopping/items/:itemId/check", async (request, reply) => {
+    const params = shoppingItemParamsSchema.parse(request.params);
+    const body = shoppingCheckItemBodySchema.parse(request.body);
+    return checkShoppingItemPayload(params.itemId, body, reply);
+  });
+
+  app.get("/v1/shopping/suggestions", async (request) => {
+    const query = shoppingSuggestionsQuerySchema.parse(request.query);
+    const list = await store.getDefaultShoppingList(query.userId);
+    const activeItems = await store.listShoppingItems({
+      userId: query.userId,
+      listId: list.id,
+      limit: 200
+    });
+    return {
+      suggestions: await shoppingSuggestions({
+        userId: query.userId,
+        activeNormalizedNames: new Set(activeItems.map((item) => item.normalizedName)),
+        limit: query.limit
+      })
+    };
+  });
+
+  app.get("/v1/mobile/shopping/list", async (request) => {
+    const query = shoppingListQuerySchema.parse(request.query);
+    return shoppingListPayload({
+      userId: query.userId,
+      lingerHours: query.lingerHours,
+      suggestions: query.suggestions
+    });
+  });
+
+  app.post("/v1/mobile/shopping/items", async (request) => {
+    const body = shoppingCreateItemBodySchema.parse(request.body);
+    return createShoppingItemPayload(body);
+  });
+
+  app.post("/v1/mobile/shopping/items/:itemId/check", async (request, reply) => {
+    const params = shoppingItemParamsSchema.parse(request.params);
+    const body = shoppingCheckItemBodySchema.parse(request.body);
+    return checkShoppingItemPayload(params.itemId, body, reply);
   });
 
   app.get("/v1/daily-plan", async (request) => {

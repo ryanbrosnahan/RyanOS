@@ -13,6 +13,9 @@ import type {
   RecurrenceEvent,
   RecurrencePolicy,
   RecurrenceState,
+  ShoppingCatalogItem,
+  ShoppingList,
+  ShoppingListItem,
   SourceLink
 } from "./types.js";
 
@@ -166,6 +169,60 @@ export type EmailActionProposalListFilters = {
   limit?: number;
 };
 
+export type ShoppingListUpsertData = {
+  userId: UUID;
+  name?: string;
+  metadata?: JsonObject;
+};
+
+export type ShoppingItemCreateData = {
+  userId: UUID;
+  listId: UUID;
+  catalogItemId?: UUID;
+  name: string;
+  normalizedName: string;
+  category?: string;
+  quantity?: string;
+  note?: string;
+  checkedAt?: string;
+  source?: string;
+  sortOrder?: number;
+  metadata?: JsonObject;
+};
+
+export type ShoppingItemPatch = Partial<
+  Pick<ShoppingListItem, "name" | "normalizedName" | "category" | "source" | "sortOrder" | "metadata">
+> & {
+  catalogItemId?: UUID | null;
+  quantity?: string | null;
+  note?: string | null;
+  checkedAt?: string | null;
+  deletedAt?: string | null;
+};
+
+export type ShoppingItemListFilters = {
+  userId: UUID;
+  listId?: UUID;
+  includeActive?: boolean;
+  checkedAfter?: string;
+  limit?: number;
+};
+
+export type ShoppingCatalogUpsertData = {
+  userId: UUID;
+  name: string;
+  normalizedName: string;
+  defaultCategory?: string;
+  lastPurchasedAt?: string;
+  purchaseCount?: number;
+  metadata?: JsonObject;
+};
+
+export type ShoppingCatalogListFilters = {
+  userId: UUID;
+  limit?: number;
+};
+
 export interface RyanStore {
   upsertArea(area: AreaUpsertData): Promise<Area>;
   listAreas(userId: UUID): Promise<Area[]>;
@@ -219,6 +276,14 @@ export interface RyanStore {
   listEmailActionProposals(filters: EmailActionProposalListFilters): Promise<EmailActionProposal[]>;
   getEmailActionProposal(proposalId: UUID): Promise<EmailActionProposal | undefined>;
   updateEmailActionProposal(proposalId: UUID, patch: EmailActionProposalPatch): Promise<EmailActionProposal>;
+
+  getDefaultShoppingList(userId: UUID): Promise<ShoppingList>;
+  createShoppingItem(data: ShoppingItemCreateData): Promise<ShoppingListItem>;
+  updateShoppingItem(itemId: UUID, patch: ShoppingItemPatch): Promise<ShoppingListItem>;
+  listShoppingItems(filters: ShoppingItemListFilters): Promise<ShoppingListItem[]>;
+  getShoppingItem(itemId: UUID): Promise<ShoppingListItem | undefined>;
+  upsertShoppingCatalogItem(data: ShoppingCatalogUpsertData): Promise<ShoppingCatalogItem>;
+  listShoppingCatalogItems(filters: ShoppingCatalogListFilters): Promise<ShoppingCatalogItem[]>;
 
   addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog>;
   snapshot?(): JsonObject | Promise<JsonObject>;

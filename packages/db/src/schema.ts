@@ -193,6 +193,64 @@ export const itemEvents = pgTable("item_events", {
   idempotencyIdx: uniqueIndex("item_events_idempotency_idx").on(table.userId, table.idempotencyKey)
 }));
 
+export const shoppingLists = pgTable("shopping_lists", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  name: text("name").notNull().default("Shopping"),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  userNameIdx: uniqueIndex("shopping_lists_user_name_idx").on(table.userId, table.name)
+}));
+
+export const shoppingCatalogItems = pgTable("shopping_catalog_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  name: text("name").notNull(),
+  normalizedName: text("normalized_name").notNull(),
+  defaultCategory: text("default_category").notNull().default("miscellaneous"),
+  lastPurchasedAt: timestamp("last_purchased_at", { withTimezone: true }),
+  purchaseCount: integer("purchase_count").notNull().default(0),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  userNormalizedIdx: uniqueIndex("shopping_catalog_items_user_normalized_idx").on(
+    table.userId,
+    table.normalizedName
+  )
+}));
+
+export const shoppingListItems = pgTable("shopping_list_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  listId: uuid("list_id").notNull().references(() => shoppingLists.id),
+  catalogItemId: uuid("catalog_item_id").references(() => shoppingCatalogItems.id),
+  name: text("name").notNull(),
+  normalizedName: text("normalized_name").notNull(),
+  category: text("category").notNull().default("miscellaneous"),
+  quantity: text("quantity"),
+  note: text("note"),
+  checkedAt: timestamp("checked_at", { withTimezone: true }),
+  source: text("source").notNull().default("manual"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  userListCheckedIdx: index("shopping_list_items_user_list_checked_idx").on(
+    table.userId,
+    table.listId,
+    table.checkedAt
+  ),
+  userListNormalizedIdx: index("shopping_list_items_user_list_normalized_idx").on(
+    table.userId,
+    table.listId,
+    table.normalizedName
+  )
+}));
+
 export const recurrencePolicies = pgTable("recurrence_policies", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),

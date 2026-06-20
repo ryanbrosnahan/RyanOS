@@ -42,14 +42,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import com.ryanos.android.data.clampRecurrenceLeadDays
 import com.ryanos.android.data.RyanOsRepository
 import com.ryanos.android.data.RyanOsSettings
+import com.ryanos.android.data.ShoppingItem
+import com.ryanos.android.data.ShoppingSnapshot
 import com.ryanos.android.data.WidgetItem
 import com.ryanos.android.data.WidgetSnapshot
+import com.ryanos.android.widget.RyanOsShoppingWidgetRenderer
 import com.ryanos.android.widget.RyanOsWidgetRenderer
 import kotlinx.coroutines.launch
 
@@ -60,9 +64,17 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     setContent {
       RyanOsTheme {
-        RyanOsSettingsScreen(repository = repository)
+        RyanOsSettingsScreen(
+          repository = repository,
+          initialScreen = intent?.getStringExtra(EXTRA_INITIAL_SCREEN)
+        )
       }
     }
+  }
+
+  companion object {
+    const val EXTRA_INITIAL_SCREEN = "initial_screen"
+    const val SCREEN_SHOPPING = "shopping"
   }
 }
 
@@ -85,12 +97,16 @@ private fun RyanOsTheme(content: @Composable () -> Unit) {
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-private fun RyanOsSettingsScreen(repository: RyanOsRepository) {
+private fun RyanOsSettingsScreen(repository: RyanOsRepository, initialScreen: String? = null) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
+  val scrollState = rememberScrollState()
   val settings by repository.settingsFlow.collectAsState(initial = RyanOsSettings())
   val snapshot by repository.snapshotFlow.collectAsState(
     initial = WidgetSnapshot(configured = settings.isConfigured)
+  )
+  val shoppingSnapshot by repository.shoppingSnapshotFlow.collectAsState(
+    initial = ShoppingSnapshot(configured = settings.isConfigured)
   )
   var apiBaseUrl by remember { mutableStateOf(settings.apiBaseUrl) }
   var userId by remember { mutableStateOf(settings.userId) }
@@ -99,6 +115,9 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository) {
   var showTaskDetails by remember { mutableStateOf(settings.showTaskDetails) }
   var colorCodeByArea by remember { mutableStateOf(settings.colorCodeByArea) }
   var quickAddTitle by remember { mutableStateOf("") }
+  var shoppingName by remember { mutableStateOf("") }
+  var shoppingCategory by remember { mutableStateOf("") }
+  var shoppingQuantity by remember { mutableStateOf("") }
   var busy by remember { mutableStateOf(false) }
   var statusText by remember { mutableStateOf("") }
 
@@ -111,6 +130,12 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository) {
     colorCodeByArea = settings.colorCodeByArea
   }
 
+  LaunchedEffect(initialScreen) {
+    if (initialScreen == MainActivity.SCREEN_SHOPPING) {
+      scrollState.animateScrollTo(900)
+    }
+  }
+
   fun launchWork(status: String, block: suspend () -> Unit) {
     scope.launch {
       busy = true
@@ -118,6 +143,7 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository) {
       runCatching {
         block()
         RyanOsWidgetRenderer.updateAll(context)
+        RyanOsShoppingWidgetRenderer.updateAll(context)
       }.onFailure { error ->
         statusText = error.message ?: "Action failed"
       }
@@ -141,7 +167,7 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository) {
     Column(
       modifier = Modifier
         .fillMaxSize()
-        .verticalScroll(rememberScrollState())
+        .verticalScroll(scrollState)
         .padding(paddingValues)
         .padding(horizontal = 20.dp, vertical = 16.dp),
       verticalArrangement = Arrangement.spacedBy(18.dp)
@@ -181,6 +207,7 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository) {
               )
             )
             val refreshed = repository.refresh()
+            repository.refreshShopping()
             statusText = refreshed.error ?: "Settings saved"
           }
         }
@@ -209,6 +236,53 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository) {
           }
         }
       )
+
+      ShoppingSection(
+        snapshot = shoppingSnapshot,
+        name = shoppingName,
+        onNameChange = { shoppingName = it },
+        category = shoppingCategory,
+        onCategoryChange = { shoppingCategory = it },
+        quantity = shoppingQuantity,
+        onQuantityChange = { shoppingQuantity = it },
+        busy = busy,
+        onAdd = {
+          val name = shoppingName.trim()
+          if (name.isNotEmpty()) {
+            launchWork("Adding shopping item") {
+              val refreshed = repository.createShoppingItem(
+                name = name,
+                category = shoppingCategory,
+                quantity = shoppingQuantity
+              )
+              if (refreshed.error == null) {
+                shoppingName = ""
+                shoppingQuantity = ""
+                statusText = "Shopping item added"
+              } else {
+                statusText = refreshed.error
+              }
+            }
+          }
+        },
+        onRefresh = {
+          launchWork("Refreshing shopping") {
+            val refreshed = repository.refreshShopping()
+            statusText = refreshed.error ?: "Shopping refreshed"
+          }
+        },
+        onToggle = { item ->
+          launchWork(if (item.checked) "Undoing shopping item" else "Checking shopping item") {
+            val targetChecked = !item.checked
+            val updated = repository.toggleShoppingItemOptimistically(item.id, targetChecked)
+            statusText = updated.error ?: if (targetChecked) "Marked bought" else "Shopping item restored"
+            repository.sendShoppingToggle(item.id, targetChecked)
+            repository.refreshShopping()
+          }
+        }
+      )
+
+      HorizontalDivider()
 
       Row(
         modifier = Modifier.fillMaxWidth(),
@@ -380,6 +454,212 @@ private fun QuickAddSection(
       ) {
         Text("Add")
       }
+    }
+  }
+}
+
+@Composable
+private fun ShoppingSection(
+  snapshot: ShoppingSnapshot,
+  name: String,
+  onNameChange: (String) -> Unit,
+  category: String,
+  onCategoryChange: (String) -> Unit,
+  quantity: String,
+  onQuantityChange: (String) -> Unit,
+  busy: Boolean,
+  onAdd: () -> Unit,
+  onRefresh: () -> Unit,
+  onToggle: (ShoppingItem) -> Unit
+) {
+  val categories = snapshot.categories.ifEmpty {
+    listOf("grocery", "personal care", "household good", "health", "miscellaneous")
+  }
+  val openItems = snapshot.items.filterNot { it.checked }
+  val checkedItems = snapshot.items.filter { it.checked }
+
+  Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Text(
+        text = "Shopping",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold
+      )
+      TextButton(
+        enabled = !busy,
+        onClick = onRefresh
+      ) {
+        Text("Refresh")
+      }
+    }
+
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+      OutlinedTextField(
+        value = name,
+        onValueChange = onNameChange,
+        modifier = Modifier.weight(1f),
+        singleLine = true,
+        label = { Text("Item") }
+      )
+      Button(
+        enabled = !busy && name.isNotBlank(),
+        onClick = onAdd
+      ) {
+        Text("Add")
+      }
+    }
+
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+      OutlinedTextField(
+        value = quantity,
+        onValueChange = onQuantityChange,
+        modifier = Modifier.weight(1f),
+        singleLine = true,
+        label = { Text("Qty") }
+      )
+      OutlinedTextField(
+        value = category,
+        onValueChange = onCategoryChange,
+        modifier = Modifier.weight(1.3f),
+        singleLine = true,
+        label = { Text("Category") },
+        placeholder = { Text("auto") }
+      )
+    }
+
+    CategoryShortcuts(
+      categories = categories,
+      selected = category,
+      onSelect = onCategoryChange
+    )
+
+    if (!snapshot.configured) {
+      Text(
+        text = "Connect RyanOS to load shopping.",
+        style = MaterialTheme.typography.bodyMedium
+      )
+      return
+    }
+
+    snapshot.error?.let { error ->
+      Text(
+        text = error,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.error
+      )
+    }
+
+    if (openItems.isEmpty() && checkedItems.isEmpty()) {
+      Text(
+        text = "No shopping items.",
+        style = MaterialTheme.typography.bodyMedium
+      )
+    } else {
+      openItems.take(8).forEach { item ->
+        ShoppingItemRow(item = item, onToggle = { onToggle(item) })
+      }
+      checkedItems.take(4).forEach { item ->
+        ShoppingItemRow(item = item, onToggle = { onToggle(item) })
+      }
+    }
+
+    if (snapshot.suggestions.isNotEmpty()) {
+      Text(
+        text = "Staples",
+        style = MaterialTheme.typography.bodyMedium,
+        fontWeight = FontWeight.SemiBold
+      )
+      snapshot.suggestions.take(5).forEach { suggestion ->
+        TextButton(
+          enabled = !busy,
+          onClick = {
+            onNameChange(suggestion.name)
+            onCategoryChange(suggestion.category)
+          }
+        ) {
+          Text(
+            text = "${suggestion.name} / ${suggestion.category}",
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun CategoryShortcuts(
+  categories: List<String>,
+  selected: String,
+  onSelect: (String) -> Unit
+) {
+  Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    categories.chunked(2).forEach { rowCategories ->
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        rowCategories.forEach { category ->
+          TextButton(
+            modifier = Modifier.weight(1f),
+            onClick = { onSelect(if (selected == category) "" else category) }
+          ) {
+            Text(
+              text = category,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              fontWeight = if (selected == category) FontWeight.Bold else FontWeight.Normal
+            )
+          }
+        }
+        if (rowCategories.size == 1) {
+          Spacer(modifier = Modifier.weight(1f))
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun ShoppingItemRow(
+  item: ShoppingItem,
+  onToggle: () -> Unit
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(10.dp),
+    verticalAlignment = Alignment.CenterVertically
+  ) {
+    TextButton(onClick = onToggle) {
+      Text(if (item.checked) "Undo" else "Bought")
+    }
+    Column(modifier = Modifier.weight(1f)) {
+      Text(
+        text = item.name,
+        style = MaterialTheme.typography.bodyLarge,
+        fontWeight = if (item.checked) FontWeight.Normal else FontWeight.Medium,
+        textDecoration = if (item.checked) TextDecoration.LineThrough else TextDecoration.None,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+      )
+      Text(
+        text = listOfNotNull(item.quantity, item.category, item.note).joinToString(" / "),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+      )
     }
   }
 }

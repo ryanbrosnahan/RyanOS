@@ -61,6 +61,26 @@ class RyanOsRepository private constructor(context: Context) {
       )
     }
 
+  val shoppingSnapshotFlow: Flow<ShoppingSnapshot> = dataStore.data
+    .map { preferences ->
+      val settings = preferences.toSettings()
+      RyanOsApi.parseShoppingSnapshot(
+        rawJson = preferences[CACHED_SHOPPING_PAYLOAD],
+        lastSyncedAt = preferences[SHOPPING_LAST_SYNCED_AT],
+        configured = settings.isConfigured,
+        error = preferences[SHOPPING_LAST_ERROR]
+      )
+    }
+    .catch {
+      emit(
+        ShoppingSnapshot(
+          configured = false,
+          readOnly = true,
+          error = it.message ?: "Could not read shopping settings."
+        )
+      )
+    }
+
   suspend fun saveSettings(settings: RyanOsSettings) {
     dataStore.edit { preferences ->
       preferences[API_BASE_URL] = settings.apiBaseUrl.trim()
@@ -70,6 +90,7 @@ class RyanOsRepository private constructor(context: Context) {
       preferences[SHOW_TASK_DETAILS] = settings.showTaskDetails
       preferences[COLOR_CODE_BY_AREA] = settings.colorCodeByArea
       preferences.remove(LAST_ERROR)
+      preferences.remove(SHOPPING_LAST_ERROR)
     }
   }
 
@@ -201,6 +222,33 @@ class RyanOsRepository private constructor(context: Context) {
     }
   }
 
+  suspend fun refreshShopping(): ShoppingSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) {
+      dataStore.edit { preferences ->
+        preferences.remove(CACHED_SHOPPING_PAYLOAD)
+        preferences.remove(SHOPPING_LAST_SYNCED_AT)
+        preferences[SHOPPING_LAST_ERROR] = "Connect the widget to your RyanOS API."
+      }
+      return@withContext shoppingSnapshotFlow.first()
+    }
+
+    runCatching {
+      val result = RyanOsApi.fetchShoppingPayload(settings)
+      dataStore.edit { preferences ->
+        preferences[CACHED_SHOPPING_PAYLOAD] = result.rawJson
+        preferences[SHOPPING_LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()
+        preferences.remove(SHOPPING_LAST_ERROR)
+      }
+      shoppingSnapshotFlow.first()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[SHOPPING_LAST_ERROR] = error.userFacingMessage()
+      }
+      shoppingSnapshotFlow.first()
+    }
+  }
+
   suspend fun createItem(title: String): WidgetSnapshot = withContext(Dispatchers.IO) {
     val settings = settingsFlow.first()
     if (!settings.isConfigured) return@withContext refresh()
@@ -212,6 +260,62 @@ class RyanOsRepository private constructor(context: Context) {
         preferences[LAST_ERROR] = error.userFacingMessage()
       }
       snapshotFlow.first()
+    }
+  }
+
+  suspend fun createShoppingItem(name: String, category: String?, quantity: String?): ShoppingSnapshot =
+    withContext(Dispatchers.IO) {
+      val settings = settingsFlow.first()
+      if (!settings.isConfigured) return@withContext refreshShopping()
+      runCatching {
+        RyanOsApi.createShoppingItem(
+          settings = settings,
+          name = name.trim(),
+          category = category?.trim()?.ifBlank { null },
+          quantity = quantity?.trim()?.ifBlank { null }
+        )
+        refreshShopping()
+      }.getOrElse { error ->
+        dataStore.edit { preferences ->
+          preferences[SHOPPING_LAST_ERROR] = error.userFacingMessage()
+        }
+        shoppingSnapshotFlow.first()
+      }
+    }
+
+  suspend fun toggleShoppingItemOptimistically(itemId: String, checked: Boolean): ShoppingSnapshot =
+    withContext(Dispatchers.IO) {
+      val settings = settingsFlow.first()
+      if (!settings.isConfigured) return@withContext shoppingSnapshotFlow.first()
+      dataStore.edit { preferences ->
+        val updatedPayload = RyanOsApi.optimisticallyToggleShoppingPayload(
+          rawJson = preferences[CACHED_SHOPPING_PAYLOAD],
+          itemId = itemId,
+          checked = checked
+        )
+        if (!updatedPayload.isNullOrBlank()) {
+          preferences[CACHED_SHOPPING_PAYLOAD] = updatedPayload
+        }
+        preferences.remove(SHOPPING_LAST_ERROR)
+      }
+      shoppingSnapshotFlow.first()
+    }
+
+  suspend fun cachedShoppingCheckedState(itemId: String): Boolean? = withContext(Dispatchers.IO) {
+    shoppingSnapshotFlow.first().items.firstOrNull { it.id == itemId }?.checked
+  }
+
+  suspend fun sendShoppingToggle(itemId: String, checked: Boolean): Boolean = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext false
+    runCatching {
+      RyanOsApi.toggleShoppingItem(settings = settings, itemId = itemId, checked = checked)
+      true
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[SHOPPING_LAST_ERROR] = error.userFacingMessage()
+      }
+      false
     }
   }
 
@@ -426,6 +530,9 @@ class RyanOsRepository private constructor(context: Context) {
     private val CACHED_WIDGET_PAYLOAD = stringPreferencesKey("cached_widget_payload")
     private val LAST_SYNCED_AT = stringPreferencesKey("last_synced_at")
     private val LAST_ERROR = stringPreferencesKey("last_error")
+    private val CACHED_SHOPPING_PAYLOAD = stringPreferencesKey("cached_shopping_payload")
+    private val SHOPPING_LAST_SYNCED_AT = stringPreferencesKey("shopping_last_synced_at")
+    private val SHOPPING_LAST_ERROR = stringPreferencesKey("shopping_last_error")
 
     @Volatile
     private var instance: RyanOsRepository? = null

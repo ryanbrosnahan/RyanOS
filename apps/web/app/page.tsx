@@ -16,12 +16,20 @@ export default function Home() {
                 Today
               </h1>
             </div>
-            <Link
-              href="/admin"
-              className="inline-flex h-9 items-center justify-center rounded-md border border-stone-300 bg-white px-3 text-sm font-medium text-stone-700 hover:bg-stone-50"
-            >
-              Admin
-            </Link>
+            <div className="flex flex-wrap gap-2">
+              <Link
+                href="/shopping"
+                className="inline-flex h-9 items-center justify-center rounded-md border border-emerald-200 bg-emerald-50 px-3 text-sm font-medium text-emerald-900 hover:bg-emerald-100"
+              >
+                Shopping
+              </Link>
+              <Link
+                href="/admin"
+                className="inline-flex h-9 items-center justify-center rounded-md border border-stone-300 bg-white px-3 text-sm font-medium text-stone-700 hover:bg-stone-50"
+              >
+                Admin
+              </Link>
+            </div>
           </div>
         </div>
       </section>

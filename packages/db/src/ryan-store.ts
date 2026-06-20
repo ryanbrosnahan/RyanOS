@@ -21,6 +21,14 @@ import type {
   RecurrencePolicy,
   RecurrenceState,
   RyanStore,
+  ShoppingCatalogItem,
+  ShoppingCatalogListFilters,
+  ShoppingCatalogUpsertData,
+  ShoppingItemCreateData,
+  ShoppingItemListFilters,
+  ShoppingItemPatch,
+  ShoppingList,
+  ShoppingListItem,
   AreaUpsertData,
   DailyPlanUpsertData,
   ItemCreateData,
@@ -139,6 +147,63 @@ function itemEventFromRow(row: typeof schema.itemEvents.$inferSelect): ItemEvent
   if (row.sourceMessageId !== null) event.sourceMessageId = row.sourceMessageId;
   if (row.idempotencyKey !== null) event.idempotencyKey = row.idempotencyKey;
   return event;
+}
+
+function shoppingListFromRow(row: typeof schema.shoppingLists.$inferSelect): ShoppingList {
+  const list: ShoppingList = {
+    id: row.id,
+    userId: row.userId,
+    name: row.name,
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) list.deletedAt = deletedAt;
+  return list;
+}
+
+function shoppingListItemFromRow(row: typeof schema.shoppingListItems.$inferSelect): ShoppingListItem {
+  const item: ShoppingListItem = {
+    id: row.id,
+    userId: row.userId,
+    listId: row.listId,
+    name: row.name,
+    normalizedName: row.normalizedName,
+    category: row.category,
+    source: row.source,
+    sortOrder: row.sortOrder,
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.catalogItemId !== null) item.catalogItemId = row.catalogItemId;
+  if (row.quantity !== null) item.quantity = row.quantity;
+  if (row.note !== null) item.note = row.note;
+  const checkedAt = toIso(row.checkedAt);
+  if (checkedAt !== undefined) item.checkedAt = checkedAt;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) item.deletedAt = deletedAt;
+  return item;
+}
+
+function shoppingCatalogItemFromRow(row: typeof schema.shoppingCatalogItems.$inferSelect): ShoppingCatalogItem {
+  const item: ShoppingCatalogItem = {
+    id: row.id,
+    userId: row.userId,
+    name: row.name,
+    normalizedName: row.normalizedName,
+    defaultCategory: row.defaultCategory,
+    purchaseCount: row.purchaseCount,
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  const lastPurchasedAt = toIso(row.lastPurchasedAt);
+  if (lastPurchasedAt !== undefined) item.lastPurchasedAt = lastPurchasedAt;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) item.deletedAt = deletedAt;
+  return item;
 }
 
 function recurrencePolicyFromRow(
@@ -1276,6 +1341,171 @@ export class PostgresRyanStore implements RyanStore {
       .returning();
     if (!row) throw new Error(`Email action proposal not found: ${proposalId}`);
     return emailActionProposalFromRow(row);
+  }
+
+  async getDefaultShoppingList(userId: UUID): Promise<ShoppingList> {
+    const resolvedUserId = await this.resolveUserId(userId);
+    const existing = await this.db.query.shoppingLists.findFirst({
+      where: and(
+        eq(schema.shoppingLists.userId, resolvedUserId),
+        eq(schema.shoppingLists.name, "Shopping"),
+        isNull(schema.shoppingLists.deletedAt)
+      )
+    });
+    if (existing) return shoppingListFromRow(existing);
+
+    const [row] = await this.db
+      .insert(schema.shoppingLists)
+      .values({
+        userId: resolvedUserId,
+        name: "Shopping",
+        metadata: {}
+      })
+      .returning();
+    if (!row) throw new Error("Failed to create shopping list");
+    return shoppingListFromRow(row);
+  }
+
+  async createShoppingItem(data: ShoppingItemCreateData): Promise<ShoppingListItem> {
+    const userId = await this.resolveUserId(data.userId);
+    const values: typeof schema.shoppingListItems.$inferInsert = {
+      userId,
+      listId: data.listId,
+      name: data.name,
+      normalizedName: data.normalizedName,
+      category: data.category ?? "miscellaneous",
+      source: data.source ?? "manual",
+      sortOrder: data.sortOrder ?? 0,
+      metadata: data.metadata ?? {}
+    };
+    if (isUuid(data.catalogItemId)) values.catalogItemId = data.catalogItemId;
+    if (data.quantity !== undefined) values.quantity = data.quantity;
+    if (data.note !== undefined) values.note = data.note;
+    if (data.checkedAt !== undefined) values.checkedAt = toDate(data.checkedAt);
+    const [row] = await this.db.insert(schema.shoppingListItems).values(values).returning();
+    if (!row) throw new Error("Failed to create shopping item");
+    return shoppingListItemFromRow(row);
+  }
+
+  async updateShoppingItem(itemId: UUID, patch: ShoppingItemPatch): Promise<ShoppingListItem> {
+    const values: Partial<typeof schema.shoppingListItems.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.name !== undefined) values.name = patch.name;
+    if (patch.normalizedName !== undefined) values.normalizedName = patch.normalizedName;
+    if (patch.category !== undefined) values.category = patch.category;
+    if (patch.quantity !== undefined) values.quantity = patch.quantity;
+    if (patch.note !== undefined) values.note = patch.note;
+    if (patch.source !== undefined) values.source = patch.source;
+    if (patch.sortOrder !== undefined) values.sortOrder = patch.sortOrder;
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    if (patch.catalogItemId !== undefined) values.catalogItemId = patch.catalogItemId;
+    if (patch.checkedAt !== undefined) {
+      values.checkedAt = patch.checkedAt === null ? null : toDate(patch.checkedAt);
+    }
+    if (patch.deletedAt !== undefined) {
+      values.deletedAt = patch.deletedAt === null ? null : toDate(patch.deletedAt);
+    }
+    const [row] = await this.db
+      .update(schema.shoppingListItems)
+      .set(values)
+      .where(eq(schema.shoppingListItems.id, itemId))
+      .returning();
+    if (!row) throw new Error(`Shopping item not found: ${itemId}`);
+    return shoppingListItemFromRow(row);
+  }
+
+  async listShoppingItems(filters: ShoppingItemListFilters): Promise<ShoppingListItem[]> {
+    const resolvedUserId = await this.resolveUserId(filters.userId);
+    const conditions = [
+      eq(schema.shoppingListItems.userId, resolvedUserId),
+      isNull(schema.shoppingListItems.deletedAt)
+    ];
+    if (filters.listId !== undefined) {
+      conditions.push(eq(schema.shoppingListItems.listId, filters.listId));
+    }
+    if (filters.checkedAfter !== undefined && filters.includeActive !== false) {
+      conditions.push(
+        or(
+          isNull(schema.shoppingListItems.checkedAt),
+          sql`${schema.shoppingListItems.checkedAt} >= ${toDate(filters.checkedAfter)}`
+        )!
+      );
+    } else if (filters.checkedAfter !== undefined) {
+      conditions.push(sql`${schema.shoppingListItems.checkedAt} >= ${toDate(filters.checkedAfter)}`);
+    } else if (filters.includeActive === false) {
+      conditions.push(sql`${schema.shoppingListItems.checkedAt} is not null`);
+    }
+
+    const rows = await this.db
+      .select()
+      .from(schema.shoppingListItems)
+      .where(and(...conditions))
+      .orderBy(
+        sql`case when ${schema.shoppingListItems.checkedAt} is null then 0 else 1 end`,
+        asc(schema.shoppingListItems.category),
+        asc(schema.shoppingListItems.sortOrder),
+        asc(schema.shoppingListItems.createdAt)
+      )
+      .limit(Math.min(Math.max(filters.limit ?? 100, 1), 200));
+
+    return rows.map(shoppingListItemFromRow);
+  }
+
+  async getShoppingItem(itemId: UUID): Promise<ShoppingListItem | undefined> {
+    const row = await this.db.query.shoppingListItems.findFirst({
+      where: eq(schema.shoppingListItems.id, itemId)
+    });
+    return row ? shoppingListItemFromRow(row) : undefined;
+  }
+
+  async upsertShoppingCatalogItem(data: ShoppingCatalogUpsertData): Promise<ShoppingCatalogItem> {
+    const userId = await this.resolveUserId(data.userId);
+    const existing = await this.db.query.shoppingCatalogItems.findFirst({
+      where: and(
+        eq(schema.shoppingCatalogItems.userId, userId),
+        eq(schema.shoppingCatalogItems.normalizedName, data.normalizedName),
+        isNull(schema.shoppingCatalogItems.deletedAt)
+      )
+    });
+    const values: typeof schema.shoppingCatalogItems.$inferInsert = {
+      userId,
+      name: data.name,
+      normalizedName: data.normalizedName,
+      defaultCategory: data.defaultCategory ?? existing?.defaultCategory ?? "miscellaneous",
+      purchaseCount: data.purchaseCount ?? existing?.purchaseCount ?? 0,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      updatedAt: new Date()
+    };
+    if (data.lastPurchasedAt !== undefined) values.lastPurchasedAt = toDate(data.lastPurchasedAt);
+    if (existing) {
+      const [row] = await this.db
+        .update(schema.shoppingCatalogItems)
+        .set(values)
+        .where(eq(schema.shoppingCatalogItems.id, existing.id))
+        .returning();
+      if (!row) throw new Error(`Shopping catalog item not found: ${existing.id}`);
+      return shoppingCatalogItemFromRow(row);
+    }
+    const [row] = await this.db.insert(schema.shoppingCatalogItems).values(values).returning();
+    if (!row) throw new Error("Failed to create shopping catalog item");
+    return shoppingCatalogItemFromRow(row);
+  }
+
+  async listShoppingCatalogItems(filters: ShoppingCatalogListFilters): Promise<ShoppingCatalogItem[]> {
+    const resolvedUserId = await this.resolveUserId(filters.userId);
+    const rows = await this.db
+      .select()
+      .from(schema.shoppingCatalogItems)
+      .where(
+        and(
+          eq(schema.shoppingCatalogItems.userId, resolvedUserId),
+          isNull(schema.shoppingCatalogItems.deletedAt)
+        )
+      )
+      .orderBy(desc(schema.shoppingCatalogItems.lastPurchasedAt), desc(schema.shoppingCatalogItems.purchaseCount))
+      .limit(Math.min(Math.max(filters.limit ?? 50, 1), 100));
+    return rows.map(shoppingCatalogItemFromRow);
   }
 
   async addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog> {

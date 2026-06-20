@@ -281,3 +281,46 @@ export type EmailActionProposal = {
   updatedAt: ISODateString;
   deletedAt?: ISODateString;
 };
+
+export type ShoppingList = {
+  id: UUID;
+  userId: UUID;
+  name: string;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type ShoppingListItem = {
+  id: UUID;
+  userId: UUID;
+  listId: UUID;
+  catalogItemId?: UUID;
+  name: string;
+  normalizedName: string;
+  category: string;
+  quantity?: string;
+  note?: string;
+  checkedAt?: ISODateString;
+  source: string;
+  sortOrder: number;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type ShoppingCatalogItem = {
+  id: UUID;
+  userId: UUID;
+  name: string;
+  normalizedName: string;
+  defaultCategory: string;
+  lastPurchasedAt?: ISODateString;
+  purchaseCount: number;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};

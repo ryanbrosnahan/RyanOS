@@ -15,7 +15,12 @@ import type {
   ProviderAccountUpsertData,
   ProjectUpsertData,
   RyanStore,
-  SearchMatch
+  SearchMatch,
+  ShoppingCatalogListFilters,
+  ShoppingCatalogUpsertData,
+  ShoppingItemCreateData,
+  ShoppingItemListFilters,
+  ShoppingItemPatch
 } from "./store.js";
 import type {
   AuditLog,
@@ -31,6 +36,9 @@ import type {
   RecurrenceEvent,
   RecurrencePolicy,
   RecurrenceState,
+  ShoppingCatalogItem,
+  ShoppingList,
+  ShoppingListItem,
   SourceLink
 } from "./types.js";
 
@@ -52,6 +60,9 @@ export class InMemoryRyanStore implements RyanStore {
   readonly externalSources = new Map<UUID, ExternalSource>();
   readonly sourceLinks: SourceLink[] = [];
   readonly emailActionProposals = new Map<UUID, EmailActionProposal>();
+  readonly shoppingLists = new Map<UUID, ShoppingList>();
+  readonly shoppingListItems = new Map<UUID, ShoppingListItem>();
+  readonly shoppingCatalogItems = new Map<UUID, ShoppingCatalogItem>();
   readonly auditLogs: AuditLog[] = [];
 
   async upsertArea(data: AreaUpsertData): Promise<Area> {
@@ -661,6 +672,141 @@ export class InMemoryRyanStore implements RyanStore {
     return updated;
   }
 
+  async getDefaultShoppingList(userId: UUID): Promise<ShoppingList> {
+    const existing = [...this.shoppingLists.values()].find(
+      (list) => list.userId === userId && cleanQuery(list.name) === "shopping" && !list.deletedAt
+    );
+    if (existing) return existing;
+    const timestamp = nowIso();
+    const list: ShoppingList = {
+      id: createId("shopping_list"),
+      userId,
+      name: "Shopping",
+      metadata: {},
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.shoppingLists.set(list.id, list);
+    return list;
+  }
+
+  async createShoppingItem(data: ShoppingItemCreateData): Promise<ShoppingListItem> {
+    const timestamp = nowIso();
+    const item: ShoppingListItem = {
+      id: createId("shopping_item"),
+      userId: data.userId,
+      listId: data.listId,
+      name: data.name,
+      normalizedName: data.normalizedName,
+      category: data.category ?? "miscellaneous",
+      source: data.source ?? "manual",
+      sortOrder: data.sortOrder ?? 0,
+      metadata: data.metadata ?? {},
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    if (data.catalogItemId !== undefined) item.catalogItemId = data.catalogItemId;
+    if (data.quantity !== undefined) item.quantity = data.quantity;
+    if (data.note !== undefined) item.note = data.note;
+    if (data.checkedAt !== undefined) item.checkedAt = data.checkedAt;
+    this.shoppingListItems.set(item.id, item);
+    return item;
+  }
+
+  async updateShoppingItem(itemId: UUID, patch: ShoppingItemPatch): Promise<ShoppingListItem> {
+    const existing = this.shoppingListItems.get(itemId);
+    if (!existing) throw new Error(`Shopping item not found: ${itemId}`);
+    const updated: ShoppingListItem = {
+      ...existing,
+      updatedAt: nowIso()
+    };
+    if (patch.name !== undefined) updated.name = patch.name;
+    if (patch.normalizedName !== undefined) updated.normalizedName = patch.normalizedName;
+    if (patch.category !== undefined) updated.category = patch.category;
+    if (patch.quantity !== undefined) {
+      if (patch.quantity === null) delete updated.quantity;
+      else updated.quantity = patch.quantity;
+    }
+    if (patch.note !== undefined) {
+      if (patch.note === null) delete updated.note;
+      else updated.note = patch.note;
+    }
+    if (patch.source !== undefined) updated.source = patch.source;
+    if (patch.sortOrder !== undefined) updated.sortOrder = patch.sortOrder;
+    if (patch.metadata !== undefined) updated.metadata = patch.metadata;
+    if (patch.catalogItemId !== undefined) {
+      if (patch.catalogItemId === null) delete updated.catalogItemId;
+      else updated.catalogItemId = patch.catalogItemId;
+    }
+    if (patch.checkedAt !== undefined) {
+      if (patch.checkedAt === null) delete updated.checkedAt;
+      else updated.checkedAt = patch.checkedAt;
+    }
+    if (patch.deletedAt !== undefined) {
+      if (patch.deletedAt === null) delete updated.deletedAt;
+      else updated.deletedAt = patch.deletedAt;
+    }
+    this.shoppingListItems.set(itemId, updated);
+    return updated;
+  }
+
+  async listShoppingItems(filters: ShoppingItemListFilters): Promise<ShoppingListItem[]> {
+    return [...this.shoppingListItems.values()]
+      .filter((item) => {
+        if (item.userId !== filters.userId || item.deletedAt) return false;
+        if (filters.listId !== undefined && item.listId !== filters.listId) return false;
+        if (item.checkedAt === undefined) return filters.includeActive ?? true;
+        return filters.checkedAfter !== undefined && item.checkedAt >= filters.checkedAfter;
+      })
+      .sort((a, b) => {
+        const aChecked = a.checkedAt !== undefined;
+        const bChecked = b.checkedAt !== undefined;
+        if (aChecked !== bChecked) return aChecked ? 1 : -1;
+        if (a.category !== b.category) return a.category.localeCompare(b.category);
+        if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+        return a.createdAt.localeCompare(b.createdAt);
+      })
+      .slice(0, Math.min(Math.max(filters.limit ?? 100, 1), 200));
+  }
+
+  async getShoppingItem(itemId: UUID): Promise<ShoppingListItem | undefined> {
+    return this.shoppingListItems.get(itemId);
+  }
+
+  async upsertShoppingCatalogItem(data: ShoppingCatalogUpsertData): Promise<ShoppingCatalogItem> {
+    const timestamp = nowIso();
+    const existing = [...this.shoppingCatalogItems.values()].find(
+      (item) => item.userId === data.userId && item.normalizedName === data.normalizedName && !item.deletedAt
+    );
+    const item: ShoppingCatalogItem = {
+      ...existing,
+      id: existing?.id ?? createId("shopping_catalog"),
+      userId: data.userId,
+      name: data.name,
+      normalizedName: data.normalizedName,
+      defaultCategory: data.defaultCategory ?? existing?.defaultCategory ?? "miscellaneous",
+      purchaseCount: data.purchaseCount ?? existing?.purchaseCount ?? 0,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    if (data.lastPurchasedAt !== undefined) item.lastPurchasedAt = data.lastPurchasedAt;
+    else if (existing?.lastPurchasedAt !== undefined) item.lastPurchasedAt = existing.lastPurchasedAt;
+    this.shoppingCatalogItems.set(item.id, item);
+    return item;
+  }
+
+  async listShoppingCatalogItems(filters: ShoppingCatalogListFilters): Promise<ShoppingCatalogItem[]> {
+    return [...this.shoppingCatalogItems.values()]
+      .filter((item) => item.userId === filters.userId && !item.deletedAt)
+      .sort((a, b) => {
+        const recency = (b.lastPurchasedAt ?? "").localeCompare(a.lastPurchasedAt ?? "");
+        if (recency !== 0) return recency;
+        return b.purchaseCount - a.purchaseCount;
+      })
+      .slice(0, Math.min(Math.max(filters.limit ?? 50, 1), 100));
+  }
+
   async addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog> {
     const created: AuditLog = {
       ...log,
@@ -684,6 +830,9 @@ export class InMemoryRyanStore implements RyanStore {
       providerAccountCount: this.providerAccounts.size,
       externalSourceCount: this.externalSources.size,
       emailActionProposalCount: this.emailActionProposals.size,
+      shoppingListCount: this.shoppingLists.size,
+      shoppingListItemCount: this.shoppingListItems.size,
+      shoppingCatalogItemCount: this.shoppingCatalogItems.size,
       auditLogCount: this.auditLogs.length
     };
   }
