@@ -64,6 +64,7 @@ export type Item = {
   startAt?: ISODateString;
   snoozedUntil?: ISODateString;
   estimateMinutes?: number;
+  starredAt?: ISODateString;
   completedAt?: ISODateString;
   cancelledAt?: ISODateString;
   revision: number;
@@ -79,6 +80,8 @@ export type ItemEventType =
   | "completed"
   | "uncompleted"
   | "snoozed"
+  | "starred"
+  | "unstarred"
   | "cancelled"
   | "deleted"
   | "linked_source"

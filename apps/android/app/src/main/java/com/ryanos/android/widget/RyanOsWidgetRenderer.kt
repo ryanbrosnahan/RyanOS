@@ -191,6 +191,7 @@ private class RyanOsWidgetRemoteViewsFactory(
     )
     setTextColor(R.id.widget_item_title, if (item.checked) COLOR_TEXT_SECONDARY else COLOR_TEXT_PRIMARY)
     setBoolean(R.id.widget_item_title, "setSingleLine", true)
+    setViewVisibility(R.id.widget_star_marker, if (item.starred && !item.checked) View.VISIBLE else View.GONE)
 
     if (colorCodeByArea) {
       setViewVisibility(R.id.widget_area_accent, View.VISIBLE)
@@ -330,7 +331,10 @@ private class RyanOsWidgetRemoteViewsFactory(
     private const val COLOR_PROJECT_CHIP = Color.WHITE
 
     private fun sortRows(items: List<WidgetItem>): List<WidgetItem> =
-      items.filterNot { it.checked }.sortedByDescending { it.priorityScore } +
+      items.filterNot { it.checked }.sortedWith(
+        compareByDescending<WidgetItem> { if (it.starred) 1 else 0 }
+          .thenByDescending { it.priorityScore }
+      ) +
         items.filter { it.checked }.sortedByDescending { it.priorityScore }
 
     private fun stableItemId(item: WidgetItem, expanded: Boolean): Long {
@@ -340,6 +344,8 @@ private class RyanOsWidgetRemoteViewsFactory(
         append(item.status)
         append(':')
         append(item.checked)
+        append(':')
+        append(item.starred)
         append(':')
         append(expanded)
         item.recurrence?.let { recurrence ->

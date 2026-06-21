@@ -166,6 +166,10 @@ object RyanOsApi {
         if (toggleExisting) !item.isLocallyCompleteForDate(dateKey) else completed
 
       item.put("checked", targetCompleted)
+      if (targetCompleted) {
+        item.put("starred", false)
+        item.remove("starredAt")
+      }
       if (recurrence == null) {
         item.put("status", if (targetCompleted) "done" else "open")
       } else {
@@ -256,6 +260,7 @@ object RyanOsApi {
                 kind = item.optString("kind", "task"),
                 status = item.optString("status", "open"),
                 checked = item.optBoolean("checked", false),
+                starred = item.optBoolean("starred", false),
                 priority = item.optString("priority", "normal"),
                 priorityScore = item.optInt("priorityScore", 0),
                 prioritySignals = buildList {

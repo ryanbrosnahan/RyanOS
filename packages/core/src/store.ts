@@ -62,6 +62,7 @@ export type ItemPatch = Partial<
   dueAt?: string | null;
   startAt?: string | null;
   snoozedUntil?: string | null;
+  starredAt?: string | null;
   completedAt?: string | null;
   cancelledAt?: string | null;
 };

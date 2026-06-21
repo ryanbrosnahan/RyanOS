@@ -22,6 +22,8 @@ class RyanOsApiTest {
               "kind": "task",
               "status": "open",
               "checked": false,
+              "starred": true,
+              "starredAt": "2026-05-27T13:00:00.000Z",
               "priority": "high",
               "priorityScore": 84,
               "prioritySignals": ["high priority"],
@@ -103,6 +105,7 @@ class RyanOsApiTest {
     assertTrue(snapshot.expandedRecurrenceItemIds.contains("item-2"))
     assertEquals(2, snapshot.items.size)
     assertFalse(snapshot.items[0].checked)
+    assertTrue(snapshot.items[0].starred)
     assertEquals("item_complete", snapshot.items[0].action.type)
     assertEquals("Home", snapshot.items[0].scope?.area?.name)
     assertEquals("amber", snapshot.items[0].scope?.area?.color)
@@ -149,6 +152,7 @@ class RyanOsApiTest {
     assertTrue(snapshot.showTaskDetails)
     assertTrue(snapshot.colorCodeByArea)
     assertTrue(snapshot.expandedRecurrenceItemIds.isEmpty())
+    assertFalse(snapshot.items[0].starred)
     assertNull(snapshot.items[0].scope)
     assertNull(snapshot.items[0].recurrence)
   }

@@ -50,6 +50,13 @@
       "when": 1780099200000,
       "tag": "0006_shopping_list",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1781059200000,
+      "tag": "0007_starred_items",
+      "breakpoints": true
     }
   ]
 }

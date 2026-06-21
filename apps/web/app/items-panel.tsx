@@ -21,6 +21,7 @@ import {
   RefreshCw,
   RotateCcw,
   Sparkles,
+  Star,
   Users
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -78,6 +79,8 @@ type Item = {
   kind: string;
   title: string;
   status: string;
+  starred: boolean;
+  starredAt?: string;
   priority: string;
   priorityScore: number;
   prioritySignals: string[];
@@ -467,6 +470,7 @@ export function ItemsPanel() {
       } else {
         await loadDashboard({ background: true });
       }
+      window.dispatchEvent(new Event("ryanos-focus-refresh"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -505,6 +509,7 @@ export function ItemsPanel() {
       } else {
         await loadDashboard({ background: true });
       }
+      window.dispatchEvent(new Event("ryanos-focus-refresh"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -554,6 +559,37 @@ export function ItemsPanel() {
       if (!response.ok) throw new Error(updateErrorMessage(payload, `Classification returned ${response.status}`));
       await loadDashboard({ background: true });
       setEditingScopeItemId(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingKey(null);
+    }
+  }
+
+  async function toggleStar(item: Item) {
+    const key = `${item.id}:star`;
+    setPendingKey(key);
+    setError(null);
+    try {
+      const response = await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/star`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          userId: "local-owner",
+          starred: !item.starred,
+          timezone
+        })
+      });
+      if (!response.ok) throw new Error(`Star update returned ${response.status}`);
+      const payload = (await response.json()) as ToggleResponse;
+      if (payload.item) {
+        setItems((current) => current.map((candidate) => (candidate.id === item.id ? payload.item! : candidate)));
+      } else {
+        await loadDashboard({ background: true });
+      }
+      window.dispatchEvent(new Event("ryanos-focus-refresh"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -743,6 +779,21 @@ export function ItemsPanel() {
                     )}
                     <div className="min-w-0">
                       <div className="flex min-w-0 items-start gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void toggleStar(item)}
+                          disabled={completed || pendingKey === `${item.id}:star`}
+                          className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
+                            item.starred
+                              ? "text-amber-700 hover:bg-amber-50"
+                              : "text-stone-400 hover:bg-stone-100 hover:text-amber-700"
+                          } disabled:cursor-wait disabled:opacity-50`}
+                          aria-label={item.starred ? `Unstar ${item.title}` : `Star ${item.title}`}
+                          aria-pressed={item.starred}
+                          title={completed ? "Completed" : item.starred ? "Unstar" : "Star"}
+                        >
+                          <Star className={`h-4 w-4 ${item.starred ? "fill-current" : ""}`} aria-hidden="true" />
+                        </button>
                         <p
                           className={`min-w-0 flex-1 truncate text-sm font-medium ${
                             completed ? "text-stone-500 line-through" : "text-stone-950"

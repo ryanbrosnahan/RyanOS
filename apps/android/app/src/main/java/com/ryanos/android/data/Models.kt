@@ -38,6 +38,7 @@ data class WidgetItem(
   val kind: String,
   val status: String,
   val checked: Boolean,
+  val starred: Boolean,
   val priority: String,
   val priorityScore: Int,
   val prioritySignals: List<String>,

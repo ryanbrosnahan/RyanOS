@@ -268,6 +268,10 @@ export class InMemoryRyanStore implements RyanStore {
       if (patch.snoozedUntil === null) delete updated.snoozedUntil;
       else updated.snoozedUntil = patch.snoozedUntil;
     }
+    if (patch.starredAt !== undefined) {
+      if (patch.starredAt === null) delete updated.starredAt;
+      else updated.starredAt = patch.starredAt;
+    }
     if (patch.completedAt !== undefined) {
       if (patch.completedAt === null) delete updated.completedAt;
       else updated.completedAt = patch.completedAt;
@@ -295,6 +299,11 @@ export class InMemoryRyanStore implements RyanStore {
       .sort((a, b) => {
         if (a.status === "done" && b.status !== "done") return 1;
         if (a.status !== "done" && b.status === "done") return -1;
+        if (a.starredAt !== undefined && b.starredAt === undefined) return -1;
+        if (a.starredAt === undefined && b.starredAt !== undefined) return 1;
+        if (a.starredAt !== undefined && b.starredAt !== undefined && a.starredAt !== b.starredAt) {
+          return b.starredAt.localeCompare(a.starredAt);
+        }
         const aDue = a.dueAt ?? "9999-12-31T23:59:59.999Z";
         const bDue = b.dueAt ?? "9999-12-31T23:59:59.999Z";
         if (aDue !== bDue) return aDue.localeCompare(bDue);

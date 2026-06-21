@@ -233,6 +233,13 @@ const completeItemBodySchema = z.object({
   timezone: z.string().default("America/Chicago")
 });
 
+const starItemBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  starred: z.boolean(),
+  starredAt: z.string().optional(),
+  timezone: z.string().default("America/Chicago")
+});
+
 const recurrenceDayParamsSchema = itemActionParamsSchema.extend({
   dateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
 });
@@ -1171,6 +1178,7 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
 
   type DashboardItemBase = Item & {
     scope: DashboardScope;
+    starred: boolean;
     completion: {
       completedToday: boolean;
       completedAt?: string;
@@ -1329,6 +1337,11 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
   function compareDashboardItems(a: DashboardItem, b: DashboardItem): number {
     if (a.status === "done" && b.status !== "done") return 1;
     if (a.status !== "done" && b.status === "done") return -1;
+    if (a.starred && !b.starred) return -1;
+    if (!a.starred && b.starred) return 1;
+    if (a.starred && b.starred && a.starredAt !== b.starredAt) {
+      return (b.starredAt ?? "").localeCompare(a.starredAt ?? "");
+    }
     if (a.priorityScore !== b.priorityScore) return b.priorityScore - a.priorityScore;
     const aDue = a.dueAt ?? a.recurrence?.state?.nextDueAt ?? "9999-12-31T23:59:59.999Z";
     const bDue = b.dueAt ?? b.recurrence?.state?.nextDueAt ?? "9999-12-31T23:59:59.999Z";
@@ -1362,6 +1375,7 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     if (item.completedAt !== undefined) completion.completedAt = item.completedAt;
     const dashboardItem: DashboardItemBase = {
       ...item,
+      starred: item.starredAt !== undefined,
       scope,
       completion
     };
@@ -1387,7 +1401,7 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
   }
 
   function itemVisibleByDefault(item: DashboardItem): boolean {
-    return item.hiddenUntil === undefined;
+    return item.starred || item.hiddenUntil === undefined;
   }
 
   function itemNeedsAttentionToday(item: DashboardItem, timeZone: string, dateKey: string): boolean {
@@ -1473,6 +1487,7 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     dateKey: string,
     recurrenceLeadDays: number
   ): boolean {
+    if (item.starred) return true;
     if (item.recurrence === undefined) return true;
     if (dashboardItemCheckedForMobile(item, dateKey)) return true;
     const cadenceDueKey = cadenceDueDateKey(item, timeZone);
@@ -1485,6 +1500,11 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     const bChecked = dashboardItemCheckedForMobile(b, dateKey);
     if (aChecked && !bChecked) return 1;
     if (!aChecked && bChecked) return -1;
+    if (a.starred && !b.starred) return -1;
+    if (!a.starred && b.starred) return 1;
+    if (a.starred && b.starred && a.starredAt !== b.starredAt) {
+      return (b.starredAt ?? "").localeCompare(a.starredAt ?? "");
+    }
     return compareDashboardItems(a, b);
   }
 
@@ -1543,10 +1563,12 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     kind: Item["kind"];
     status: Item["status"];
     checked: boolean;
+    starred: boolean;
     priority: Item["priority"];
     priorityScore: number;
     prioritySignals: string[];
     action: MobileWidgetItemAction;
+    starredAt?: string;
     dueAt?: string;
     secondaryText?: string;
     recurrence?: MobileWidgetRecurrence;
@@ -1675,11 +1697,13 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       kind: item.kind,
       status: item.status,
       checked: hasRecurrence ? mobileRecurrenceCompleted(item, dateKey) : item.status === "done",
+      starred: item.starred,
       priority: item.priority,
       priorityScore: item.priorityScore,
       prioritySignals: item.prioritySignals,
       action
     };
+    if (item.starredAt !== undefined) widgetItem.starredAt = item.starredAt;
     const dueAt = mobileDueAt(item);
     if (dueAt !== undefined) widgetItem.dueAt = dueAt;
     const secondaryText = mobileSecondaryText(item, timeZone);
@@ -2020,12 +2044,14 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     const dashboardPlan = planForDashboard(plan, fallbackSuggestedIds);
     const selectedIdSet = new Set(dashboardPlan.selectedItemIds);
     const suggestedIdSet = new Set(dashboardPlan.suggestedItemIds);
+    const starredItems = items.filter((item) => item.starred);
     const dueItems = items.filter((item) => itemNeedsAttentionToday(item, input.timezone, input.dateKey));
     return {
       date: input.dateKey,
       timezone: input.timezone,
       prompt: dailyPlanPrompt,
       plan: dashboardPlan,
+      starredItems,
       suggestedItems: items.filter((item) => suggestedIdSet.has(item.id)),
       selectedItems: items.filter((item) => selectedIdSet.has(item.id)),
       dueItems,
@@ -2261,6 +2287,8 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
             status: item.status,
             priority: item.priority,
             dueAt: item.dueAt,
+            starred: item.starred,
+            starredAt: item.starredAt,
             priorityScore: item.priorityScore,
             prioritySignals: item.prioritySignals,
             effort: itemEffort(item),
@@ -2450,6 +2478,26 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     };
   });
 
+  app.post("/v1/items/:itemId/star", async (request, reply) => {
+    const params = itemActionParamsSchema.parse(request.params);
+    const body = starItemBodySchema.parse(request.body);
+    const result = await tools.execute("item.star", {
+      userId: body.userId,
+      itemRef: params.itemId,
+      starred: body.starred,
+      starredAt: body.starredAt
+    });
+    if (result.status === "failed" || result.status === "rejected" || result.status === "needs_clarification") {
+      reply.code(400);
+      return { result };
+    }
+    const item = await store.getItem(params.itemId);
+    return {
+      result,
+      item: item ? await itemForDashboard(item, body.timezone, localDateKey(new Date(), body.timezone)) : undefined
+    };
+  });
+
   app.post("/v1/items/:itemId/recurrence-days/:dateKey", async (request, reply) => {
     const params = recurrenceDayParamsSchema.parse(request.params);
     const body = recurrenceDayBodySchema.parse(request.body);
@@ -2476,9 +2524,10 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       reply.code(400);
     }
     const referenceDateKey = body.referenceDate ?? params.dateKey;
+    const updated = await store.getItem(params.itemId);
     return {
       result,
-      item: await itemForDashboard(item, body.timezone, referenceDateKey)
+      item: updated ? await itemForDashboard(updated, body.timezone, referenceDateKey) : undefined
     };
   });
 

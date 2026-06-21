@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, CheckCircle2, ChevronDown, Loader2, MessageSquare, RefreshCw, Target } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, Loader2, MessageSquare, RefreshCw, Star, Target } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type ScopeLabel = {
@@ -8,11 +8,30 @@ type ScopeLabel = {
   name: string;
 };
 
+type RecurrenceDay = {
+  date: string;
+  status: "completed" | "uncompleted" | "skipped" | "missed" | "deferred" | "none";
+};
+
+type RecurrenceProgress = {
+  policy: {
+    minimumIntervalDays?: number;
+  };
+  week: {
+    days: RecurrenceDay[];
+  };
+  state?: {
+    nextEligibleAt?: string;
+  };
+};
+
 type FocusItem = {
   id: string;
   kind: string;
   title: string;
   status: string;
+  starred: boolean;
+  starredAt?: string;
   priority: string;
   priorityScore: number;
   prioritySignals: string[];
@@ -24,6 +43,7 @@ type FocusItem = {
   completion?: {
     completedToday: boolean;
   };
+  recurrence?: RecurrenceProgress;
 };
 
 type DailyPlanPayload = {
@@ -40,6 +60,7 @@ type DailyPlanPayload = {
     status: string;
     updatedAt?: string;
   };
+  starredItems: FocusItem[];
   suggestedItems: FocusItem[];
   selectedItems: FocusItem[];
   dueItems: FocusItem[];
@@ -77,19 +98,45 @@ function focusStatus(item: FocusItem): string {
   return formatDue(item.dueAt) ?? (item.status === "waiting" ? "Waiting" : "Open");
 }
 
-function candidateTone(item: FocusItem, selected: boolean): string {
-  if (selected) return "bg-sky-100 text-sky-950 ring-sky-300";
+function candidateTone(item: FocusItem, starred: boolean): string {
+  if (starred) return "bg-amber-50 text-amber-950 ring-amber-300 hover:bg-amber-100";
   if (item.priorityScore >= 60) return "bg-amber-50 text-amber-950 ring-amber-200 hover:bg-amber-100";
   if (item.priorityScore >= 30) return "bg-sky-50 text-sky-950 ring-sky-200 hover:bg-sky-100";
   return "bg-white text-stone-700 ring-stone-200 hover:bg-stone-50";
 }
 
+function dateKeyInTimeZone(value: string, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(new Date(value));
+  const part = (type: string) => parts.find((candidate) => candidate.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function isEarlyMinimumRecurrenceDate(
+  item: FocusItem,
+  dateKey: string,
+  timeZone: string
+): boolean {
+  if (item.recurrence?.policy.minimumIntervalDays === undefined) return false;
+  const nextEligibleAt = item.recurrence.state?.nextEligibleAt;
+  if (nextEligibleAt === undefined) return false;
+  return dateKey < dateKeyInTimeZone(nextEligibleAt, timeZone);
+}
+
+function completedForDate(item: FocusItem, dateKey: string): boolean {
+  if (item.completion?.completedToday) return true;
+  return item.recurrence?.week.days.some((day) => day.date === dateKey && day.status === "completed") ?? false;
+}
+
 export function DailyFocusPanel() {
   const [payload, setPayload] = useState<DailyPlanPayload | null>(null);
-  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
-  const [savingSelection, setSavingSelection] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const suggestionAttemptedRef = useRef(false);
   const timezone = useMemo(
@@ -99,11 +146,6 @@ export function DailyFocusPanel() {
 
   function applyPayload(nextPayload: DailyPlanPayload) {
     setPayload(nextPayload);
-    setSelectedItemIds(
-      nextPayload.plan.selectedItemIds.length > 0
-        ? nextPayload.plan.selectedItemIds.slice(0, 3)
-        : nextPayload.suggestedItems.map((item) => item.id).slice(0, 3)
-    );
   }
 
   async function loadPlan(options?: { background?: boolean }) {
@@ -149,12 +191,12 @@ export function DailyFocusPanel() {
     }
   }
 
-  async function saveSelection(nextSelectedItemIds: string[]) {
-    if (!payload || savingSelection) return;
-    setSavingSelection(true);
+  async function toggleStar(item: FocusItem) {
+    const key = `${item.id}:star`;
+    setPendingKey(key);
     setError(null);
     try {
-      const saveResponse = await fetch(`${apiUrl}/v1/daily-plan`, {
+      const response = await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/star`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -162,36 +204,58 @@ export function DailyFocusPanel() {
         body: JSON.stringify({
           userId: "local-owner",
           timezone,
-          date: payload.date,
-          response: payload.plan.response,
-          successCriteria: payload.plan.successCriteria,
-          selectedItemIds: nextSelectedItemIds
+          starred: !item.starred
         })
       });
-      if (!saveResponse.ok) throw new Error(`Daily plan save returned ${saveResponse.status}`);
-      applyPayload((await saveResponse.json()) as DailyPlanPayload);
+      if (!response.ok) throw new Error(`Star update returned ${response.status}`);
+      await loadPlan({ background: true });
+      window.dispatchEvent(new Event("ryanos-items-refresh"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSavingSelection(false);
+      setPendingKey(null);
     }
   }
 
-  function toggleItem(itemId: string) {
-    const nextSelectedItemIds = selectedItemIds.includes(itemId)
-      ? selectedItemIds.filter((id) => id !== itemId)
-      : selectedItemIds.length >= 3
-        ? selectedItemIds
-        : [...selectedItemIds, itemId];
-
-    if (nextSelectedItemIds === selectedItemIds) {
-      setError("Pick up to 3 focus items.");
-      return;
-    }
-
+  async function completeItem(item: FocusItem) {
+    if (!payload || completedForDate(item, payload.date)) return;
+    const key = `${item.id}:complete`;
+    setPendingKey(key);
     setError(null);
-    setSelectedItemIds(nextSelectedItemIds);
-    void saveSelection(nextSelectedItemIds);
+    try {
+      const response = item.recurrence
+        ? await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/recurrence-days/${payload.date}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              userId: "local-owner",
+              completed: true,
+              allowEarly: isEarlyMinimumRecurrenceDate(item, payload.date, timezone),
+              timezone,
+              referenceDate: payload.date
+            })
+          })
+        : await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/complete`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              userId: "local-owner",
+              completed: true,
+              timezone
+            })
+          });
+      if (!response.ok) throw new Error(`Completion returned ${response.status}`);
+      await loadPlan({ background: true });
+      window.dispatchEvent(new Event("ryanos-items-refresh"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingKey(null);
+    }
   }
 
   function startChatAnswer() {
@@ -208,12 +272,19 @@ export function DailyFocusPanel() {
 
   useEffect(() => {
     void loadPlan();
+    const handleExternalRefresh = () => {
+      void loadPlan({ background: true });
+    };
+    window.addEventListener("ryanos-focus-refresh", handleExternalRefresh);
     const interval = window.setInterval(() => {
       if (document.visibilityState === "visible") {
         void loadPlan({ background: true });
       }
     }, 30000);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("ryanos-focus-refresh", handleExternalRefresh);
+    };
   }, []);
 
   useEffect(() => {
@@ -227,10 +298,8 @@ export function DailyFocusPanel() {
   }, [payload?.date, payload?.plan.suggestionSource]);
 
   const focusItems = useMemo(() => {
-    if (!payload) return [];
-    const byId = new Map(payload.items.map((item) => [item.id, item]));
-    return selectedItemIds.map((id) => byId.get(id)).filter((item): item is FocusItem => item !== undefined);
-  }, [payload, selectedItemIds]);
+    return payload?.starredItems ?? [];
+  }, [payload]);
 
   const candidateItems = useMemo(() => {
     if (!payload) return [];
@@ -238,11 +307,12 @@ export function DailyFocusPanel() {
     const candidates: FocusItem[] = [];
     const include = (item: FocusItem | undefined) => {
       if (!item || ids.has(item.id)) return;
+      if (completedForDate(item, payload.date)) return;
       ids.add(item.id);
       candidates.push(item);
     };
     const byId = new Map(payload.items.map((item) => [item.id, item]));
-    for (const itemId of selectedItemIds) include(byId.get(itemId));
+    for (const item of payload.starredItems) include(item);
     for (const itemId of payload.plan.suggestedItemIds) include(byId.get(itemId));
     for (const item of payload.dueItems) include(byId.get(item.id));
     for (const item of payload.items) {
@@ -250,12 +320,12 @@ export function DailyFocusPanel() {
       if (candidates.length >= 12) break;
     }
     return candidates;
-  }, [payload, selectedItemIds]);
+  }, [payload]);
 
   const remainingDueItems = useMemo(() => {
     if (!payload) return [];
-    return payload.dueItems.filter((item) => !selectedItemIds.includes(item.id)).slice(0, 6);
-  }, [payload, selectedItemIds]);
+    return payload.dueItems.filter((item) => !item.starred && !completedForDate(item, payload.date)).slice(0, 6);
+  }, [payload]);
 
   if (loading && !payload) {
     return (
@@ -321,23 +391,22 @@ export function DailyFocusPanel() {
       <div className="border-t border-stone-200 px-4 py-4 sm:px-5">
         <div className="grid gap-3 lg:grid-cols-3">
           {focusItems.length > 0 ? (
-            focusItems.map((item, index) => {
-              const completed = item.completion?.completedToday;
+            focusItems.map((item) => {
+              const completed = completedForDate(item, payload.date);
+              const completeKey = `${item.id}:complete`;
+              const starKey = `${item.id}:star`;
               return (
-                <button
+                <article
                   key={item.id}
-                  type="button"
-                  onClick={() => toggleItem(item.id)}
-                  disabled={savingSelection}
-                  className={`flex min-h-28 flex-col rounded-md p-3 text-left ring-1 transition disabled:cursor-wait disabled:opacity-70 ${
+                  className={`flex min-h-28 flex-col rounded-md p-3 text-left ring-1 transition ${
                     completed
                       ? "bg-emerald-50 ring-emerald-200"
-                      : "bg-sky-50 ring-sky-200 hover:bg-sky-100"
+                      : "bg-sky-50 ring-sky-200"
                   }`}
                 >
                   <span className="flex items-start gap-3">
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-xs font-semibold text-sky-900 ring-1 ring-sky-200">
-                      {index + 1}
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-amber-700 ring-1 ring-amber-200">
+                      <Star className="h-4 w-4 fill-current" aria-hidden="true" />
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-sm font-semibold leading-5 text-stone-950">
@@ -347,13 +416,32 @@ export function DailyFocusPanel() {
                         {itemMeta(item)}
                       </span>
                     </span>
-                    {completed ? (
-                      <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-700" aria-hidden="true" />
-                    ) : (
-                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-sky-800 ring-1 ring-sky-300">
-                        <Check className="h-3 w-3" aria-hidden="true" />
-                      </span>
-                    )}
+                    <span className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => void completeItem(item)}
+                        disabled={completed || pendingKey === completeKey}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-white text-emerald-700 ring-1 ring-emerald-200 hover:bg-emerald-50 disabled:cursor-wait disabled:opacity-60"
+                        aria-label={`Complete ${item.title}`}
+                        title="Complete"
+                      >
+                        {completed ? (
+                          <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                        ) : (
+                          <Check className="h-4 w-4" aria-hidden="true" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void toggleStar(item)}
+                        disabled={pendingKey === starKey}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-white text-amber-700 ring-1 ring-amber-200 hover:bg-amber-50 disabled:cursor-wait disabled:opacity-60"
+                        aria-label={`Unstar ${item.title}`}
+                        title="Unstar"
+                      >
+                        <Star className="h-4 w-4 fill-current" aria-hidden="true" />
+                      </button>
+                    </span>
                   </span>
                   <span className="mt-auto pt-3">
                     <span
@@ -366,12 +454,12 @@ export function DailyFocusPanel() {
                       {focusStatus(item)}
                     </span>
                   </span>
-                </button>
+                </article>
               );
             })
           ) : (
             <div className="rounded-md border border-dashed border-stone-300 bg-stone-50 p-3 text-sm leading-6 text-stone-600 lg:col-span-3">
-              No focus items selected yet.
+              No starred focus items yet.
             </div>
           )}
         </div>
@@ -387,16 +475,18 @@ export function DailyFocusPanel() {
             </summary>
             <div className="mt-2 flex flex-wrap gap-2">
               {candidateItems.map((item) => {
-                const selected = selectedItemIds.includes(item.id);
+                const starKey = `${item.id}:star`;
                 return (
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => toggleItem(item.id)}
-                    disabled={savingSelection}
-                    className={`inline-flex max-w-full items-center gap-2 rounded-md px-2.5 py-1 text-xs font-medium ring-1 transition disabled:cursor-wait disabled:opacity-70 ${candidateTone(item, selected)}`}
+                    onClick={() => void toggleStar(item)}
+                    disabled={pendingKey === starKey}
+                    className={`inline-flex max-w-full items-center gap-2 rounded-md px-2.5 py-1 text-xs font-medium ring-1 transition disabled:cursor-wait disabled:opacity-70 ${candidateTone(item, item.starred)}`}
                     title={`Priority score ${item.priorityScore}: ${item.prioritySignals.join(", ")}`}
+                    aria-pressed={item.starred}
                   >
+                    <Star className={`h-3.5 w-3.5 shrink-0 ${item.starred ? "fill-current" : ""}`} aria-hidden="true" />
                     <span className="truncate">{item.title}</span>
                     <span className="shrink-0 text-[11px] opacity-75">{focusStatus(item)}</span>
                   </button>
@@ -418,15 +508,19 @@ export function DailyFocusPanel() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => toggleItem(item.id)}
-                disabled={savingSelection}
+                onClick={() => void toggleStar(item)}
+                disabled={pendingKey === `${item.id}:star`}
                 className="flex min-h-14 items-start justify-between gap-3 rounded-md bg-stone-50 px-3 py-2 text-left ring-1 ring-stone-200 transition hover:bg-stone-100 disabled:cursor-wait disabled:opacity-70"
+                aria-label={`Star ${item.title}`}
               >
                 <span className="min-w-0">
                   <span className="block truncate text-sm font-medium text-stone-950">{item.title}</span>
                   <span className="mt-1 block truncate text-xs text-stone-600">{itemMeta(item)}</span>
                 </span>
-                <span className="shrink-0 text-xs font-medium text-stone-500">{focusStatus(item)}</span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <span className="text-xs font-medium text-stone-500">{focusStatus(item)}</span>
+                  <Star className="h-4 w-4 text-stone-500" aria-hidden="true" />
+                </span>
               </button>
             ))}
           </div>

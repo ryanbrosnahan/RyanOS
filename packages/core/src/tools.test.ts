@@ -12,6 +12,7 @@ describe("core tools", () => {
     const recurrenceSet = tools
       .list()
       .find((tool) => tool.name === "recurrence.setPolicy");
+    const itemStar = tools.list().find((tool) => tool.name === "item.star");
     const shoppingAdd = tools
       .list()
       .find((tool) => tool.name === "shopping.addItems");
@@ -29,6 +30,11 @@ describe("core tools", () => {
     expect(shoppingAdd?.metadata).toMatchObject({
       sideEffect: "state_write",
       confirmation: "not_required",
+      retrySafety: "safe_with_idempotency_key"
+    });
+    expect(itemStar?.metadata).toMatchObject({
+      sideEffect: "state_write",
+      confirmation: "low_confidence",
       retrySafety: "safe_with_idempotency_key"
     });
     expect(itemCreate?.inputSchema).toMatchObject({
@@ -394,6 +400,65 @@ describe("core tools", () => {
     expect(store.itemEvents.filter((event) => event.eventType === "completed")).toHaveLength(1);
   });
 
+  it("stars and unstars an item through typed tool calls", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Send proposal",
+      kind: "task"
+    });
+
+    const starred = await tools.execute("item.star", {
+      userId: "user-1",
+      itemRef: "Send proposal",
+      starred: true,
+      starredAt: "2026-05-27T14:00:00.000Z"
+    });
+    const unstarred = await tools.execute("item.star", {
+      userId: "user-1",
+      itemRef: "Send proposal",
+      starred: false
+    });
+
+    expect(starred.status).toBe("applied");
+    expect(unstarred.status).toBe("applied");
+    const item = [...store.items.values()][0];
+    expect(item?.starredAt).toBeUndefined();
+    expect(store.itemEvents.map((event) => event.eventType)).toEqual(
+      expect.arrayContaining(["starred", "unstarred"])
+    );
+  });
+
+  it("clears a one-off item star when completing it", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Submit invoice",
+      kind: "task"
+    });
+    await tools.execute("item.star", {
+      userId: "user-1",
+      itemRef: "Submit invoice",
+      starred: true,
+      starredAt: "2026-05-27T14:00:00.000Z"
+    });
+
+    const completed = await tools.execute("item.complete", {
+      userId: "user-1",
+      itemRef: "Submit invoice",
+      completedAt: "2026-05-27T15:00:00.000Z"
+    });
+
+    expect(completed.status).toBe("applied");
+    const item = [...store.items.values()][0];
+    expect(item?.status).toBe("done");
+    expect(item?.starredAt).toBeUndefined();
+  });
+
   it("reopens a completed one-off item", async () => {
     const store = new InMemoryRyanStore();
     const tools = createCoreToolRegistry(store);
@@ -439,6 +504,12 @@ describe("core tools", () => {
         resetFromCompletion: true
       }
     });
+    await tools.execute("item.star", {
+      userId: "user-1",
+      itemRef: "Change sheets",
+      starred: true,
+      starredAt: "2026-05-23T12:00:00.000Z"
+    });
 
     const recorded = await tools.execute("recurrence.recordEvent", {
       userId: "user-1",
@@ -450,7 +521,17 @@ describe("core tools", () => {
     expect(recorded.status).toBe("applied");
     const state = [...store.recurrenceStates.values()][0];
     expect(state?.nextDueAt).toBe("2026-05-30T15:00:00.000Z");
-    expect([...store.items.values()][0]?.status).toBe("open");
+    const item = [...store.items.values()][0];
+    expect(item?.status).toBe("open");
+    expect(item?.starredAt).toBeUndefined();
+
+    await tools.execute("recurrence.recordEvent", {
+      userId: "user-1",
+      recurrenceRef: "Change sheets",
+      eventType: "uncompleted",
+      occurredAt: "2026-05-23T15:30:00.000Z"
+    });
+    expect([...store.items.values()][0]?.starredAt).toBeUndefined();
   });
 
   it("requires an explicit override before minimum interval completions", async () => {

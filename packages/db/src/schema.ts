@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
@@ -167,6 +168,7 @@ export const items = pgTable("items", {
   startAt: timestamp("start_at", { withTimezone: true }),
   snoozedUntil: timestamp("snoozed_until", { withTimezone: true }),
   estimateMinutes: integer("estimate_minutes"),
+  starredAt: timestamp("starred_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
   revision: integer("revision").notNull().default(1),
@@ -175,7 +177,10 @@ export const items = pgTable("items", {
   ...softDelete
 }, (table) => ({
   statusDueIdx: index("items_status_due_idx").on(table.userId, table.status, table.dueAt),
-  projectStatusIdx: index("items_project_status_idx").on(table.userId, table.projectId, table.status)
+  projectStatusIdx: index("items_project_status_idx").on(table.userId, table.projectId, table.status),
+  starredActiveIdx: index("items_starred_active_idx")
+    .on(table.userId, table.starredAt)
+    .where(sql`${table.starredAt} is not null and ${table.deletedAt} is null and ${table.status} in ('open', 'active', 'waiting')`)
 }));
 
 export const itemEvents = pgTable("item_events", {

@@ -86,6 +86,8 @@ function itemFromRow(row: typeof schema.items.$inferSelect): Item {
   const snoozedUntil = toIso(row.snoozedUntil);
   if (snoozedUntil !== undefined) item.snoozedUntil = snoozedUntil;
   if (row.estimateMinutes !== null) item.estimateMinutes = row.estimateMinutes;
+  const starredAt = toIso(row.starredAt);
+  if (starredAt !== undefined) item.starredAt = starredAt;
   const completedAt = toIso(row.completedAt);
   if (completedAt !== undefined) item.completedAt = completedAt;
   const cancelledAt = toIso(row.cancelledAt);
@@ -700,6 +702,9 @@ export class PostgresRyanStore implements RyanStore {
       values.snoozedUntil = patch.snoozedUntil === null ? null : toDate(patch.snoozedUntil);
     }
     if (patch.estimateMinutes !== undefined) values.estimateMinutes = patch.estimateMinutes;
+    if (patch.starredAt !== undefined) {
+      values.starredAt = patch.starredAt === null ? null : toDate(patch.starredAt);
+    }
     if (patch.completedAt !== undefined) {
       values.completedAt = patch.completedAt === null ? null : toDate(patch.completedAt);
     }
@@ -746,6 +751,8 @@ export class PostgresRyanStore implements RyanStore {
       )
       .orderBy(
         sql`case when ${schema.items.status} = 'done' then 1 else 0 end`,
+        sql`case when ${schema.items.starredAt} is not null then 0 else 1 end`,
+        desc(schema.items.starredAt),
         asc(schema.items.dueAt),
         desc(schema.items.createdAt)
       )

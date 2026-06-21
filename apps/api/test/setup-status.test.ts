@@ -398,6 +398,91 @@ describe("setup status", () => {
     expect(saved.json().plan.suggestionSource).toBe("user");
   });
 
+  it("uses starred items as active daily focus instead of saved selected items", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const selectedCreated = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Old selected focus",
+          kind: "task",
+          priority: "normal"
+        }
+      }
+    });
+    const starredCreated = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Pinned focus item",
+          kind: "task",
+          priority: "low"
+        }
+      }
+    });
+    const selectedItemId = selectedCreated.json().data.item.id as string;
+    const starredItemId = starredCreated.json().data.item.id as string;
+    await app.inject({
+      method: "POST",
+      url: "/v1/daily-plan",
+      payload: {
+        userId: "local-owner",
+        date: "2026-05-27",
+        timezone: "UTC",
+        selectedItemIds: [selectedItemId]
+      }
+    });
+    const starred = await app.inject({
+      method: "POST",
+      url: `/v1/items/${starredItemId}/star`,
+      payload: {
+        userId: "local-owner",
+        starred: true,
+        starredAt: "2026-05-27T14:00:00.000Z",
+        timezone: "UTC"
+      }
+    });
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    const plan = await app.inject({
+      method: "GET",
+      url: "/v1/daily-plan?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    await app.close();
+
+    expect(starred.statusCode).toBe(200);
+    expect(starred.json().item).toMatchObject({
+      id: starredItemId,
+      starred: true,
+      starredAt: "2026-05-27T14:00:00.000Z"
+    });
+    expect(listed.json().items[0]).toMatchObject({
+      id: starredItemId,
+      starred: true
+    });
+    expect(plan.json().starredItems).toEqual([
+      expect.objectContaining({
+        id: starredItemId,
+        title: "Pinned focus item",
+        starred: true
+      })
+    ]);
+    expect(plan.json().selectedItems).toEqual([
+      expect.objectContaining({
+        id: selectedItemId,
+        title: "Old selected focus"
+      })
+    ]);
+  });
+
   it("returns rolling seven-day recurrence progress and toggles day completion", async () => {
     vi.stubEnv("DATABASE_URL", "");
 
@@ -1062,6 +1147,65 @@ describe("setup status", () => {
     });
   });
 
+  it("sorts starred mobile widget items before higher-priority unstarred items", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const urgentCreated = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Urgent unstarred",
+          kind: "task",
+          priority: "urgent"
+        }
+      }
+    });
+    const starredCreated = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Normal starred",
+          kind: "task",
+          priority: "normal"
+        }
+      }
+    });
+    const urgentItemId = urgentCreated.json().data.item.id as string;
+    const starredItemId = starredCreated.json().data.item.id as string;
+    await app.inject({
+      method: "POST",
+      url: `/v1/items/${starredItemId}/star`,
+      payload: {
+        userId: "local-owner",
+        starred: true,
+        starredAt: "2026-05-27T14:00:00.000Z",
+        timezone: "UTC"
+      }
+    });
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    await app.close();
+
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().items.map((item: { id: string }) => item.id)).toEqual([
+      starredItemId,
+      urgentItemId
+    ]);
+    expect(listed.json().items[0]).toMatchObject({
+      id: starredItemId,
+      starred: true,
+      starredAt: "2026-05-27T14:00:00.000Z"
+    });
+  });
+
   it("creates mobile items and returns a refreshed widget payload", async () => {
     vi.stubEnv("DATABASE_URL", "");
 
@@ -1280,6 +1424,98 @@ describe("setup status", () => {
         })
       })
     ]);
+  });
+
+  it("shows starred future recurring items and clears focus after completion", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Take GLP-1 shot",
+          kind: "habit"
+        }
+      }
+    });
+    const itemId = created.json().data.item.id as string;
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.setPolicy/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          itemRef: "Take GLP-1 shot",
+          policy: {
+            type: "minimum_interval",
+            minimumIntervalDays: 7,
+            resetFromCompletion: true
+          }
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/tools/recurrence.recordEvent/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          recurrenceRef: "Take GLP-1 shot",
+          eventType: "completed",
+          occurredAt: "2026-05-20T12:00:00.000Z"
+        }
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: `/v1/items/${itemId}/star`,
+      payload: {
+        userId: "local-owner",
+        starred: true,
+        starredAt: "2026-05-25T08:00:00.000Z",
+        timezone: "UTC"
+      }
+    });
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-05-25&timezone=UTC"
+    });
+    const completed = await app.inject({
+      method: "POST",
+      url: `/v1/items/${itemId}/recurrence-days/2026-05-25`,
+      payload: {
+        userId: "local-owner",
+        completed: true,
+        allowEarly: true,
+        timezone: "UTC",
+        referenceDate: "2026-05-25"
+      }
+    });
+    const plan = await app.inject({
+      method: "GET",
+      url: "/v1/daily-plan?userId=local-owner&date=2026-05-25&timezone=UTC"
+    });
+    await app.close();
+
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().items).toEqual([
+      expect.objectContaining({
+        id: itemId,
+        title: "Take GLP-1 shot",
+        starred: true,
+        prioritySignals: expect.arrayContaining(["hidden until 2026-05-26", "next due 2026-05-27"])
+      })
+    ]);
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json().item).toMatchObject({
+      id: itemId,
+      starred: false
+    });
+    expect(plan.json().starredItems).toEqual([]);
   });
 
   it("maps recurring mobile widget items to recurrence-day toggles", async () => {

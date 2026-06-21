@@ -918,6 +918,7 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       const completedAt = input.completedAt ?? nowIso();
       const item = await store.updateItem(best.record.id, {
         status: "done",
+        starredAt: null,
         completedAt
       });
       const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
@@ -984,6 +985,76 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
         eventIds: [event.id],
         auditId: auditLog.id,
         messageForUser: `Marked "${item.title}" complete.`
+      };
+    }
+  });
+
+  registry.register({
+    name: "item.star",
+    description: "Star or unstar an item so it stays in today's focus until completion or manual removal.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "low_confidence",
+      retrySafety: "safe_with_idempotency_key",
+      descriptionForModel: "Use when the user wants to pin or remove an item from today's focus."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      itemRef: z.string().min(1),
+      starred: z.boolean(),
+      starredAt: z.string().optional(),
+      note: z.string().optional()
+    }),
+    handler: async (input) => {
+      if (input.idempotencyKey) {
+        const replayed = await store.findItemEventByIdempotencyKey(input.userId, input.idempotencyKey);
+        if (replayed) {
+          return {
+            status: "replayed",
+            data: { event: replayed },
+            eventIds: [replayed.id],
+            messageForUser: input.starred ? "That item was already starred." : "That item was already unstarred."
+          };
+        }
+      }
+
+      const matches = await store.searchItems(input.userId, input.itemRef, 3);
+      const best = matches[0];
+      if (!best || best.confidence < 0.75) {
+        return {
+          status: "needs_clarification",
+          clarificationPrompt: `Which item should I ${input.starred ? "star" : "unstar"} for "${input.itemRef}"?`
+        };
+      }
+
+      const starredAt = input.starred ? input.starredAt ?? nowIso() : null;
+      const item = await store.updateItem(best.record.id, {
+        starredAt
+      });
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: item.id,
+        eventType: input.starred ? "starred" : "unstarred",
+        occurredAt: input.starred && starredAt !== null ? starredAt : nowIso(),
+        payload: { note: input.note ?? "", matchedBy: best.reason }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.star",
+        toolName: "item.star",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: item.id, starred: input.starred, eventId: event.id }
+      });
+      return {
+        status: "applied",
+        data: { item },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser: input.starred ? `Starred "${item.title}".` : `Unstarred "${item.title}".`
       };
     }
   });
@@ -1257,6 +1328,11 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       const events = await store.listRecurrenceEvents(policy.id);
       const state = calculateRecurrenceState(policy, events);
       await store.updateRecurrenceState(state);
+      if (input.eventType === "completed") {
+        await store.updateItem(best.record.id, {
+          starredAt: null
+        });
+      }
       const auditLog = await audit(store, {
         userId: input.userId,
         action: "recurrence.recordEvent",
