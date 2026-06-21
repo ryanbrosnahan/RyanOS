@@ -5,7 +5,7 @@ import type {
   IncomingMessage,
   PublicToolDefinition
 } from "@ryanos/ai";
-import { InMemoryRyanStore, type RyanStore } from "@ryanos/core";
+import { InMemoryRyanStore, type EmailActionProposalListFilters, type RyanStore } from "@ryanos/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import type { GmailClientLike } from "../src/email-triage.js";
@@ -31,6 +31,22 @@ class EmailToolAiProvider implements AiProvider {
   async interpret(_message: IncomingMessage, _tools: PublicToolDefinition[]): Promise<AiProviderResult> {
     this.calls += 1;
     return typeof this.result === "function" ? this.result(this.calls) : this.result;
+  }
+}
+
+class AliasOwnerStore extends InMemoryRyanStore {
+  constructor(
+    private readonly aliasUserId: string,
+    private readonly resolvedUserId: string
+  ) {
+    super();
+  }
+
+  override async listEmailActionProposals(filters: EmailActionProposalListFilters) {
+    return super.listEmailActionProposals({
+      ...filters,
+      userId: filters.userId === this.aliasUserId ? this.resolvedUserId : filters.userId
+    });
   }
 }
 
@@ -545,6 +561,54 @@ describe("email integration API", () => {
       }
     });
     expect(items.json().items).toEqual([]);
+  });
+
+  it("rejects a proposal when local-owner resolves to the stored owner UUID", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const resolvedUserId = "00000000-0000-4000-8000-000000000001";
+    const store: RyanStore = new AliasOwnerStore("local-owner", resolvedUserId);
+    const account = await store.upsertProviderAccount({
+      userId: resolvedUserId,
+      provider: "gmail",
+      externalAccountId: "ryan@example.com",
+      email: "ryan@example.com"
+    });
+    const source = await store.upsertExternalSource({
+      userId: resolvedUserId,
+      provider: "gmail",
+      providerAccountId: account.id,
+      externalId: "msg-resolved-owner",
+      title: "Direct note"
+    });
+    const proposal = await store.upsertEmailActionProposal({
+      userId: resolvedUserId,
+      sourceId: source.id,
+      providerAccountId: account.id,
+      idempotencyKey: "gmail:resolved-owner-reject",
+      actionType: "reply",
+      title: "Reply to direct note"
+    });
+    const app = buildApp({
+      store,
+      ai: proposalAi(),
+      emailClient: fakeGmailClient()
+    });
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: `/v1/email/proposals/${proposal.id}/reject`,
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    await app.close();
+
+    expect(rejected.statusCode).toBe(200);
+    expect(rejected.json()).toMatchObject({
+      proposal: {
+        status: "rejected"
+      }
+    });
   });
 
   it("returns a scan error instead of throwing when gog auth is incomplete", async () => {

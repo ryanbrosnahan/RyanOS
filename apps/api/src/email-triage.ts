@@ -771,13 +771,28 @@ function itemBodyForProposal(proposal: EmailActionProposal, source: ExternalSour
   return pieces.length > 0 ? pieces.join("\n\n") : undefined;
 }
 
+async function getEmailProposalForUser(input: {
+  store: RyanStore;
+  userId: UUID;
+  proposalId: UUID;
+}): Promise<EmailActionProposal | undefined> {
+  const proposal = await input.store.getEmailActionProposal(input.proposalId);
+  if (!proposal) return undefined;
+  if (proposal.userId === input.userId) return proposal;
+  const visibleProposals = await input.store.listEmailActionProposals({
+    userId: input.userId,
+    limit: 200
+  });
+  return visibleProposals.find((candidate) => candidate.id === input.proposalId);
+}
+
 export async function acceptEmailProposal(input: {
   store: RyanStore;
   userId: UUID;
   proposalId: UUID;
 }): Promise<{ proposal: EmailActionProposal; item: Item }> {
-  const proposal = await input.store.getEmailActionProposal(input.proposalId);
-  if (!proposal || proposal.userId !== input.userId) {
+  const proposal = await getEmailProposalForUser(input);
+  if (!proposal) {
     throw new Error(`Email proposal not found: ${input.proposalId}`);
   }
   if (proposal.status === "accepted" && proposal.acceptedItemId) {
@@ -849,8 +864,8 @@ export async function rejectEmailProposal(input: {
   userId: UUID;
   proposalId: UUID;
 }): Promise<EmailActionProposal> {
-  const proposal = await input.store.getEmailActionProposal(input.proposalId);
-  if (!proposal || proposal.userId !== input.userId) {
+  const proposal = await getEmailProposalForUser(input);
+  if (!proposal) {
     throw new Error(`Email proposal not found: ${input.proposalId}`);
   }
   if (proposal.status === "accepted") {
