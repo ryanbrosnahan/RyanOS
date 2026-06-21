@@ -63,6 +63,8 @@ type ScanResponse = {
     messagesFetched: number;
     proposalsCreatedOrUpdated: number;
     errors: Array<{ error: string }>;
+    alreadyRunning?: boolean;
+    startedAt?: string;
   };
 };
 
@@ -268,9 +270,10 @@ export function EmailIntegrationPanel() {
 
           {scanResult ? (
             <p className="mt-3 text-sm leading-6 text-stone-700">
-              Scanned {scanResult.accountsScanned} accounts, saw {scanResult.messagesSeen} messages, fetched{" "}
-              {scanResult.messagesFetched}, proposed {scanResult.proposalsCreatedOrUpdated}.
-              {scanResult.errors.length > 0 ? ` ${scanResult.errors.length} errors.` : ""}
+              {scanResult.alreadyRunning
+                ? `Scan already running${scanResult.startedAt ? ` since ${formatDate(scanResult.startedAt)}` : ""}.`
+                : `Scanned ${scanResult.accountsScanned} accounts, saw ${scanResult.messagesSeen} messages, fetched ${scanResult.messagesFetched}, proposed ${scanResult.proposalsCreatedOrUpdated}.`}
+              {!scanResult.alreadyRunning && scanResult.errors.length > 0 ? ` ${scanResult.errors.length} errors.` : ""}
             </p>
           ) : null}
 

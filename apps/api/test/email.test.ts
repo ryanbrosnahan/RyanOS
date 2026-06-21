@@ -107,6 +107,20 @@ function proposalAi(): AiProvider {
   });
 }
 
+function deferred<T = void>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("email integration API", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -189,6 +203,62 @@ describe("email integration API", () => {
         title: "Need your answer"
       }
     });
+  });
+
+  it("does not start a duplicate Gmail scan while one is running", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    vi.stubEnv("GOG_KEYRING_PASSWORD", "test-password");
+    const started = deferred();
+    const release = deferred();
+    let searchCount = 0;
+    const app = buildApp({
+      ai: proposalAi(),
+      emailClient: {
+        ...fakeGmailClient(),
+        async searchMessages() {
+          searchCount += 1;
+          started.resolve();
+          await release.promise;
+          return [];
+        }
+      }
+    });
+
+    const firstScan = app.inject({
+      method: "POST",
+      url: "/v1/email/scan",
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    await started.promise;
+    const secondScan = await app.inject({
+      method: "POST",
+      url: "/v1/email/scan",
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    release.resolve();
+    const firstScanResult = await firstScan;
+    await app.close();
+
+    expect(secondScan.statusCode).toBe(200);
+    expect(secondScan.json()).toMatchObject({
+      result: {
+        alreadyRunning: true,
+        accountsScanned: 0,
+        messagesSeen: 0
+      }
+    });
+    expect(firstScanResult.statusCode).toBe(200);
+    expect(firstScanResult.json()).toMatchObject({
+      result: {
+        accountsScanned: 1,
+        messagesSeen: 0
+      }
+    });
+    expect(searchCount).toBe(1);
   });
 
   it("accepts a proposal into one normal RyanOS item", async () => {

@@ -206,6 +206,8 @@ const emailScanBodySchema = z.object({
   syncAccounts: z.boolean().default(true)
 });
 
+const activeEmailScans = new Map<string, { startedAt: string }>();
+
 const emailProposalsQuerySchema = z.object({
   userId: z.string().default("local-owner"),
   status: z.enum(["proposed", "accepted", "rejected"]).default("proposed"),
@@ -1050,6 +1052,25 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
 
   app.post("/v1/email/scan", async (request, reply) => {
     const body = emailScanBodySchema.parse(request.body ?? {});
+    const lockKey = body.userId;
+    const activeScan = activeEmailScans.get(lockKey);
+    const config = emailScanConfig();
+    if (activeScan) {
+      return {
+        result: {
+          query: body.query ?? config.query,
+          maxPerAccount: body.maxPerAccount ?? config.maxPerAccount,
+          accountsScanned: 0,
+          accountsSkipped: 0,
+          messagesSeen: 0,
+          messagesFetched: 0,
+          proposalsCreatedOrUpdated: 0,
+          errors: [],
+          alreadyRunning: true,
+          startedAt: activeScan.startedAt
+        }
+      };
+    }
     const status = await ai.getStatus();
     if (!status.ready) {
       reply.code(503);
@@ -1058,20 +1079,27 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
         status
       };
     }
+    activeEmailScans.set(lockKey, {
+      startedAt: nowIso()
+    });
     const scanInput: Parameters<typeof scanGmailInbox>[0] = {
       ai,
       store,
       client: emailClient,
       userId: body.userId,
-      query: body.query ?? emailScanConfig().query,
-      maxPerAccount: body.maxPerAccount ?? emailScanConfig().maxPerAccount,
+      query: body.query ?? config.query,
+      maxPerAccount: body.maxPerAccount ?? config.maxPerAccount,
       syncAccounts: body.syncAccounts
     };
     if (body.accountId !== undefined) scanInput.accountId = body.accountId;
-    const result = await scanGmailInbox(scanInput);
-    return {
-      result
-    };
+    try {
+      const result = await scanGmailInbox(scanInput);
+      return {
+        result
+      };
+    } finally {
+      activeEmailScans.delete(lockKey);
+    }
   });
 
   app.get("/v1/email/proposals", async (request) => {
