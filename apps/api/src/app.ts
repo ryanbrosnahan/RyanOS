@@ -1064,6 +1064,8 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
           accountsSkipped: 0,
           messagesSeen: 0,
           messagesFetched: 0,
+          messagesSkippedByFilter: 0,
+          filterReasons: {},
           proposalsCreatedOrUpdated: 0,
           errors: [],
           alreadyRunning: true,

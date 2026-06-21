@@ -61,6 +61,8 @@ type ScanResponse = {
     accountsScanned: number;
     messagesSeen: number;
     messagesFetched: number;
+    messagesSkippedByFilter: number;
+    filterReasons: Record<string, number>;
     proposalsCreatedOrUpdated: number;
     errors: Array<{ error: string }>;
     alreadyRunning?: boolean;
@@ -272,7 +274,7 @@ export function EmailIntegrationPanel() {
             <p className="mt-3 text-sm leading-6 text-stone-700">
               {scanResult.alreadyRunning
                 ? `Scan already running${scanResult.startedAt ? ` since ${formatDate(scanResult.startedAt)}` : ""}.`
-                : `Scanned ${scanResult.accountsScanned} accounts, saw ${scanResult.messagesSeen} messages, fetched ${scanResult.messagesFetched}, proposed ${scanResult.proposalsCreatedOrUpdated}.`}
+                : `Scanned ${scanResult.accountsScanned} accounts, saw ${scanResult.messagesSeen} messages, fetched ${scanResult.messagesFetched}, skipped ${scanResult.messagesSkippedByFilter}, proposed ${scanResult.proposalsCreatedOrUpdated}.`}
               {!scanResult.alreadyRunning && scanResult.errors.length > 0 ? ` ${scanResult.errors.length} errors.` : ""}
             </p>
           ) : null}

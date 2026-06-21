@@ -185,6 +185,167 @@ function gmailMessageUrl(message: GogEmailMessage | GogSearchMessage): string {
   return `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(message.id)}`;
 }
 
+const automatedSenderTokens = new Set([
+  "account",
+  "accounts",
+  "admin",
+  "alert",
+  "alerts",
+  "auto",
+  "automated",
+  "billing",
+  "contact",
+  "customerservice",
+  "deal",
+  "deals",
+  "donotreply",
+  "hello",
+  "help",
+  "info",
+  "mailer",
+  "marketing",
+  "news",
+  "newsletter",
+  "no-reply",
+  "noreply",
+  "notification",
+  "notifications",
+  "notify",
+  "offer",
+  "offers",
+  "postmaster",
+  "promo",
+  "promotions",
+  "receipt",
+  "receipts",
+  "reply",
+  "security",
+  "service",
+  "services",
+  "statement",
+  "statements",
+  "support",
+  "system",
+  "team",
+  "transaction",
+  "transactions",
+  "updates"
+]);
+
+const automatedDomainParts = [
+  "accounts.google.com",
+  "chase.com",
+  "discover.com",
+  "furnishedfinder.com",
+  "google.com",
+  "ring.com",
+  "samsclub.com",
+  "samsclub-email.com"
+];
+
+const automatedSubjectPatterns = [
+  /\baccount alert\b/i,
+  /\balarm\b/i,
+  /\bavailable credit\b/i,
+  /\bcamera\b.*\boffline\b/i,
+  /\bcash back\b/i,
+  /\bfurnished finder\b/i,
+  /\blocation sharing\b/i,
+  /\bnew sign-?in\b/i,
+  /\bsecurity alert\b/i,
+  /\bstatement\b.*\bready\b/i,
+  /\bstorage\b/i,
+  /\bverification code\b/i
+];
+
+export type EmailTriageFilterDecision = {
+  shouldTriage: boolean;
+  reason?: string;
+};
+
+function emailAddressFromHeader(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const bracketed = trimmed.match(/<([^>]+)>/);
+  const candidate = bracketed?.[1] ?? trimmed;
+  const email = candidate.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
+  return email?.toLowerCase();
+}
+
+function senderLocalPart(from: string | undefined): string | undefined {
+  return emailAddressFromHeader(from)?.split("@")[0];
+}
+
+function senderDomain(from: string | undefined): string | undefined {
+  return emailAddressFromHeader(from)?.split("@")[1];
+}
+
+function rawHeaderValue(raw: unknown, name: string): string | undefined {
+  const rawRecord = asRecord(raw);
+  const messageRecord = asRecord(rawRecord?.message);
+  const payloadRecord = asRecord(rawRecord?.payload) ?? asRecord(messageRecord?.payload);
+  const headers = rawRecord?.headers ?? messageRecord?.headers ?? payloadRecord?.headers;
+  if (Array.isArray(headers)) {
+    const match = headers
+      .map(asRecord)
+      .find((header) => {
+        const headerName = header?.name;
+        return typeof headerName === "string" && headerName.toLowerCase() === name.toLowerCase();
+      });
+    const value = match?.value;
+    return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+  }
+  const headerRecord = asRecord(headers);
+  if (!headerRecord) return undefined;
+  const direct = headerRecord[name] ?? headerRecord[name.toLowerCase()] ?? headerRecord[name.toUpperCase()];
+  return typeof direct === "string" && direct.trim().length > 0 ? direct : undefined;
+}
+
+function hasBulkOrAutomatedHeaders(message: GogEmailMessage): boolean {
+  const autoSubmitted = rawHeaderValue(message.raw, "Auto-Submitted")?.trim().toLowerCase();
+  if (autoSubmitted && autoSubmitted !== "no") return true;
+  const precedence = rawHeaderValue(message.raw, "Precedence")?.trim().toLowerCase();
+  if (precedence && ["bulk", "junk", "list"].includes(precedence)) return true;
+  return rawHeaderValue(message.raw, "List-Unsubscribe") !== undefined;
+}
+
+function hasAutomatedSenderToken(localPart: string | undefined, from: string | undefined): boolean {
+  const haystack = `${localPart ?? ""} ${from ?? ""}`.toLowerCase();
+  const normalized = haystack.replace(/[^a-z0-9]+/g, "");
+  if (
+    normalized.includes("noreply") ||
+    normalized.includes("donotreply") ||
+    normalized.includes("noresponse")
+  ) {
+    return true;
+  }
+  const tokens = haystack.split(/[^a-z0-9-]+/).filter(Boolean);
+  return tokens.some((token) => automatedSenderTokens.has(token));
+}
+
+function hasAutomatedDomain(domain: string | undefined): boolean {
+  if (!domain) return false;
+  return automatedDomainParts.some((part) => domain === part || domain.endsWith(`.${part}`));
+}
+
+function hasAutomatedSubject(subject: string | undefined): boolean {
+  if (!subject) return false;
+  return automatedSubjectPatterns.some((pattern) => pattern.test(subject));
+}
+
+export function shouldTriageEmailMessage(message: GogEmailMessage): EmailTriageFilterDecision {
+  const from = message.from?.trim();
+  if (!from) return { shouldTriage: false, reason: "missing_sender" };
+  const localPart = senderLocalPart(from);
+  if (hasBulkOrAutomatedHeaders(message)) return { shouldTriage: false, reason: "bulk_or_automated_headers" };
+  if (hasAutomatedSenderToken(localPart, from)) return { shouldTriage: false, reason: "automated_sender" };
+  if (hasAutomatedDomain(senderDomain(from))) return { shouldTriage: false, reason: "automated_domain" };
+  if (hasAutomatedSubject(message.subject)) return { shouldTriage: false, reason: "automated_subject" };
+  const preview = `${message.snippet ?? ""} ${message.bodyText ?? ""}`.toLowerCase();
+  if (preview.includes("unsubscribe")) return { shouldTriage: false, reason: "bulk_or_marketing" };
+  return { shouldTriage: true };
+}
+
 function idempotencySuffix(value: string): string {
   return value
     .toLowerCase()
@@ -404,6 +565,8 @@ export type EmailScanResult = {
   accountsSkipped: number;
   messagesSeen: number;
   messagesFetched: number;
+  messagesSkippedByFilter: number;
+  filterReasons: Record<string, number>;
   proposalsCreatedOrUpdated: number;
   errors: Array<{ accountId?: string; accountEmail?: string; messageId?: string; error: string }>;
 };
@@ -430,6 +593,8 @@ export async function scanGmailInbox(input: {
     accountsSkipped: 0,
     messagesSeen: 0,
     messagesFetched: 0,
+    messagesSkippedByFilter: 0,
+    filterReasons: {},
     proposalsCreatedOrUpdated: 0,
     errors: []
   };
@@ -476,6 +641,8 @@ export async function scanGmailInbox(input: {
       });
       result.messagesSeen += searchResults.length;
       let accountProposalCount = 0;
+      let accountSkippedByFilter = 0;
+      const accountFilterReasons: Record<string, number> = {};
       for (const searchResult of searchResults) {
         try {
           const message = await input.client.getMessage({
@@ -489,6 +656,15 @@ export async function scanGmailInbox(input: {
             id: message.id || searchResult.id,
             raw: message.raw
           };
+          const filterDecision = shouldTriageEmailMessage(mergedMessage);
+          if (!filterDecision.shouldTriage) {
+            const reason = filterDecision.reason ?? "filtered";
+            result.messagesSkippedByFilter += 1;
+            result.filterReasons[reason] = (result.filterReasons[reason] ?? 0) + 1;
+            accountSkippedByFilter += 1;
+            accountFilterReasons[reason] = (accountFilterReasons[reason] ?? 0) + 1;
+            continue;
+          }
           const source = await upsertSourceForMessage({
             store: input.store,
             account,
@@ -520,6 +696,8 @@ export async function scanGmailInbox(input: {
           status: "ok",
           query,
           messagesSeen: searchResults.length,
+          messagesSkippedByFilter: accountSkippedByFilter,
+          filterReasons: accountFilterReasons,
           proposalsCreatedOrUpdated: accountProposalCount
         })
       });

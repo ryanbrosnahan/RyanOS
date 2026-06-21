@@ -13,6 +13,7 @@ import type { GmailClientLike } from "../src/email-triage.js";
 class EmailToolAiProvider implements AiProvider {
   readonly name = "email-test";
   readonly mode = "none";
+  calls = 0;
 
   constructor(private readonly result: AiProviderResult) {}
 
@@ -28,6 +29,7 @@ class EmailToolAiProvider implements AiProvider {
   }
 
   async interpret(_message: IncomingMessage, _tools: PublicToolDefinition[]): Promise<AiProviderResult> {
+    this.calls += 1;
     return this.result;
   }
 }
@@ -87,7 +89,7 @@ function fakeGmailClient(): GmailClientLike {
   };
 }
 
-function proposalAi(): AiProvider {
+function proposalAi(): EmailToolAiProvider {
   return new EmailToolAiProvider({
     text: "Proposal stored.",
     toolCalls: [
@@ -105,6 +107,99 @@ function proposalAi(): AiProvider {
       }
     ]
   });
+}
+
+function mixedInboxGmailClient(): GmailClientLike {
+  const messages = new Map([
+    [
+      "human-1",
+      {
+        id: "human-1",
+        threadId: "thread-human",
+        subject: "Can you confirm Friday?",
+        from: "Shaun Smith <shaun@example.com>",
+        to: "ryan@example.com",
+        date: "2026-06-04T15:00:00.000Z",
+        snippet: "Can you confirm Friday?",
+        bodyText: "Can you confirm whether Friday works?",
+        raw: {
+          id: "human-1"
+        }
+      }
+    ],
+    [
+      "google-security",
+      {
+        id: "google-security",
+        threadId: "thread-google",
+        subject: "Security alert",
+        from: "Google <no-reply@accounts.google.com>",
+        to: "ryan@example.com",
+        date: "2026-06-04T16:00:00.000Z",
+        snippet: "A new sign-in was detected.",
+        bodyText: "Review your recent security activity.",
+        raw: {
+          id: "google-security"
+        }
+      }
+    ],
+    [
+      "chase-1",
+      {
+        id: "chase-1",
+        threadId: "thread-chase",
+        subject: "Your Chase statement is ready",
+        from: "Chase <service@chase.com>",
+        to: "ryan@example.com",
+        date: "2026-06-04T17:00:00.000Z",
+        snippet: "Your statement is ready.",
+        bodyText: "Your statement is ready to view.",
+        raw: {
+          id: "chase-1"
+        }
+      }
+    ]
+  ]);
+  return {
+    async doctor() {
+      return {
+        installed: true,
+        ok: true,
+        version: "gog v0.15.0"
+      };
+    },
+    async listAccounts() {
+      return [
+        {
+          email: "ryan@example.com",
+          externalAccountId: "ryan@example.com",
+          displayName: "Ryan",
+          scopes: ["gmail"],
+          status: "active",
+          raw: {
+            email: "ryan@example.com"
+          }
+        }
+      ];
+    },
+    async searchMessages() {
+      return [...messages.values()].map((message) => ({
+        id: message.id,
+        threadId: message.threadId,
+        subject: message.subject,
+        from: message.from,
+        snippet: message.snippet,
+        raw: {
+          id: message.id
+        }
+      }));
+    },
+    async getMessage({ messageId }) {
+      const message = messages.get(messageId);
+      if (!message) throw new Error(`Unknown message ${messageId}`);
+      return message;
+    }
+  };
 }
 
 function deferred<T = void>(): {
@@ -201,6 +296,52 @@ describe("email integration API", () => {
       },
       source: {
         title: "Need your answer"
+      }
+    });
+  });
+
+  it("skips automated Gmail messages before AI triage", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    vi.stubEnv("GOG_KEYRING_PASSWORD", "test-password");
+    const ai = proposalAi();
+    const app = buildApp({
+      ai,
+      emailClient: mixedInboxGmailClient()
+    });
+
+    const scan = await app.inject({
+      method: "POST",
+      url: "/v1/email/scan",
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    const proposals = await app.inject({
+      method: "GET",
+      url: "/v1/email/proposals?userId=local-owner&status=proposed"
+    });
+    await app.close();
+
+    expect(scan.statusCode).toBe(200);
+    expect(scan.json()).toMatchObject({
+      result: {
+        accountsScanned: 1,
+        messagesSeen: 3,
+        messagesFetched: 3,
+        messagesSkippedByFilter: 2,
+        proposalsCreatedOrUpdated: 1
+      }
+    });
+    expect(scan.json().result.filterReasons).toEqual(
+      expect.objectContaining({
+        automated_sender: expect.any(Number)
+      })
+    );
+    expect(ai.calls).toBe(1);
+    expect(proposals.json().proposals).toHaveLength(1);
+    expect(proposals.json().proposals[0]).toMatchObject({
+      source: {
+        title: "Can you confirm Friday?"
       }
     });
   });
