@@ -153,7 +153,10 @@ function arrayPayload(payload: unknown, keys: string[]): unknown[] {
 }
 
 function headerValue(raw: unknown, name: string): string | undefined {
-  const headers = asRecord(raw)?.headers ?? nestedRecord(asRecord(raw), "payload")?.headers;
+  const rawRecord = asRecord(raw);
+  const messageRecord = nestedRecord(rawRecord, "message");
+  const payloadRecord = nestedRecord(rawRecord, "payload") ?? nestedRecord(messageRecord, "payload");
+  const headers = rawRecord?.headers ?? messageRecord?.headers ?? payloadRecord?.headers;
   if (Array.isArray(headers)) {
     const match = headers
       .map(asRecord)
@@ -178,27 +181,37 @@ function searchMessageFromUnknown(value: unknown): GogSearchMessage | undefined 
     };
   }
   const record = asRecord(value);
-  const id = record ? messageIdFromRecord(record) : undefined;
+  const messageRecord = nestedRecord(record, "message");
+  const id = record
+    ? messageIdFromRecord(record) ?? (messageRecord ? messageIdFromRecord(messageRecord) : undefined)
+    : undefined;
   if (!record || !id) return undefined;
   const message: GogSearchMessage = {
     id,
     raw: value
   };
-  const threadId = textField(record, ["threadId", "thread_id"]);
+  const threadId =
+    textField(record, ["threadId", "thread_id"]) ?? textField(messageRecord, ["threadId", "thread_id"]);
   if (threadId) message.threadId = threadId;
   const subject = textField(record, ["subject", "title"]) ?? headerValue(value, "Subject");
   if (subject) message.subject = subject;
   const from = textField(record, ["from", "sender"]) ?? headerValue(value, "From");
   if (from) message.from = from;
-  const date = textField(record, ["date", "internalDate", "receivedAt", "received_at"]) ?? headerValue(value, "Date");
+  const date =
+    textField(record, ["date", "internalDate", "receivedAt", "received_at"]) ??
+    textField(messageRecord, ["date", "internalDate", "receivedAt", "received_at"]) ??
+    headerValue(value, "Date");
   if (date) message.date = date;
-  const snippet = textField(record, ["snippet", "summary", "preview"]);
+  const snippet =
+    textField(record, ["snippet", "summary", "preview"]) ??
+    textField(messageRecord, ["snippet", "summary", "preview"]);
   if (snippet) message.snippet = snippet;
   return message;
 }
 
 function emailMessageFromUnknown(value: unknown, fallbackId: string): GogEmailMessage {
   const record = asRecord(value);
+  const messageRecord = nestedRecord(record, "message");
   const search = record ? searchMessageFromUnknown(record) : undefined;
   const message: GogEmailMessage = {
     id: search?.id ?? fallbackId,
@@ -209,17 +222,22 @@ function emailMessageFromUnknown(value: unknown, fallbackId: string): GogEmailMe
   if (subject) message.subject = subject;
   const from = search?.from ?? headerValue(value, "From");
   if (from) message.from = from;
-  const to = textField(record, ["to"]) ?? headerValue(value, "To");
+  const to = textField(record, ["to"]) ?? textField(messageRecord, ["to"]) ?? headerValue(value, "To");
   if (to) message.to = to;
-  const cc = textField(record, ["cc"]) ?? headerValue(value, "Cc");
+  const cc = textField(record, ["cc"]) ?? textField(messageRecord, ["cc"]) ?? headerValue(value, "Cc");
   if (cc) message.cc = cc;
   const date = search?.date ?? headerValue(value, "Date");
   if (date) message.date = date;
-  const snippet = search?.snippet ?? textField(record, ["snippet", "summary", "preview"]);
+  const snippet =
+    search?.snippet ??
+    textField(record, ["snippet", "summary", "preview"]) ??
+    textField(messageRecord, ["snippet", "summary", "preview"]);
   if (snippet) message.snippet = snippet;
-  const bodyText = textField(record, ["bodyText", "body_text", "text", "plain", "content", "sanitizedContent"]);
+  const bodyText =
+    textField(record, ["bodyText", "body_text", "text", "plain", "content", "sanitizedContent", "body"]) ??
+    textField(messageRecord, ["bodyText", "body_text", "text", "plain", "content", "sanitizedContent", "body"]);
   if (bodyText) message.bodyText = bodyText;
-  const bodyHtml = textField(record, ["bodyHtml", "body_html", "html"]);
+  const bodyHtml = textField(record, ["bodyHtml", "body_html", "html"]) ?? textField(messageRecord, ["bodyHtml", "body_html", "html"]);
   if (bodyHtml) message.bodyHtml = bodyHtml;
   return message;
 }
@@ -347,7 +365,7 @@ export class GogGmailClient {
     const result = await this.run(args);
     ensureSuccess(result, args.join(" "));
     const payload = parseJson(result.stdout, args.join(" "));
-    return arrayPayload(payload, ["messages", "items", "results"])
+    return arrayPayload(payload, ["messages", "threads", "items", "results"])
       .map(searchMessageFromUnknown)
       .filter((message): message is GogSearchMessage => message !== undefined);
   }

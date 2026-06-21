@@ -113,4 +113,74 @@ describe("GogGmailClient", () => {
       })
     ]);
   });
+
+  it("parses live gog Gmail thread search and wrapped get output", async () => {
+    const runner: GogRunner = async (args) => {
+      if (args.includes("search")) {
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout: JSON.stringify({
+            nextPageToken: "next",
+            threads: [
+              {
+                id: "thread-1",
+                date: "Jun 21",
+                from: "sender@example.com",
+                subject: "Question",
+                labels: ["INBOX", "UNREAD"],
+                messageCount: 1
+              }
+            ]
+          })
+        };
+      }
+      return {
+        exitCode: 0,
+        stderr: "",
+        stdout: JSON.stringify({
+          headers: {
+            date: "Sun, 21 Jun 2026 10:00:00 -0500",
+            from: "sender@example.com",
+            message_id: "<message-1@example.com>",
+            subject: "Question",
+            to: "ryan@example.com"
+          },
+          body: "Can you take a look at this?",
+          message: {
+            id: "message-1",
+            threadId: "thread-1",
+            snippet: "Can you take a look"
+          }
+        })
+      };
+    };
+    const client = new GogGmailClient({ runner });
+
+    const messages = await client.searchMessages({
+      accountEmail: "ryan@example.com",
+      query: "in:inbox is:unread newer_than:7d",
+      max: 25
+    });
+    const message = await client.getMessage({
+      accountEmail: "ryan@example.com",
+      messageId: messages[0]!.id
+    });
+
+    expect(messages).toEqual([
+      expect.objectContaining({
+        id: "thread-1",
+        subject: "Question",
+        from: "sender@example.com"
+      })
+    ]);
+    expect(message).toMatchObject({
+      id: "message-1",
+      threadId: "thread-1",
+      subject: "Question",
+      from: "sender@example.com",
+      to: "ryan@example.com",
+      bodyText: "Can you take a look at this?"
+    });
+  });
 });
