@@ -92,6 +92,40 @@ describe("shopping list API", () => {
     expect(undoPayload.item.checkedAt).toBeUndefined();
   });
 
+  it("checks items by resolved shopping list instead of raw user id", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const list = await store.getDefaultShoppingList("local-owner");
+    const item = await store.createShoppingItem({
+      userId: "resolved-owner-id",
+      listId: list.id,
+      name: "Wart Acid",
+      normalizedName: "wart acid",
+      category: "health",
+      source: "android"
+    });
+    const app = buildApp({ store });
+
+    const checked = await app.inject({
+      method: "POST",
+      url: `/v1/mobile/shopping/items/${item.id}/check`,
+      payload: {
+        userId: "local-owner",
+        checked: true
+      }
+    });
+    const payload = checked.json() as ShoppingPayload & { item: ShoppingItem };
+    await app.close();
+
+    expect(checked.statusCode).toBe(200);
+    expect(payload.item).toMatchObject({
+      id: item.id,
+      checked: true,
+      checkedAt: expect.any(String)
+    });
+    expect(store.shoppingListItems.get(item.id)?.checkedAt).toEqual(payload.item.checkedAt);
+  });
+
   it("drops old checked items from the list and offers them as staples later", async () => {
     vi.stubEnv("DATABASE_URL", "");
     const store = new InMemoryRyanStore();

@@ -1850,14 +1850,29 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     };
   }
 
+  async function getDefaultShoppingItemForUser(
+    itemId: string,
+    userId: string,
+    reply: FastifyReply
+  ): Promise<ShoppingListItem | undefined> {
+    const [existing, list] = await Promise.all([
+      store.getShoppingItem(itemId),
+      store.getDefaultShoppingList(userId)
+    ]);
+    if (!existing || existing.listId !== list.id) {
+      reply.code(404);
+      return undefined;
+    }
+    return existing;
+  }
+
   async function checkShoppingItemPayload(
     itemId: string,
     body: z.infer<typeof shoppingCheckItemBodySchema>,
     reply: FastifyReply
   ) {
-    const existing = await store.getShoppingItem(itemId);
-    if (!existing || existing.userId !== body.userId) {
-      reply.code(404);
+    const existing = await getDefaultShoppingItemForUser(itemId, body.userId, reply);
+    if (!existing) {
       return { error: "Shopping item not found" };
     }
     const checkedAt = body.checked ? nowIso() : null;
@@ -2017,9 +2032,8 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
   app.patch("/v1/shopping/items/:itemId", async (request, reply) => {
     const params = shoppingItemParamsSchema.parse(request.params);
     const body = shoppingPatchItemBodySchema.parse(request.body);
-    const existing = await store.getShoppingItem(params.itemId);
-    if (!existing || existing.userId !== body.userId) {
-      reply.code(404);
+    const existing = await getDefaultShoppingItemForUser(params.itemId, body.userId, reply);
+    if (!existing) {
       return { error: "Shopping item not found" };
     }
     const patch: Parameters<typeof store.updateShoppingItem>[1] = {};
