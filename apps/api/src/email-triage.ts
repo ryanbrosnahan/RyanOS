@@ -346,14 +346,6 @@ export function shouldTriageEmailMessage(message: GogEmailMessage): EmailTriageF
   return { shouldTriage: true };
 }
 
-function idempotencySuffix(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 80) || "proposal";
-}
-
 function proposedDueAt(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const date = new Date(value);
@@ -526,8 +518,6 @@ async function triageMessage(input: {
         "gmail",
         input.account.id,
         input.message.id,
-        proposalInput.actionType,
-        idempotencySuffix(proposalInput.title),
         index
       ].join(":"),
       actionType: proposalInput.actionType,

@@ -15,7 +15,7 @@ class EmailToolAiProvider implements AiProvider {
   readonly mode = "none";
   calls = 0;
 
-  constructor(private readonly result: AiProviderResult) {}
+  constructor(private readonly result: AiProviderResult | ((callCount: number) => AiProviderResult)) {}
 
   async getStatus(): Promise<AiProviderStatus> {
     return {
@@ -30,7 +30,7 @@ class EmailToolAiProvider implements AiProvider {
 
   async interpret(_message: IncomingMessage, _tools: PublicToolDefinition[]): Promise<AiProviderResult> {
     this.calls += 1;
-    return this.result;
+    return typeof this.result === "function" ? this.result(this.calls) : this.result;
   }
 }
 
@@ -89,15 +89,15 @@ function fakeGmailClient(): GmailClientLike {
   };
 }
 
-function proposalAi(): EmailToolAiProvider {
-  return new EmailToolAiProvider({
+function proposalResult(title = "Reply to sender about Friday"): AiProviderResult {
+  return {
     text: "Proposal stored.",
     toolCalls: [
       {
         name: "email.propose_action",
         input: {
           actionType: "reply",
-          title: "Reply to sender about Friday",
+          title,
           body: "Confirm whether Friday works.",
           priority: "high",
           draftReplyText: "Friday works for me.",
@@ -106,7 +106,11 @@ function proposalAi(): EmailToolAiProvider {
         }
       }
     ]
-  });
+  };
+}
+
+function proposalAi(): EmailToolAiProvider {
+  return new EmailToolAiProvider(proposalResult());
 }
 
 function mixedInboxGmailClient(): GmailClientLike {
@@ -297,6 +301,44 @@ describe("email integration API", () => {
       source: {
         title: "Need your answer"
       }
+    });
+  });
+
+  it("dedupes repeat Gmail scans when AI wording changes", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    vi.stubEnv("GOG_KEYRING_PASSWORD", "test-password");
+    const ai = new EmailToolAiProvider((callCount) =>
+      proposalResult(callCount === 1 ? "Reply to sender about Friday" : "Follow up with sender about Friday")
+    );
+    const app = buildApp({
+      ai,
+      emailClient: fakeGmailClient()
+    });
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/email/scan",
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/email/scan",
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    const proposals = await app.inject({
+      method: "GET",
+      url: "/v1/email/proposals?userId=local-owner&status=proposed"
+    });
+    await app.close();
+
+    expect(ai.calls).toBe(2);
+    expect(proposals.json().proposals).toHaveLength(1);
+    expect(proposals.json().proposals[0]).toMatchObject({
+      title: "Follow up with sender about Friday"
     });
   });
 
