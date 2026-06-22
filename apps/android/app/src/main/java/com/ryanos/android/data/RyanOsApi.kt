@@ -1,6 +1,7 @@
 package com.ryanos.android.data
 
 import java.io.IOException
+import java.time.Duration
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
@@ -22,6 +23,7 @@ object RyanOsApi {
   private const val WIDGET_ITEM_LIMIT = 100
   private const val SHOPPING_SUGGESTION_LIMIT = 12
   private const val REQUEST_RETRY_DELAY_MS = 500L
+  private val SHOPPING_CHECKED_LINGER_DURATION: Duration = Duration.ofHours(24)
 
   fun todayDateKey(timezone: String): String {
     val zone = runCatching { ZoneId.of(timezone) }.getOrElse { ZoneId.systemDefault() }
@@ -313,7 +315,8 @@ object RyanOsApi {
     rawJson: String?,
     lastSyncedAt: String? = null,
     configured: Boolean = true,
-    error: String? = null
+    error: String? = null,
+    now: Instant = Instant.now()
   ): ShoppingSnapshot {
     if (!configured) {
       return ShoppingSnapshot(
@@ -340,7 +343,7 @@ object RyanOsApi {
         readOnly = error != null,
         error = error,
         categories = parseStringArray(root.optJSONArray("categories")),
-        items = parseShoppingItems(root.optJSONArray("items")),
+        items = parseShoppingItems(root.optJSONArray("items"), now),
         suggestions = parseShoppingSuggestions(root.optJSONArray("suggestions"))
       )
     }.getOrElse { parseError ->
@@ -353,7 +356,7 @@ object RyanOsApi {
     }
   }
 
-  private fun parseShoppingItems(items: JSONArray?): List<ShoppingItem> =
+  private fun parseShoppingItems(items: JSONArray?, now: Instant): List<ShoppingItem> =
     buildList {
       if (items == null) return@buildList
       for (index in 0 until items.length()) {
@@ -361,6 +364,9 @@ object RyanOsApi {
         val id = item.optString("id")
         val name = item.optString("name")
         if (id.isBlank() || name.isBlank()) continue
+        val checked = item.optBoolean("checked", false)
+        val checkedAt = item.optStringOrNull("checkedAt")
+        if (checked && shoppingCheckedExpired(checkedAt, now)) continue
         add(
           ShoppingItem(
             id = id,
@@ -369,8 +375,8 @@ object RyanOsApi {
             category = item.optStringOrNull("category") ?: "miscellaneous",
             quantity = item.optStringOrNull("quantity"),
             note = item.optStringOrNull("note"),
-            checked = item.optBoolean("checked", false),
-            checkedAt = item.optStringOrNull("checkedAt"),
+            checked = checked,
+            checkedAt = checkedAt,
             source = item.optStringOrNull("source") ?: "manual",
             sortOrder = item.optInt("sortOrder", 0),
             catalogItemId = item.optStringOrNull("catalogItemId"),
@@ -380,6 +386,15 @@ object RyanOsApi {
         )
       }
     }
+
+  private fun shoppingCheckedExpired(checkedAt: String?, now: Instant): Boolean =
+    checkedAt
+      ?.let { rawCheckedAt ->
+        runCatching {
+          !Instant.parse(rawCheckedAt).plus(SHOPPING_CHECKED_LINGER_DURATION).isAfter(now)
+        }.getOrDefault(false)
+      }
+      ?: false
 
   private fun parseShoppingSuggestions(items: JSONArray?): List<ShoppingSuggestion> =
     buildList {

@@ -1,5 +1,6 @@
 package com.ryanos.android.data
 
+import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -332,6 +333,18 @@ class RyanOsApiTest {
               "sortOrder": 0,
               "createdAt": "2026-06-19T12:00:00.000Z",
               "updatedAt": "2026-06-19T13:00:00.000Z"
+            },
+            {
+              "id": "shopping-3",
+              "name": "Paper towels",
+              "normalizedName": "paper towels",
+              "category": "household good",
+              "checked": true,
+              "checkedAt": "2026-06-19T12:58:00.000Z",
+              "source": "manual",
+              "sortOrder": 0,
+              "createdAt": "2026-06-19T12:00:00.000Z",
+              "updatedAt": "2026-06-19T12:58:00.000Z"
             }
           ],
           "suggestions": [
@@ -346,7 +359,8 @@ class RyanOsApiTest {
           ]
         }
       """.trimIndent(),
-      lastSyncedAt = "2026-06-19T14:00:00.000Z"
+      lastSyncedAt = "2026-06-19T14:00:00.000Z",
+      now = Instant.parse("2026-06-20T12:59:00.000Z")
     )
 
     assertTrue(snapshot.configured)
@@ -358,6 +372,7 @@ class RyanOsApiTest {
     assertFalse(snapshot.items[0].checked)
     assertTrue(snapshot.items[1].checked)
     assertEquals("2026-06-19T13:00:00.000Z", snapshot.items[1].checkedAt)
+    assertFalse(snapshot.items.any { it.id == "shopping-3" })
     assertEquals("Vitamins", snapshot.suggestions[0].name)
     assertEquals(3, snapshot.suggestions[0].purchaseCount)
   }
