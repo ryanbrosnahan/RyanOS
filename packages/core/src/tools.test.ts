@@ -16,6 +16,9 @@ describe("core tools", () => {
     const shoppingAdd = tools
       .list()
       .find((tool) => tool.name === "shopping.addItems");
+    const vocabularyAdd = tools
+      .list()
+      .find((tool) => tool.name === "vocabulary.addEntries");
 
     expect(itemCreate?.metadata).toMatchObject({
       sideEffect: "state_write",
@@ -28,6 +31,11 @@ describe("core tools", () => {
       retrySafety: "safe_with_idempotency_key"
     });
     expect(shoppingAdd?.metadata).toMatchObject({
+      sideEffect: "state_write",
+      confirmation: "not_required",
+      retrySafety: "safe_with_idempotency_key"
+    });
+    expect(vocabularyAdd?.metadata).toMatchObject({
       sideEffect: "state_write",
       confirmation: "not_required",
       retrySafety: "safe_with_idempotency_key"
@@ -71,6 +79,14 @@ describe("core tools", () => {
         }
       },
       required: expect.arrayContaining(["items"])
+    });
+    expect(vocabularyAdd?.inputSchema).toMatchObject({
+      properties: {
+        entries: {
+          type: "array"
+        }
+      },
+      required: expect.arrayContaining(["entries"])
     });
   });
 
@@ -150,6 +166,102 @@ describe("core tools", () => {
 
     expect(created.status).toBe("rejected");
     expect(created.messageForUser).toContain("shopping.addItems");
+    expect(store.items.size).toBe(0);
+  });
+
+  it("adds vocabulary entries without creating task items", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    const added = await tools.execute("vocabulary.addEntries", {
+      userId: "user-1",
+      entries: [
+        {
+          term: "sobremesa",
+          languageCode: "es",
+          definition: "The time spent talking at the table after a meal.",
+          tags: ["Spanish", "Food"],
+          context: "Heard on a podcast."
+        },
+        {
+          term: "GLP-1 agonist",
+          category: "medical",
+          definition: "A medicine class that activates GLP-1 receptors."
+        }
+      ],
+      sourceMessageId: "msg-vocab"
+    });
+
+    expect(added.status).toBe("applied");
+    expect(store.items.size).toBe(0);
+    expect([...store.vocabularyEntries.values()].map((entry) => entry.term)).toEqual([
+      "sobremesa",
+      "GLP-1 agonist"
+    ]);
+    expect([...store.vocabularyEntries.values()].map((entry) => entry.category)).toEqual([
+      "language",
+      "medical"
+    ]);
+    expect(store.vocabularyEncounters).toHaveLength(2);
+    expect(store.auditLogs.at(-1)).toMatchObject({
+      action: "vocabulary.addEntries",
+      toolName: "vocabulary.addEntries",
+      sourceMessageId: "msg-vocab"
+    });
+  });
+
+  it("merges duplicate vocabulary terms without replacing an edited definition", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    await tools.execute("vocabulary.addEntries", {
+      userId: "user-1",
+      entries: [
+        {
+          term: "Serendipity",
+          definition: "Draft definition",
+          tags: ["reading"]
+        }
+      ]
+    });
+    const entry = [...store.vocabularyEntries.values()][0]!;
+    await store.updateVocabularyEntry(entry.id, {
+      definition: "Edited definition",
+      definitionSource: "edited",
+      tags: ["favorite"]
+    });
+
+    await tools.execute("vocabulary.addEntries", {
+      userId: "user-1",
+      entries: [
+        {
+          term: "serendipity",
+          definition: "Second draft",
+          tags: ["podcast"],
+          context: "Heard it in an interview."
+        }
+      ]
+    });
+
+    expect(store.vocabularyEntries.size).toBe(1);
+    const updated = store.vocabularyEntries.get(entry.id);
+    expect(updated?.definition).toBe("Edited definition");
+    expect(updated?.tags).toEqual(["favorite", "podcast"]);
+    expect(store.vocabularyEncounters).toHaveLength(2);
+  });
+
+  it("rejects vocabulary requests that are accidentally routed to item.create", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    const created = await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Add serendipity to my vocabulary",
+      kind: "task"
+    });
+
+    expect(created.status).toBe("rejected");
+    expect(created.messageForUser).toContain("vocabulary.addEntries");
     expect(store.items.size).toBe(0);
   });
 
@@ -335,7 +447,7 @@ describe("core tools", () => {
       userId: "user-1",
       dateKey: "2026-05-27",
       timezone: "America/Chicago",
-      prompt: "Which outcomes would make today a win?",
+      prompt: "Starred focus candidate test",
       response: "Send the follow-up\nDo laundry",
       successCriteria: ["Send the follow-up", "Do laundry"],
       selectedItemRefs: ["Send court RFP follow-up", "Do laundry"],

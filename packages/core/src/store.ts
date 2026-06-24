@@ -7,6 +7,8 @@ import type {
   ExternalSource,
   Item,
   ItemEvent,
+  Opportunity,
+  OpportunityProposal,
   Policy,
   ProviderAccount,
   Project,
@@ -16,7 +18,9 @@ import type {
   ShoppingCatalogItem,
   ShoppingList,
   ShoppingListItem,
-  SourceLink
+  SourceLink,
+  VocabularyEncounter,
+  VocabularyEntry
 } from "./types.js";
 
 export type AreaUpsertData = {
@@ -170,6 +174,84 @@ export type EmailActionProposalListFilters = {
   limit?: number;
 };
 
+export type OpportunityCreateData = {
+  userId: UUID;
+  areaId?: UUID;
+  projectId?: UUID;
+  title: string;
+  status?: Opportunity["status"];
+  fit?: Opportunity["fit"];
+  dueAt?: string;
+  decisionBy?: string;
+  valueEstimate?: string;
+  nextActionItemId?: UUID;
+  summary?: string;
+  metadata?: JsonObject;
+};
+
+export type OpportunityPatch = Partial<
+  Pick<Opportunity, "title" | "status" | "fit" | "valueEstimate" | "nextActionItemId" | "summary" | "metadata">
+> & {
+  areaId?: UUID | null;
+  projectId?: UUID | null;
+  dueAt?: string | null;
+  decisionBy?: string | null;
+};
+
+export type OpportunityProposalUpsertData = {
+  userId: UUID;
+  sourceId: UUID;
+  idempotencyKey: string;
+  status?: OpportunityProposal["status"];
+  projectSlug: string;
+  title: string;
+  summary?: string;
+  rating?: number;
+  fit?: OpportunityProposal["fit"];
+  priority?: OpportunityProposal["priority"];
+  dueAt?: string;
+  decisionBy?: string;
+  valueEstimate?: string;
+  recommendedAction?: string;
+  rationale?: string;
+  acceptedOpportunityId?: UUID;
+  acceptedItemId?: UUID;
+  acceptedAt?: string;
+  rejectedAt?: string;
+  metadata?: JsonObject;
+};
+
+export type OpportunityProposalPatch = Partial<
+  Pick<
+    OpportunityProposal,
+    | "status"
+    | "projectSlug"
+    | "title"
+    | "summary"
+    | "rating"
+    | "fit"
+    | "priority"
+    | "valueEstimate"
+    | "recommendedAction"
+    | "rationale"
+    | "acceptedOpportunityId"
+    | "acceptedItemId"
+    | "metadata"
+  >
+> & {
+  dueAt?: string | null;
+  decisionBy?: string | null;
+  acceptedAt?: string | null;
+  rejectedAt?: string | null;
+};
+
+export type OpportunityProposalListFilters = {
+  userId: UUID;
+  status?: OpportunityProposal["status"];
+  projectSlug?: string;
+  limit?: number;
+};
+
 export type ShoppingListUpsertData = {
   userId: UUID;
   name?: string;
@@ -222,6 +304,65 @@ export type ShoppingCatalogUpsertData = {
 export type ShoppingCatalogListFilters = {
   userId: UUID;
   limit?: number;
+};
+
+export type VocabularyEntryCreateData = {
+  userId: UUID;
+  term: string;
+  normalizedTerm: string;
+  languageCode?: string;
+  category?: string;
+  definition?: string;
+  partOfSpeech?: string;
+  pronunciation?: string;
+  translation?: string;
+  notes?: string;
+  tags?: string[];
+  definitionSource?: string;
+  status?: VocabularyEntry["status"];
+  metadata?: JsonObject;
+};
+
+export type VocabularyEntryPatch = Partial<
+  Pick<
+    VocabularyEntry,
+    | "term"
+    | "normalizedTerm"
+    | "languageCode"
+    | "category"
+    | "definition"
+    | "partOfSpeech"
+    | "pronunciation"
+    | "translation"
+    | "notes"
+    | "tags"
+    | "definitionSource"
+    | "status"
+    | "metadata"
+  >
+> & {
+  deletedAt?: string | null;
+};
+
+export type VocabularyEntryListFilters = {
+  userId: UUID;
+  query?: string;
+  category?: string;
+  languageCode?: string;
+  tag?: string;
+  status?: VocabularyEntry["status"];
+  limit?: number;
+};
+
+export type VocabularyEncounterCreateData = {
+  userId: UUID;
+  entryId: UUID;
+  sourceType?: string;
+  sourceTitle?: string;
+  sourceUrl?: string;
+  context?: string;
+  occurredAt?: string;
+  metadata?: JsonObject;
 };
 
 export interface RyanStore {
@@ -278,6 +419,15 @@ export interface RyanStore {
   getEmailActionProposal(proposalId: UUID): Promise<EmailActionProposal | undefined>;
   updateEmailActionProposal(proposalId: UUID, patch: EmailActionProposalPatch): Promise<EmailActionProposal>;
 
+  createOpportunity(data: OpportunityCreateData): Promise<Opportunity>;
+  updateOpportunity(opportunityId: UUID, patch: OpportunityPatch): Promise<Opportunity>;
+  getOpportunity(opportunityId: UUID): Promise<Opportunity | undefined>;
+
+  upsertOpportunityProposal(proposal: OpportunityProposalUpsertData): Promise<OpportunityProposal>;
+  listOpportunityProposals(filters: OpportunityProposalListFilters): Promise<OpportunityProposal[]>;
+  getOpportunityProposal(proposalId: UUID): Promise<OpportunityProposal | undefined>;
+  updateOpportunityProposal(proposalId: UUID, patch: OpportunityProposalPatch): Promise<OpportunityProposal>;
+
   getDefaultShoppingList(userId: UUID): Promise<ShoppingList>;
   createShoppingItem(data: ShoppingItemCreateData): Promise<ShoppingListItem>;
   updateShoppingItem(itemId: UUID, patch: ShoppingItemPatch): Promise<ShoppingListItem>;
@@ -285,6 +435,18 @@ export interface RyanStore {
   getShoppingItem(itemId: UUID): Promise<ShoppingListItem | undefined>;
   upsertShoppingCatalogItem(data: ShoppingCatalogUpsertData): Promise<ShoppingCatalogItem>;
   listShoppingCatalogItems(filters: ShoppingCatalogListFilters): Promise<ShoppingCatalogItem[]>;
+
+  createVocabularyEntry(data: VocabularyEntryCreateData): Promise<VocabularyEntry>;
+  updateVocabularyEntry(entryId: UUID, patch: VocabularyEntryPatch): Promise<VocabularyEntry>;
+  listVocabularyEntries(filters: VocabularyEntryListFilters): Promise<VocabularyEntry[]>;
+  getVocabularyEntry(entryId: UUID): Promise<VocabularyEntry | undefined>;
+  findVocabularyEntry(
+    userId: UUID,
+    languageCode: string,
+    normalizedTerm: string
+  ): Promise<VocabularyEntry | undefined>;
+  addVocabularyEncounter(data: VocabularyEncounterCreateData): Promise<VocabularyEncounter>;
+  listVocabularyEncounters(filters: { userId: UUID; entryId?: UUID; limit?: number }): Promise<VocabularyEncounter[]>;
 
   addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog>;
   snapshot?(): JsonObject | Promise<JsonObject>;

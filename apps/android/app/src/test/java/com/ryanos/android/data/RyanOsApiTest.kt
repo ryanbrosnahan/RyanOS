@@ -418,4 +418,85 @@ class RyanOsApiTest {
     assertFalse(undoneSnapshot.items[0].checked)
     assertNull(undoneSnapshot.items[0].checkedAt)
   }
+
+  @Test
+  fun parsesVocabularyPayload() {
+    val snapshot = RyanOsApi.parseVocabularySnapshot(
+      rawJson = """
+        {
+          "categories": ["general", "medical", "language", "technical", "slang", "proper_noun", "other"],
+          "entries": [
+            {
+              "id": "vocab-1",
+              "term": "sobremesa",
+              "normalizedTerm": "sobremesa",
+              "languageCode": "es",
+              "category": "language",
+              "definition": "The time spent talking at the table after a meal.",
+              "partOfSpeech": "noun",
+              "pronunciation": "so-breh-MEH-sah",
+              "translation": "after-meal conversation",
+              "notes": "Useful cultural term.",
+              "tags": ["spanish", "food"],
+              "definitionSource": "ai_draft",
+              "status": "active",
+              "createdAt": "2026-06-24T12:00:00.000Z",
+              "updatedAt": "2026-06-24T12:00:00.000Z"
+            }
+          ],
+          "encountersByEntryId": {
+            "vocab-1": [
+              {
+                "id": "encounter-1",
+                "entryId": "vocab-1",
+                "sourceType": "podcast",
+                "sourceTitle": "Spanish lesson",
+                "context": "They used sobremesa to describe lingering after dinner.",
+                "occurredAt": "2026-06-24T12:01:00.000Z",
+                "createdAt": "2026-06-24T12:01:00.000Z"
+              }
+            ]
+          }
+        }
+      """.trimIndent(),
+      lastSyncedAt = "2026-06-24T12:02:00.000Z"
+    )
+
+    assertTrue(snapshot.configured)
+    assertEquals("2026-06-24T12:02:00.000Z", snapshot.lastSyncedAt)
+    assertEquals(7, snapshot.categories.size)
+    assertEquals(1, snapshot.entries.size)
+    assertEquals("sobremesa", snapshot.entries[0].term)
+    assertEquals("es", snapshot.entries[0].languageCode)
+    assertEquals("language", snapshot.entries[0].category)
+    assertEquals("noun", snapshot.entries[0].partOfSpeech)
+    assertEquals("after-meal conversation", snapshot.entries[0].translation)
+    assertEquals(listOf("spanish", "food"), snapshot.entries[0].tags)
+    assertEquals("Spanish lesson", snapshot.encountersByEntryId["vocab-1"]?.first()?.sourceTitle)
+  }
+
+  @Test
+  fun parsesLegacyVocabularyPayloadDefaults() {
+    val snapshot = RyanOsApi.parseVocabularySnapshot(
+      rawJson = """
+        {
+          "entries": [
+            {
+              "id": "vocab-2",
+              "term": "serendipity"
+            }
+          ]
+        }
+      """.trimIndent()
+    )
+
+    assertTrue(snapshot.configured)
+    assertEquals(1, snapshot.entries.size)
+    assertEquals("serendipity", snapshot.entries[0].term)
+    assertEquals("en", snapshot.entries[0].languageCode)
+    assertEquals("general", snapshot.entries[0].category)
+    assertEquals("manual", snapshot.entries[0].definitionSource)
+    assertTrue(snapshot.entries[0].tags.isEmpty())
+    assertTrue(snapshot.encountersByEntryId.isEmpty())
+  }
 }

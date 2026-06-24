@@ -12,6 +12,13 @@ import type {
   ExternalSourceUpsertData,
   Item,
   ItemEvent,
+  Opportunity,
+  OpportunityCreateData,
+  OpportunityPatch,
+  OpportunityProposal,
+  OpportunityProposalListFilters,
+  OpportunityProposalPatch,
+  OpportunityProposalUpsertData,
   Policy,
   ProviderAccount,
   ProviderAccountPatch,
@@ -38,7 +45,13 @@ import type {
   ProjectUpsertData,
   SearchMatch,
   SourceLink,
-  SourceLinkCreateData
+  SourceLinkCreateData,
+  VocabularyEncounter,
+  VocabularyEncounterCreateData,
+  VocabularyEntry,
+  VocabularyEntryCreateData,
+  VocabularyEntryListFilters,
+  VocabularyEntryPatch
 } from "@ryanos/core";
 import { isUuid, resolveUserId, type RyanDb } from "./identity.js";
 import * as schema from "./schema.js";
@@ -206,6 +219,47 @@ function shoppingCatalogItemFromRow(row: typeof schema.shoppingCatalogItems.$inf
   const deletedAt = toIso(row.deletedAt);
   if (deletedAt !== undefined) item.deletedAt = deletedAt;
   return item;
+}
+
+function vocabularyEntryFromRow(row: typeof schema.vocabularyEntries.$inferSelect): VocabularyEntry {
+  const entry: VocabularyEntry = {
+    id: row.id,
+    userId: row.userId,
+    term: row.term,
+    normalizedTerm: row.normalizedTerm,
+    languageCode: row.languageCode,
+    category: row.category,
+    tags: stringArray(row.tags),
+    definitionSource: row.definitionSource,
+    status: row.status as VocabularyEntry["status"],
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.definition !== null) entry.definition = row.definition;
+  if (row.partOfSpeech !== null) entry.partOfSpeech = row.partOfSpeech;
+  if (row.pronunciation !== null) entry.pronunciation = row.pronunciation;
+  if (row.translation !== null) entry.translation = row.translation;
+  if (row.notes !== null) entry.notes = row.notes;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) entry.deletedAt = deletedAt;
+  return entry;
+}
+
+function vocabularyEncounterFromRow(row: typeof schema.vocabularyEncounters.$inferSelect): VocabularyEncounter {
+  const encounter: VocabularyEncounter = {
+    id: row.id,
+    userId: row.userId,
+    entryId: row.entryId,
+    occurredAt: row.occurredAt.toISOString(),
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString()
+  };
+  if (row.sourceType !== null) encounter.sourceType = row.sourceType;
+  if (row.sourceTitle !== null) encounter.sourceTitle = row.sourceTitle;
+  if (row.sourceUrl !== null) encounter.sourceUrl = row.sourceUrl;
+  if (row.context !== null) encounter.context = row.context;
+  return encounter;
 }
 
 function recurrencePolicyFromRow(
@@ -418,6 +472,68 @@ function emailActionProposalFromRow(
   if (row.draftReplyText !== null) proposal.draftReplyText = row.draftReplyText;
   if (row.rationale !== null) proposal.rationale = row.rationale;
   if (row.confidence !== null) proposal.confidence = row.confidence;
+  if (row.acceptedItemId !== null) proposal.acceptedItemId = row.acceptedItemId;
+  const acceptedAt = toIso(row.acceptedAt);
+  if (acceptedAt !== undefined) proposal.acceptedAt = acceptedAt;
+  const rejectedAt = toIso(row.rejectedAt);
+  if (rejectedAt !== undefined) proposal.rejectedAt = rejectedAt;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) proposal.deletedAt = deletedAt;
+  return proposal;
+}
+
+function opportunityFromRow(row: typeof schema.opportunities.$inferSelect): Opportunity {
+  const opportunity: Opportunity = {
+    id: row.id,
+    userId: row.userId,
+    title: row.title,
+    status: row.status as Opportunity["status"],
+    fit: row.fit as Opportunity["fit"],
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.areaId !== null) opportunity.areaId = row.areaId;
+  if (row.projectId !== null) opportunity.projectId = row.projectId;
+  const dueAt = toIso(row.dueAt);
+  if (dueAt !== undefined) opportunity.dueAt = dueAt;
+  const decisionBy = toIso(row.decisionBy);
+  if (decisionBy !== undefined) opportunity.decisionBy = decisionBy;
+  if (row.valueEstimate !== null) opportunity.valueEstimate = row.valueEstimate;
+  if (row.nextActionItemId !== null) opportunity.nextActionItemId = row.nextActionItemId;
+  if (row.summary !== null) opportunity.summary = row.summary;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) opportunity.deletedAt = deletedAt;
+  return opportunity;
+}
+
+function opportunityProposalFromRow(
+  row: typeof schema.opportunityProposals.$inferSelect
+): OpportunityProposal {
+  const proposal: OpportunityProposal = {
+    id: row.id,
+    userId: row.userId,
+    sourceId: row.sourceId,
+    idempotencyKey: row.idempotencyKey,
+    status: row.status as OpportunityProposal["status"],
+    projectSlug: row.projectSlug,
+    title: row.title,
+    fit: row.fit as OpportunityProposal["fit"],
+    priority: row.priority,
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.summary !== null) proposal.summary = row.summary;
+  if (row.rating !== null) proposal.rating = row.rating;
+  const dueAt = toIso(row.dueAt);
+  if (dueAt !== undefined) proposal.dueAt = dueAt;
+  const decisionBy = toIso(row.decisionBy);
+  if (decisionBy !== undefined) proposal.decisionBy = decisionBy;
+  if (row.valueEstimate !== null) proposal.valueEstimate = row.valueEstimate;
+  if (row.recommendedAction !== null) proposal.recommendedAction = row.recommendedAction;
+  if (row.rationale !== null) proposal.rationale = row.rationale;
+  if (row.acceptedOpportunityId !== null) proposal.acceptedOpportunityId = row.acceptedOpportunityId;
   if (row.acceptedItemId !== null) proposal.acceptedItemId = row.acceptedItemId;
   const acceptedAt = toIso(row.acceptedAt);
   if (acceptedAt !== undefined) proposal.acceptedAt = acceptedAt;
@@ -1350,6 +1466,171 @@ export class PostgresRyanStore implements RyanStore {
     return emailActionProposalFromRow(row);
   }
 
+  async createOpportunity(data: OpportunityCreateData): Promise<Opportunity> {
+    const userId = await this.resolveUserId(data.userId);
+    const values: typeof schema.opportunities.$inferInsert = {
+      userId,
+      title: data.title,
+      status: data.status ?? "tracking",
+      fit: data.fit ?? "unknown",
+      metadata: data.metadata ?? {}
+    };
+    if (data.areaId !== undefined) values.areaId = data.areaId;
+    if (data.projectId !== undefined) values.projectId = data.projectId;
+    if (data.dueAt !== undefined) values.dueAt = toDate(data.dueAt);
+    if (data.decisionBy !== undefined) values.decisionBy = toDate(data.decisionBy);
+    if (data.valueEstimate !== undefined) values.valueEstimate = data.valueEstimate;
+    if (data.nextActionItemId !== undefined) values.nextActionItemId = data.nextActionItemId;
+    if (data.summary !== undefined) values.summary = data.summary;
+    const [row] = await this.db.insert(schema.opportunities).values(values).returning();
+    if (!row) throw new Error("Failed to create opportunity");
+    return opportunityFromRow(row);
+  }
+
+  async updateOpportunity(opportunityId: UUID, patch: OpportunityPatch): Promise<Opportunity> {
+    const values: Partial<typeof schema.opportunities.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.areaId !== undefined) values.areaId = patch.areaId;
+    if (patch.projectId !== undefined) values.projectId = patch.projectId;
+    if (patch.title !== undefined) values.title = patch.title;
+    if (patch.status !== undefined) values.status = patch.status;
+    if (patch.fit !== undefined) values.fit = patch.fit;
+    if (patch.dueAt !== undefined) values.dueAt = patch.dueAt === null ? null : toDate(patch.dueAt);
+    if (patch.decisionBy !== undefined) {
+      values.decisionBy = patch.decisionBy === null ? null : toDate(patch.decisionBy);
+    }
+    if (patch.valueEstimate !== undefined) values.valueEstimate = patch.valueEstimate;
+    if (patch.nextActionItemId !== undefined) values.nextActionItemId = patch.nextActionItemId;
+    if (patch.summary !== undefined) values.summary = patch.summary;
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    const [row] = await this.db
+      .update(schema.opportunities)
+      .set(values)
+      .where(eq(schema.opportunities.id, opportunityId))
+      .returning();
+    if (!row) throw new Error(`Opportunity not found: ${opportunityId}`);
+    return opportunityFromRow(row);
+  }
+
+  async getOpportunity(opportunityId: UUID): Promise<Opportunity | undefined> {
+    const row = await this.db.query.opportunities.findFirst({
+      where: eq(schema.opportunities.id, opportunityId)
+    });
+    return row ? opportunityFromRow(row) : undefined;
+  }
+
+  async upsertOpportunityProposal(data: OpportunityProposalUpsertData): Promise<OpportunityProposal> {
+    const userId = await this.resolveUserId(data.userId);
+    const existing = await this.db.query.opportunityProposals.findFirst({
+      where: and(
+        eq(schema.opportunityProposals.idempotencyKey, data.idempotencyKey),
+        isNull(schema.opportunityProposals.deletedAt)
+      )
+    });
+    const values: typeof schema.opportunityProposals.$inferInsert = {
+      userId,
+      sourceId: data.sourceId,
+      idempotencyKey: data.idempotencyKey,
+      status: data.status ?? existing?.status ?? "proposed",
+      projectSlug: data.projectSlug,
+      title: data.title,
+      summary: data.summary ?? existing?.summary ?? null,
+      rating: data.rating ?? existing?.rating ?? null,
+      fit: data.fit ?? existing?.fit ?? "unknown",
+      priority: data.priority ?? existing?.priority ?? "normal",
+      dueAt: data.dueAt !== undefined ? toDate(data.dueAt) : existing?.dueAt ?? null,
+      decisionBy: data.decisionBy !== undefined ? toDate(data.decisionBy) : existing?.decisionBy ?? null,
+      valueEstimate: data.valueEstimate ?? existing?.valueEstimate ?? null,
+      recommendedAction: data.recommendedAction ?? existing?.recommendedAction ?? null,
+      rationale: data.rationale ?? existing?.rationale ?? null,
+      acceptedOpportunityId: data.acceptedOpportunityId ?? existing?.acceptedOpportunityId ?? null,
+      acceptedItemId: data.acceptedItemId ?? existing?.acceptedItemId ?? null,
+      acceptedAt: data.acceptedAt !== undefined ? toDate(data.acceptedAt) : existing?.acceptedAt ?? null,
+      rejectedAt: data.rejectedAt !== undefined ? toDate(data.rejectedAt) : existing?.rejectedAt ?? null,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      updatedAt: new Date()
+    };
+
+    if (existing) {
+      const [row] = await this.db
+        .update(schema.opportunityProposals)
+        .set(values)
+        .where(eq(schema.opportunityProposals.id, existing.id))
+        .returning();
+      if (!row) throw new Error(`Opportunity proposal not found: ${existing.id}`);
+      return opportunityProposalFromRow(row);
+    }
+
+    const [row] = await this.db.insert(schema.opportunityProposals).values(values).returning();
+    if (!row) throw new Error("Failed to upsert opportunity proposal");
+    return opportunityProposalFromRow(row);
+  }
+
+  async listOpportunityProposals(filters: OpportunityProposalListFilters): Promise<OpportunityProposal[]> {
+    const resolvedUserId = await this.resolveUserId(filters.userId);
+    const conditions = [
+      eq(schema.opportunityProposals.userId, resolvedUserId),
+      isNull(schema.opportunityProposals.deletedAt)
+    ];
+    if (filters.status !== undefined) {
+      conditions.push(eq(schema.opportunityProposals.status, filters.status));
+    }
+    if (filters.projectSlug !== undefined) {
+      conditions.push(eq(schema.opportunityProposals.projectSlug, filters.projectSlug));
+    }
+    const rows = await this.db
+      .select()
+      .from(schema.opportunityProposals)
+      .where(and(...conditions))
+      .orderBy(desc(schema.opportunityProposals.createdAt))
+      .limit(Math.min(Math.max(filters.limit ?? 50, 1), 200));
+    return rows.map(opportunityProposalFromRow);
+  }
+
+  async getOpportunityProposal(proposalId: UUID): Promise<OpportunityProposal | undefined> {
+    const row = await this.db.query.opportunityProposals.findFirst({
+      where: eq(schema.opportunityProposals.id, proposalId)
+    });
+    return row ? opportunityProposalFromRow(row) : undefined;
+  }
+
+  async updateOpportunityProposal(proposalId: UUID, patch: OpportunityProposalPatch): Promise<OpportunityProposal> {
+    const values: Partial<typeof schema.opportunityProposals.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.status !== undefined) values.status = patch.status;
+    if (patch.projectSlug !== undefined) values.projectSlug = patch.projectSlug;
+    if (patch.title !== undefined) values.title = patch.title;
+    if (patch.summary !== undefined) values.summary = patch.summary;
+    if (patch.rating !== undefined) values.rating = patch.rating;
+    if (patch.fit !== undefined) values.fit = patch.fit;
+    if (patch.priority !== undefined) values.priority = patch.priority;
+    if (patch.dueAt !== undefined) values.dueAt = patch.dueAt === null ? null : toDate(patch.dueAt);
+    if (patch.decisionBy !== undefined) {
+      values.decisionBy = patch.decisionBy === null ? null : toDate(patch.decisionBy);
+    }
+    if (patch.valueEstimate !== undefined) values.valueEstimate = patch.valueEstimate;
+    if (patch.recommendedAction !== undefined) values.recommendedAction = patch.recommendedAction;
+    if (patch.rationale !== undefined) values.rationale = patch.rationale;
+    if (patch.acceptedOpportunityId !== undefined) values.acceptedOpportunityId = patch.acceptedOpportunityId;
+    if (patch.acceptedItemId !== undefined) values.acceptedItemId = patch.acceptedItemId;
+    if (patch.acceptedAt !== undefined) {
+      values.acceptedAt = patch.acceptedAt === null ? null : toDate(patch.acceptedAt);
+    }
+    if (patch.rejectedAt !== undefined) {
+      values.rejectedAt = patch.rejectedAt === null ? null : toDate(patch.rejectedAt);
+    }
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    const [row] = await this.db
+      .update(schema.opportunityProposals)
+      .set(values)
+      .where(eq(schema.opportunityProposals.id, proposalId))
+      .returning();
+    if (!row) throw new Error(`Opportunity proposal not found: ${proposalId}`);
+    return opportunityProposalFromRow(row);
+  }
+
   async getDefaultShoppingList(userId: UUID): Promise<ShoppingList> {
     const resolvedUserId = await this.resolveUserId(userId);
     const existing = await this.db.query.shoppingLists.findFirst({
@@ -1515,6 +1796,159 @@ export class PostgresRyanStore implements RyanStore {
     return rows.map(shoppingCatalogItemFromRow);
   }
 
+  async createVocabularyEntry(data: VocabularyEntryCreateData): Promise<VocabularyEntry> {
+    const userId = await this.resolveUserId(data.userId);
+    const values: typeof schema.vocabularyEntries.$inferInsert = {
+      userId,
+      term: data.term,
+      normalizedTerm: data.normalizedTerm,
+      languageCode: data.languageCode ?? "en",
+      category: data.category ?? "general",
+      tags: data.tags ?? [],
+      definitionSource: data.definitionSource ?? "manual",
+      status: data.status ?? "active",
+      metadata: data.metadata ?? {}
+    };
+    if (data.definition !== undefined) values.definition = data.definition;
+    if (data.partOfSpeech !== undefined) values.partOfSpeech = data.partOfSpeech;
+    if (data.pronunciation !== undefined) values.pronunciation = data.pronunciation;
+    if (data.translation !== undefined) values.translation = data.translation;
+    if (data.notes !== undefined) values.notes = data.notes;
+    const [row] = await this.db.insert(schema.vocabularyEntries).values(values).returning();
+    if (!row) throw new Error("Failed to create vocabulary entry");
+    return vocabularyEntryFromRow(row);
+  }
+
+  async updateVocabularyEntry(entryId: UUID, patch: VocabularyEntryPatch): Promise<VocabularyEntry> {
+    const values: Partial<typeof schema.vocabularyEntries.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.term !== undefined) values.term = patch.term;
+    if (patch.normalizedTerm !== undefined) values.normalizedTerm = patch.normalizedTerm;
+    if (patch.languageCode !== undefined) values.languageCode = patch.languageCode;
+    if (patch.category !== undefined) values.category = patch.category;
+    if (patch.definition !== undefined) values.definition = patch.definition;
+    if (patch.partOfSpeech !== undefined) values.partOfSpeech = patch.partOfSpeech;
+    if (patch.pronunciation !== undefined) values.pronunciation = patch.pronunciation;
+    if (patch.translation !== undefined) values.translation = patch.translation;
+    if (patch.notes !== undefined) values.notes = patch.notes;
+    if (patch.tags !== undefined) values.tags = patch.tags;
+    if (patch.definitionSource !== undefined) values.definitionSource = patch.definitionSource;
+    if (patch.status !== undefined) values.status = patch.status;
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    if (patch.deletedAt !== undefined) {
+      values.deletedAt = patch.deletedAt === null ? null : toDate(patch.deletedAt);
+    }
+    const [row] = await this.db
+      .update(schema.vocabularyEntries)
+      .set(values)
+      .where(eq(schema.vocabularyEntries.id, entryId))
+      .returning();
+    if (!row) throw new Error(`Vocabulary entry not found: ${entryId}`);
+    return vocabularyEntryFromRow(row);
+  }
+
+  async listVocabularyEntries(filters: VocabularyEntryListFilters): Promise<VocabularyEntry[]> {
+    const resolvedUserId = await this.resolveUserId(filters.userId);
+    const conditions = [
+      eq(schema.vocabularyEntries.userId, resolvedUserId),
+      isNull(schema.vocabularyEntries.deletedAt)
+    ];
+    if (filters.status !== undefined) {
+      conditions.push(eq(schema.vocabularyEntries.status, filters.status));
+    }
+    if (filters.category !== undefined) {
+      conditions.push(eq(schema.vocabularyEntries.category, filters.category));
+    }
+    if (filters.languageCode !== undefined) {
+      conditions.push(eq(schema.vocabularyEntries.languageCode, filters.languageCode));
+    }
+    if (filters.query !== undefined && filters.query.trim().length > 0) {
+      const pattern = `%${filters.query.trim()}%`;
+      conditions.push(
+        or(
+          ilike(schema.vocabularyEntries.term, pattern),
+          ilike(schema.vocabularyEntries.definition, pattern),
+          ilike(schema.vocabularyEntries.translation, pattern),
+          ilike(schema.vocabularyEntries.notes, pattern),
+          sql`${schema.vocabularyEntries.tags}::text ilike ${pattern}`
+        )!
+      );
+    }
+    if (filters.tag !== undefined && filters.tag.trim().length > 0) {
+      const tag = filters.tag.trim().toLowerCase();
+      conditions.push(sql`exists (
+        select 1
+        from jsonb_array_elements_text(${schema.vocabularyEntries.tags}) as tag_value(value)
+        where lower(tag_value.value) = ${tag}
+      )`);
+    }
+
+    const rows = await this.db
+      .select()
+      .from(schema.vocabularyEntries)
+      .where(and(...conditions))
+      .orderBy(desc(schema.vocabularyEntries.updatedAt))
+      .limit(Math.min(Math.max(filters.limit ?? 50, 1), 100));
+    return rows.map(vocabularyEntryFromRow);
+  }
+
+  async getVocabularyEntry(entryId: UUID): Promise<VocabularyEntry | undefined> {
+    const row = await this.db.query.vocabularyEntries.findFirst({
+      where: eq(schema.vocabularyEntries.id, entryId)
+    });
+    return row ? vocabularyEntryFromRow(row) : undefined;
+  }
+
+  async findVocabularyEntry(
+    userId: UUID,
+    languageCode: string,
+    normalizedTerm: string
+  ): Promise<VocabularyEntry | undefined> {
+    const resolvedUserId = await this.resolveUserId(userId);
+    const row = await this.db.query.vocabularyEntries.findFirst({
+      where: and(
+        eq(schema.vocabularyEntries.userId, resolvedUserId),
+        eq(schema.vocabularyEntries.languageCode, languageCode),
+        eq(schema.vocabularyEntries.normalizedTerm, normalizedTerm),
+        isNull(schema.vocabularyEntries.deletedAt)
+      )
+    });
+    return row ? vocabularyEntryFromRow(row) : undefined;
+  }
+
+  async addVocabularyEncounter(data: VocabularyEncounterCreateData): Promise<VocabularyEncounter> {
+    const userId = await this.resolveUserId(data.userId);
+    const values: typeof schema.vocabularyEncounters.$inferInsert = {
+      userId,
+      entryId: data.entryId,
+      occurredAt: toDate(data.occurredAt) ?? new Date(),
+      metadata: data.metadata ?? {}
+    };
+    if (data.sourceType !== undefined) values.sourceType = data.sourceType;
+    if (data.sourceTitle !== undefined) values.sourceTitle = data.sourceTitle;
+    if (data.sourceUrl !== undefined) values.sourceUrl = data.sourceUrl;
+    if (data.context !== undefined) values.context = data.context;
+    const [row] = await this.db.insert(schema.vocabularyEncounters).values(values).returning();
+    if (!row) throw new Error("Failed to create vocabulary encounter");
+    return vocabularyEncounterFromRow(row);
+  }
+
+  async listVocabularyEncounters(filters: { userId: UUID; entryId?: UUID; limit?: number }): Promise<VocabularyEncounter[]> {
+    const resolvedUserId = await this.resolveUserId(filters.userId);
+    const conditions = [eq(schema.vocabularyEncounters.userId, resolvedUserId)];
+    if (filters.entryId !== undefined) {
+      conditions.push(eq(schema.vocabularyEncounters.entryId, filters.entryId));
+    }
+    const rows = await this.db
+      .select()
+      .from(schema.vocabularyEncounters)
+      .where(and(...conditions))
+      .orderBy(desc(schema.vocabularyEncounters.occurredAt))
+      .limit(Math.min(Math.max(filters.limit ?? 100, 1), 200));
+    return rows.map(vocabularyEncounterFromRow);
+  }
+
   async addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog> {
     const userId = await this.resolveUserId(log.userId);
     const values: typeof schema.auditLogs.$inferInsert = {
@@ -1558,6 +1992,18 @@ export class PostgresRyanStore implements RyanStore {
     const [emailActionProposalCount] = await this.db
       .select({ value: count() })
       .from(schema.emailActionProposals);
+    const [opportunityCount] = await this.db
+      .select({ value: count() })
+      .from(schema.opportunities);
+    const [opportunityProposalCount] = await this.db
+      .select({ value: count() })
+      .from(schema.opportunityProposals);
+    const [vocabularyEntryCount] = await this.db
+      .select({ value: count() })
+      .from(schema.vocabularyEntries);
+    const [vocabularyEncounterCount] = await this.db
+      .select({ value: count() })
+      .from(schema.vocabularyEncounters);
 
     return {
       storeType: "postgres",
@@ -1572,7 +2018,11 @@ export class PostgresRyanStore implements RyanStore {
       policyCount: policyCount?.value ?? 0,
       providerAccountCount: providerAccountCount?.value ?? 0,
       externalSourceCount: externalSourceCount?.value ?? 0,
-      emailActionProposalCount: emailActionProposalCount?.value ?? 0
+      emailActionProposalCount: emailActionProposalCount?.value ?? 0,
+      opportunityCount: opportunityCount?.value ?? 0,
+      opportunityProposalCount: opportunityProposalCount?.value ?? 0,
+      vocabularyEntryCount: vocabularyEntryCount?.value ?? 0,
+      vocabularyEncounterCount: vocabularyEncounterCount?.value ?? 0
     };
   }
 }

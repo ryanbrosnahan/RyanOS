@@ -2,9 +2,9 @@ import { ToolRegistry, toolEnvelopeSchema } from "@ryanos/ai";
 import { addDaysIso, nowIso } from "@ryanos/shared";
 import { z } from "zod";
 import { calculateRecurrenceState, isBeforeMinimumInterval } from "./recurrence.js";
-import type { ItemCreateData, ItemPatch, RyanStore } from "./store.js";
+import type { ItemCreateData, ItemPatch, RyanStore, VocabularyEntryPatch } from "./store.js";
 import type { JsonObject, UUID } from "@ryanos/shared";
-import type { Area, Project, ShoppingCatalogItem, ShoppingListItem } from "./types.js";
+import type { Area, Project, ShoppingCatalogItem, ShoppingListItem, VocabularyEntry } from "./types.js";
 
 const userIdSchema = z.string().min(1).default("local-owner");
 const dateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -17,6 +17,17 @@ const shoppingCategories = [
 ] as const;
 const shoppingCategorySchema = z.enum(shoppingCategories);
 type ShoppingCategory = (typeof shoppingCategories)[number];
+const vocabularyCategories = [
+  "general",
+  "medical",
+  "language",
+  "technical",
+  "slang",
+  "proper_noun",
+  "other"
+] as const;
+const vocabularyCategorySchema = z.enum(vocabularyCategories);
+type VocabularyCategory = (typeof vocabularyCategories)[number];
 const recurrenceTypeSchema = z.preprocess(
   (value) => (value === "interval" ? "completion_based" : value),
   z.enum(["completion_based", "fixed_schedule", "minimum_interval", "target_frequency", "opportunistic"])
@@ -71,6 +82,179 @@ function shoppingLingerAfter(hours: number): string {
 function shoppingListReference(value: string | undefined): boolean {
   if (value === undefined) return false;
   return new Set(["shopping", "shopping list", "grocery", "grocery list", "groceries"]).has(cleanLabel(value));
+}
+
+function normalizeVocabularyTerm(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFKC")
+    .replace(/\s+/g, " ");
+}
+
+function normalizeLanguageCode(value: string | undefined): string {
+  const normalized = (value ?? "en").trim().toLowerCase().replace("_", "-");
+  return normalized.length > 0 ? normalized : "en";
+}
+
+function vocabularyReference(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return new Set([
+    "vocabulary",
+    "vocab",
+    "dictionary",
+    "word list",
+    "words",
+    "words to learn",
+    "terms"
+  ]).has(cleanLabel(value));
+}
+
+function vocabularyRequestText(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const text = cleanLabel(value);
+  return (
+    /\b(add|save|store|put|record)\b.*\b(vocabulary|vocab|dictionary|word list)\b/.test(text) ||
+    /\b(define|look up|lookup)\b.*\b(word|term|vocabulary|vocab|dictionary)\b/.test(text) ||
+    /\b(save|add|store|record) (this )?(word|term)\b/.test(text)
+  );
+}
+
+function inferVocabularyCategory(input: {
+  term: string;
+  languageCode?: string | undefined;
+  category?: VocabularyCategory | undefined;
+  context?: string | undefined;
+  tags?: string[] | undefined;
+}): VocabularyCategory {
+  if (input.category !== undefined) return input.category;
+  const languageCode = normalizeLanguageCode(input.languageCode);
+  if (languageCode !== "en") return "language";
+  const text = normalizeVocabularyTerm(`${input.term} ${input.context ?? ""} ${(input.tags ?? []).join(" ")}`);
+  if (/\b(spanish|french|german|italian|foreign|translation|translate|language)\b/.test(text)) return "language";
+  if (/\b(medical|medicine|clinical|doctor|diagnosis|symptom|disease|agonist|receptor|drug|dose|anatomy)\b/.test(text)) return "medical";
+  if (/\b(api|code|database|protocol|algorithm|technical|software|hardware|server)\b/.test(text)) return "technical";
+  if (/\b(slang|idiom|colloquial)\b/.test(text)) return "slang";
+  if (/^[A-Z][\p{L}'-]+(?:\s+[A-Z][\p{L}'-]+)+$/u.test(input.term.trim())) return "proper_noun";
+  return "general";
+}
+
+function cleanVocabularyTags(tags: string[] | undefined): string[] {
+  return [...new Set((tags ?? []).map((tag) => tag.trim().toLowerCase()).filter(Boolean))].slice(0, 20);
+}
+
+function mergeVocabularyTags(a: string[], b: string[]): string[] {
+  return cleanVocabularyTags([...a, ...b]);
+}
+
+async function upsertVocabularyEntry(
+  store: RyanStore,
+  input: {
+    userId: string;
+    term: string;
+    languageCode?: string | undefined;
+    category?: VocabularyCategory | undefined;
+    definition?: string | undefined;
+    partOfSpeech?: string | undefined;
+    pronunciation?: string | undefined;
+    translation?: string | undefined;
+    notes?: string | undefined;
+    tags?: string[] | undefined;
+    definitionSource?: string | undefined;
+    sourceType?: string | undefined;
+    sourceTitle?: string | undefined;
+    sourceUrl?: string | undefined;
+    context?: string | undefined;
+    occurredAt?: string | undefined;
+    metadata?: Record<string, unknown> | undefined;
+  }
+): Promise<{ entry: VocabularyEntry; encounterId?: string | undefined; merged: boolean }> {
+  const term = input.term.trim();
+  const languageCode = normalizeLanguageCode(input.languageCode);
+  const normalizedTerm = normalizeVocabularyTerm(term);
+  const tags = cleanVocabularyTags(input.tags);
+  const category = inferVocabularyCategory({
+    term,
+    languageCode,
+    category: input.category,
+    context: input.context,
+    tags
+  });
+  const existing = await store.findVocabularyEntry(input.userId, languageCode, normalizedTerm);
+  let entry: VocabularyEntry;
+  let merged = false;
+  if (existing !== undefined) {
+    const patch: VocabularyEntryPatch = {
+      term,
+      category,
+      tags: mergeVocabularyTags(existing.tags, tags),
+      status: "active",
+      metadata: asJsonObject({
+        ...existing.metadata,
+        ...input.metadata,
+        lastQuickAddAt: nowIso()
+      })
+    };
+    if ((existing.definition ?? "").trim().length === 0 && input.definition !== undefined) {
+      patch.definition = input.definition;
+      patch.definitionSource = input.definitionSource ?? "ai_draft";
+    }
+    if ((existing.partOfSpeech ?? "").trim().length === 0 && input.partOfSpeech !== undefined) {
+      patch.partOfSpeech = input.partOfSpeech;
+    }
+    if ((existing.pronunciation ?? "").trim().length === 0 && input.pronunciation !== undefined) {
+      patch.pronunciation = input.pronunciation;
+    }
+    if ((existing.translation ?? "").trim().length === 0 && input.translation !== undefined) {
+      patch.translation = input.translation;
+    }
+    if (input.notes !== undefined && input.notes.trim().length > 0) {
+      patch.notes = [existing.notes, input.notes].filter(Boolean).join("\n");
+    }
+    entry = await store.updateVocabularyEntry(existing.id, patch);
+    merged = true;
+  } else {
+    const createData: Parameters<RyanStore["createVocabularyEntry"]>[0] = {
+      userId: input.userId,
+      term,
+      normalizedTerm,
+      languageCode,
+      category,
+      tags,
+      definitionSource: input.definitionSource ?? (input.definition ? "ai_draft" : "manual"),
+      status: "active",
+      metadata: asJsonObject({
+        ...input.metadata,
+        firstQuickAddAt: nowIso()
+      })
+    };
+    if (input.definition !== undefined) createData.definition = input.definition;
+    if (input.partOfSpeech !== undefined) createData.partOfSpeech = input.partOfSpeech;
+    if (input.pronunciation !== undefined) createData.pronunciation = input.pronunciation;
+    if (input.translation !== undefined) createData.translation = input.translation;
+    if (input.notes !== undefined) createData.notes = input.notes;
+    entry = await store.createVocabularyEntry(createData);
+  }
+
+  const hasEncounter =
+    input.sourceType !== undefined ||
+    input.sourceTitle !== undefined ||
+    input.sourceUrl !== undefined ||
+    input.context !== undefined ||
+    input.occurredAt !== undefined;
+  if (!hasEncounter) return { entry, merged };
+  const encounterData: Parameters<RyanStore["addVocabularyEncounter"]>[0] = {
+    userId: input.userId,
+    entryId: entry.id,
+    metadata: {}
+  };
+  if (input.sourceType !== undefined) encounterData.sourceType = input.sourceType;
+  if (input.sourceTitle !== undefined) encounterData.sourceTitle = input.sourceTitle;
+  if (input.sourceUrl !== undefined) encounterData.sourceUrl = input.sourceUrl;
+  if (input.context !== undefined) encounterData.context = input.context;
+  if (input.occurredAt !== undefined) encounterData.occurredAt = input.occurredAt;
+  const encounter = await store.addVocabularyEncounter(encounterData);
+  return { entry, encounterId: encounter.id, merged };
 }
 
 const areaVisualDefaults: Record<string, { icon: string; color: string }> = {
@@ -457,13 +641,13 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
 
   registry.register({
     name: "daily_plan.upsert",
-    description: "Create or update the user's daily focus plan and selected priority items.",
+    description: "Create or update daily focus suggestion history and candidate priority items.",
     metadata: {
       sideEffect: "state_write",
       confirmation: "not_required",
       retrySafety: "safe_with_idempotency_key",
       descriptionForModel:
-        "Use to save the answer to the daily focus question and choose one to three items that would make the day successful. Prefer a mix of one easy win, one medium task, and one important larger item when available."
+        "Use to store suggested item candidates for starring. Active focus is controlled by item.star; do not generate a daily check-in prompt."
     },
     inputSchema: toolEnvelopeSchema.extend({
       userId: userIdSchema,
@@ -545,6 +729,17 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
         return {
           status: "rejected",
           messageForUser: "That sounds like a shopping-list request. Use shopping.addItems so it goes on the shopping list, not the task list."
+        };
+      }
+      if (
+        vocabularyReference(input.areaRef) ||
+        vocabularyReference(input.projectRef) ||
+        vocabularyRequestText(input.title) ||
+        vocabularyRequestText(input.body)
+      ) {
+        return {
+          status: "rejected",
+          messageForUser: "That sounds like a vocabulary request. Use vocabulary.addEntries so it goes in the dictionary, not the task list."
         };
       }
 
@@ -671,6 +866,92 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
         data: { list, items },
         auditId: auditLog.id,
         messageForUser: `Added to shopping list: ${names}.`
+      };
+    }
+  });
+
+  registry.register({
+    name: "vocabulary.addEntries",
+    description: "Save one or more unfamiliar words, phrases, medical terms, technical terms, slang terms, or foreign-language words to the user's editable vocabulary dictionary.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "not_required",
+      retrySafety: "safe_with_idempotency_key",
+      descriptionForModel:
+        "Use this whenever the user says save/add/define a word or term, add to vocabulary, add to dictionary, or mentions a foreign-language word to learn. Draft a brief editable definition when you can. Do not use item.create for vocabulary or dictionary requests."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      entries: z.array(
+        z.object({
+          term: z.string().trim().min(1),
+          languageCode: z.string().trim().min(1).default("en"),
+          category: vocabularyCategorySchema.optional(),
+          definition: z.string().trim().min(1).optional(),
+          partOfSpeech: z.string().trim().min(1).optional(),
+          pronunciation: z.string().trim().min(1).optional(),
+          translation: z.string().trim().min(1).optional(),
+          notes: z.string().trim().min(1).optional(),
+          tags: z.array(z.string().trim().min(1)).default([]),
+          sourceType: z.string().trim().min(1).optional(),
+          sourceTitle: z.string().trim().min(1).optional(),
+          sourceUrl: z.string().trim().min(1).optional(),
+          context: z.string().trim().min(1).optional(),
+          occurredAt: z.string().trim().min(1).optional()
+        })
+      ).min(1).max(20),
+      source: z.string().trim().min(1).default("chat")
+    }),
+    handler: async (input) => {
+      const results: Array<{ entry: VocabularyEntry; encounterId?: string | undefined; merged: boolean }> = [];
+      for (const entryInput of input.entries) {
+        results.push(
+          await upsertVocabularyEntry(store, {
+            userId: input.userId,
+            term: entryInput.term,
+            languageCode: entryInput.languageCode,
+            category: entryInput.category,
+            definition: entryInput.definition,
+            partOfSpeech: entryInput.partOfSpeech,
+            pronunciation: entryInput.pronunciation,
+            translation: entryInput.translation,
+            notes: entryInput.notes,
+            tags: entryInput.tags,
+            definitionSource: entryInput.definition ? "ai_draft" : "manual",
+            sourceType: entryInput.sourceType ?? input.source,
+            sourceTitle: entryInput.sourceTitle,
+            sourceUrl: entryInput.sourceUrl,
+            context: entryInput.context,
+            occurredAt: entryInput.occurredAt,
+            metadata: {
+              source: input.source
+            }
+          })
+        );
+      }
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "vocabulary.addEntries",
+        toolName: "vocabulary.addEntries",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: {
+          entryIds: results.map((result) => result.entry.id),
+          terms: results.map((result) => result.entry.term),
+          mergedCount: results.filter((result) => result.merged).length
+        }
+      });
+      const names = results.map((result) => result.entry.term).join(", ");
+      return {
+        status: "applied",
+        data: {
+          entries: results.map((result) => result.entry),
+          encounterIds: results
+            .map((result) => result.encounterId)
+            .filter((id): id is string => id !== undefined)
+        },
+        auditId: auditLog.id,
+        messageForUser: `Saved to vocabulary: ${names}.`
       };
     }
   });

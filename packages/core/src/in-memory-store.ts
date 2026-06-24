@@ -10,6 +10,11 @@ import type {
   ItemCreateData,
   ItemListFilters,
   ItemPatch,
+  OpportunityCreateData,
+  OpportunityPatch,
+  OpportunityProposalListFilters,
+  OpportunityProposalPatch,
+  OpportunityProposalUpsertData,
   PolicyUpsertData,
   ProviderAccountPatch,
   ProviderAccountUpsertData,
@@ -20,7 +25,11 @@ import type {
   ShoppingCatalogUpsertData,
   ShoppingItemCreateData,
   ShoppingItemListFilters,
-  ShoppingItemPatch
+  ShoppingItemPatch,
+  VocabularyEncounterCreateData,
+  VocabularyEntryCreateData,
+  VocabularyEntryListFilters,
+  VocabularyEntryPatch
 } from "./store.js";
 import type {
   AuditLog,
@@ -30,6 +39,8 @@ import type {
   ExternalSource,
   Item,
   ItemEvent,
+  Opportunity,
+  OpportunityProposal,
   Policy,
   ProviderAccount,
   Project,
@@ -39,7 +50,9 @@ import type {
   ShoppingCatalogItem,
   ShoppingList,
   ShoppingListItem,
-  SourceLink
+  SourceLink,
+  VocabularyEncounter,
+  VocabularyEntry
 } from "./types.js";
 
 function cleanQuery(value: string): string {
@@ -60,9 +73,13 @@ export class InMemoryRyanStore implements RyanStore {
   readonly externalSources = new Map<UUID, ExternalSource>();
   readonly sourceLinks: SourceLink[] = [];
   readonly emailActionProposals = new Map<UUID, EmailActionProposal>();
+  readonly opportunities = new Map<UUID, Opportunity>();
+  readonly opportunityProposals = new Map<UUID, OpportunityProposal>();
   readonly shoppingLists = new Map<UUID, ShoppingList>();
   readonly shoppingListItems = new Map<UUID, ShoppingListItem>();
   readonly shoppingCatalogItems = new Map<UUID, ShoppingCatalogItem>();
+  readonly vocabularyEntries = new Map<UUID, VocabularyEntry>();
+  readonly vocabularyEncounters: VocabularyEncounter[] = [];
   readonly auditLogs: AuditLog[] = [];
 
   async upsertArea(data: AreaUpsertData): Promise<Area> {
@@ -681,6 +698,168 @@ export class InMemoryRyanStore implements RyanStore {
     return updated;
   }
 
+  async createOpportunity(data: OpportunityCreateData): Promise<Opportunity> {
+    const timestamp = nowIso();
+    const opportunity: Opportunity = {
+      id: createId("opportunity"),
+      userId: data.userId,
+      title: data.title,
+      status: data.status ?? "tracking",
+      fit: data.fit ?? "unknown",
+      metadata: data.metadata ?? {},
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    if (data.areaId !== undefined) opportunity.areaId = data.areaId;
+    if (data.projectId !== undefined) opportunity.projectId = data.projectId;
+    if (data.dueAt !== undefined) opportunity.dueAt = data.dueAt;
+    if (data.decisionBy !== undefined) opportunity.decisionBy = data.decisionBy;
+    if (data.valueEstimate !== undefined) opportunity.valueEstimate = data.valueEstimate;
+    if (data.nextActionItemId !== undefined) opportunity.nextActionItemId = data.nextActionItemId;
+    if (data.summary !== undefined) opportunity.summary = data.summary;
+    this.opportunities.set(opportunity.id, opportunity);
+    return opportunity;
+  }
+
+  async updateOpportunity(opportunityId: UUID, patch: OpportunityPatch): Promise<Opportunity> {
+    const existing = this.opportunities.get(opportunityId);
+    if (!existing) throw new Error(`Opportunity not found: ${opportunityId}`);
+    const updated: Opportunity = {
+      ...existing,
+      updatedAt: nowIso()
+    };
+    if (patch.areaId !== undefined) {
+      if (patch.areaId === null) delete updated.areaId;
+      else updated.areaId = patch.areaId;
+    }
+    if (patch.projectId !== undefined) {
+      if (patch.projectId === null) delete updated.projectId;
+      else updated.projectId = patch.projectId;
+    }
+    if (patch.title !== undefined) updated.title = patch.title;
+    if (patch.status !== undefined) updated.status = patch.status;
+    if (patch.fit !== undefined) updated.fit = patch.fit;
+    if (patch.dueAt !== undefined) {
+      if (patch.dueAt === null) delete updated.dueAt;
+      else updated.dueAt = patch.dueAt;
+    }
+    if (patch.decisionBy !== undefined) {
+      if (patch.decisionBy === null) delete updated.decisionBy;
+      else updated.decisionBy = patch.decisionBy;
+    }
+    if (patch.valueEstimate !== undefined) updated.valueEstimate = patch.valueEstimate;
+    if (patch.nextActionItemId !== undefined) updated.nextActionItemId = patch.nextActionItemId;
+    if (patch.summary !== undefined) updated.summary = patch.summary;
+    if (patch.metadata !== undefined) updated.metadata = patch.metadata;
+    this.opportunities.set(opportunityId, updated);
+    return updated;
+  }
+
+  async getOpportunity(opportunityId: UUID): Promise<Opportunity | undefined> {
+    return this.opportunities.get(opportunityId);
+  }
+
+  async upsertOpportunityProposal(data: OpportunityProposalUpsertData): Promise<OpportunityProposal> {
+    const timestamp = nowIso();
+    const existing = [...this.opportunityProposals.values()].find(
+      (proposal) => proposal.idempotencyKey === data.idempotencyKey && !proposal.deletedAt
+    );
+    const proposal: OpportunityProposal = {
+      ...existing,
+      id: existing?.id ?? createId("opportunity_proposal"),
+      userId: data.userId,
+      sourceId: data.sourceId,
+      idempotencyKey: data.idempotencyKey,
+      status: data.status ?? existing?.status ?? "proposed",
+      projectSlug: data.projectSlug,
+      title: data.title,
+      fit: data.fit ?? existing?.fit ?? "unknown",
+      priority: data.priority ?? existing?.priority ?? "normal",
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    if (data.summary !== undefined) proposal.summary = data.summary;
+    else if (existing?.summary !== undefined) proposal.summary = existing.summary;
+    if (data.rating !== undefined) proposal.rating = data.rating;
+    else if (existing?.rating !== undefined) proposal.rating = existing.rating;
+    if (data.dueAt !== undefined) proposal.dueAt = data.dueAt;
+    else if (existing?.dueAt !== undefined) proposal.dueAt = existing.dueAt;
+    if (data.decisionBy !== undefined) proposal.decisionBy = data.decisionBy;
+    else if (existing?.decisionBy !== undefined) proposal.decisionBy = existing.decisionBy;
+    if (data.valueEstimate !== undefined) proposal.valueEstimate = data.valueEstimate;
+    else if (existing?.valueEstimate !== undefined) proposal.valueEstimate = existing.valueEstimate;
+    if (data.recommendedAction !== undefined) proposal.recommendedAction = data.recommendedAction;
+    else if (existing?.recommendedAction !== undefined) proposal.recommendedAction = existing.recommendedAction;
+    if (data.rationale !== undefined) proposal.rationale = data.rationale;
+    else if (existing?.rationale !== undefined) proposal.rationale = existing.rationale;
+    if (data.acceptedOpportunityId !== undefined) proposal.acceptedOpportunityId = data.acceptedOpportunityId;
+    else if (existing?.acceptedOpportunityId !== undefined) proposal.acceptedOpportunityId = existing.acceptedOpportunityId;
+    if (data.acceptedItemId !== undefined) proposal.acceptedItemId = data.acceptedItemId;
+    else if (existing?.acceptedItemId !== undefined) proposal.acceptedItemId = existing.acceptedItemId;
+    if (data.acceptedAt !== undefined) proposal.acceptedAt = data.acceptedAt;
+    else if (existing?.acceptedAt !== undefined) proposal.acceptedAt = existing.acceptedAt;
+    if (data.rejectedAt !== undefined) proposal.rejectedAt = data.rejectedAt;
+    else if (existing?.rejectedAt !== undefined) proposal.rejectedAt = existing.rejectedAt;
+    this.opportunityProposals.set(proposal.id, proposal);
+    return proposal;
+  }
+
+  async listOpportunityProposals(filters: OpportunityProposalListFilters): Promise<OpportunityProposal[]> {
+    return [...this.opportunityProposals.values()]
+      .filter((proposal) => {
+        if (proposal.userId !== filters.userId || proposal.deletedAt) return false;
+        if (filters.status !== undefined && proposal.status !== filters.status) return false;
+        return filters.projectSlug === undefined || proposal.projectSlug === filters.projectSlug;
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, Math.min(Math.max(filters.limit ?? 50, 1), 200));
+  }
+
+  async getOpportunityProposal(proposalId: UUID): Promise<OpportunityProposal | undefined> {
+    return this.opportunityProposals.get(proposalId);
+  }
+
+  async updateOpportunityProposal(proposalId: UUID, patch: OpportunityProposalPatch): Promise<OpportunityProposal> {
+    const existing = this.opportunityProposals.get(proposalId);
+    if (!existing) throw new Error(`Opportunity proposal not found: ${proposalId}`);
+    const updated: OpportunityProposal = {
+      ...existing,
+      updatedAt: nowIso()
+    };
+    if (patch.status !== undefined) updated.status = patch.status;
+    if (patch.projectSlug !== undefined) updated.projectSlug = patch.projectSlug;
+    if (patch.title !== undefined) updated.title = patch.title;
+    if (patch.summary !== undefined) updated.summary = patch.summary;
+    if (patch.rating !== undefined) updated.rating = patch.rating;
+    if (patch.fit !== undefined) updated.fit = patch.fit;
+    if (patch.priority !== undefined) updated.priority = patch.priority;
+    if (patch.valueEstimate !== undefined) updated.valueEstimate = patch.valueEstimate;
+    if (patch.recommendedAction !== undefined) updated.recommendedAction = patch.recommendedAction;
+    if (patch.rationale !== undefined) updated.rationale = patch.rationale;
+    if (patch.acceptedOpportunityId !== undefined) updated.acceptedOpportunityId = patch.acceptedOpportunityId;
+    if (patch.acceptedItemId !== undefined) updated.acceptedItemId = patch.acceptedItemId;
+    if (patch.metadata !== undefined) updated.metadata = patch.metadata;
+    if (patch.dueAt !== undefined) {
+      if (patch.dueAt === null) delete updated.dueAt;
+      else updated.dueAt = patch.dueAt;
+    }
+    if (patch.decisionBy !== undefined) {
+      if (patch.decisionBy === null) delete updated.decisionBy;
+      else updated.decisionBy = patch.decisionBy;
+    }
+    if (patch.acceptedAt !== undefined) {
+      if (patch.acceptedAt === null) delete updated.acceptedAt;
+      else updated.acceptedAt = patch.acceptedAt;
+    }
+    if (patch.rejectedAt !== undefined) {
+      if (patch.rejectedAt === null) delete updated.rejectedAt;
+      else updated.rejectedAt = patch.rejectedAt;
+    }
+    this.opportunityProposals.set(proposalId, updated);
+    return updated;
+  }
+
   async getDefaultShoppingList(userId: UUID): Promise<ShoppingList> {
     const existing = [...this.shoppingLists.values()].find(
       (list) => list.userId === userId && cleanQuery(list.name) === "shopping" && !list.deletedAt
@@ -816,6 +995,128 @@ export class InMemoryRyanStore implements RyanStore {
       .slice(0, Math.min(Math.max(filters.limit ?? 50, 1), 100));
   }
 
+  async createVocabularyEntry(data: VocabularyEntryCreateData): Promise<VocabularyEntry> {
+    const timestamp = nowIso();
+    const entry: VocabularyEntry = {
+      id: createId("vocabulary_entry"),
+      userId: data.userId,
+      term: data.term,
+      normalizedTerm: data.normalizedTerm,
+      languageCode: data.languageCode ?? "en",
+      category: data.category ?? "general",
+      tags: [...new Set(data.tags ?? [])],
+      definitionSource: data.definitionSource ?? "manual",
+      status: data.status ?? "active",
+      metadata: data.metadata ?? {},
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    if (data.definition !== undefined) entry.definition = data.definition;
+    if (data.partOfSpeech !== undefined) entry.partOfSpeech = data.partOfSpeech;
+    if (data.pronunciation !== undefined) entry.pronunciation = data.pronunciation;
+    if (data.translation !== undefined) entry.translation = data.translation;
+    if (data.notes !== undefined) entry.notes = data.notes;
+    this.vocabularyEntries.set(entry.id, entry);
+    return entry;
+  }
+
+  async updateVocabularyEntry(entryId: UUID, patch: VocabularyEntryPatch): Promise<VocabularyEntry> {
+    const existing = this.vocabularyEntries.get(entryId);
+    if (!existing) throw new Error(`Vocabulary entry not found: ${entryId}`);
+    const updated: VocabularyEntry = {
+      ...existing,
+      updatedAt: nowIso()
+    };
+    if (patch.term !== undefined) updated.term = patch.term;
+    if (patch.normalizedTerm !== undefined) updated.normalizedTerm = patch.normalizedTerm;
+    if (patch.languageCode !== undefined) updated.languageCode = patch.languageCode;
+    if (patch.category !== undefined) updated.category = patch.category;
+    if (patch.definition !== undefined) updated.definition = patch.definition;
+    if (patch.partOfSpeech !== undefined) updated.partOfSpeech = patch.partOfSpeech;
+    if (patch.pronunciation !== undefined) updated.pronunciation = patch.pronunciation;
+    if (patch.translation !== undefined) updated.translation = patch.translation;
+    if (patch.notes !== undefined) updated.notes = patch.notes;
+    if (patch.tags !== undefined) updated.tags = [...new Set(patch.tags)];
+    if (patch.definitionSource !== undefined) updated.definitionSource = patch.definitionSource;
+    if (patch.status !== undefined) updated.status = patch.status;
+    if (patch.metadata !== undefined) updated.metadata = patch.metadata;
+    if (patch.deletedAt !== undefined) {
+      if (patch.deletedAt === null) delete updated.deletedAt;
+      else updated.deletedAt = patch.deletedAt;
+    }
+    this.vocabularyEntries.set(entryId, updated);
+    return updated;
+  }
+
+  async listVocabularyEntries(filters: VocabularyEntryListFilters): Promise<VocabularyEntry[]> {
+    const query = filters.query === undefined ? undefined : cleanQuery(filters.query);
+    const tag = filters.tag === undefined ? undefined : cleanQuery(filters.tag);
+    return [...this.vocabularyEntries.values()]
+      .filter((entry) => {
+        if (entry.userId !== filters.userId || entry.deletedAt) return false;
+        if (filters.status !== undefined && entry.status !== filters.status) return false;
+        if (filters.category !== undefined && entry.category !== filters.category) return false;
+        if (filters.languageCode !== undefined && entry.languageCode !== filters.languageCode) return false;
+        if (tag !== undefined && !entry.tags.some((entryTag) => cleanQuery(entryTag) === tag)) return false;
+        if (query === undefined) return true;
+        return [
+          entry.term,
+          entry.definition ?? "",
+          entry.translation ?? "",
+          entry.notes ?? "",
+          entry.tags.join(" ")
+        ].some((value) => cleanQuery(value).includes(query));
+      })
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, Math.min(Math.max(filters.limit ?? 50, 1), 100));
+  }
+
+  async getVocabularyEntry(entryId: UUID): Promise<VocabularyEntry | undefined> {
+    return this.vocabularyEntries.get(entryId);
+  }
+
+  async findVocabularyEntry(
+    userId: UUID,
+    languageCode: string,
+    normalizedTerm: string
+  ): Promise<VocabularyEntry | undefined> {
+    return [...this.vocabularyEntries.values()].find(
+      (entry) =>
+        entry.userId === userId &&
+        entry.languageCode === languageCode &&
+        entry.normalizedTerm === normalizedTerm &&
+        !entry.deletedAt
+    );
+  }
+
+  async addVocabularyEncounter(data: VocabularyEncounterCreateData): Promise<VocabularyEncounter> {
+    const timestamp = nowIso();
+    const encounter: VocabularyEncounter = {
+      id: createId("vocabulary_encounter"),
+      userId: data.userId,
+      entryId: data.entryId,
+      occurredAt: data.occurredAt ?? timestamp,
+      metadata: data.metadata ?? {},
+      createdAt: timestamp
+    };
+    if (data.sourceType !== undefined) encounter.sourceType = data.sourceType;
+    if (data.sourceTitle !== undefined) encounter.sourceTitle = data.sourceTitle;
+    if (data.sourceUrl !== undefined) encounter.sourceUrl = data.sourceUrl;
+    if (data.context !== undefined) encounter.context = data.context;
+    this.vocabularyEncounters.push(encounter);
+    return encounter;
+  }
+
+  async listVocabularyEncounters(filters: { userId: UUID; entryId?: UUID; limit?: number }): Promise<VocabularyEncounter[]> {
+    return this.vocabularyEncounters
+      .filter((encounter) => {
+        if (encounter.userId !== filters.userId) return false;
+        return filters.entryId === undefined || encounter.entryId === filters.entryId;
+      })
+      .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
+      .slice(0, Math.min(Math.max(filters.limit ?? 100, 1), 200));
+  }
+
   async addAuditLog(log: Omit<AuditLog, "id" | "occurredAt">): Promise<AuditLog> {
     const created: AuditLog = {
       ...log,
@@ -839,9 +1140,13 @@ export class InMemoryRyanStore implements RyanStore {
       providerAccountCount: this.providerAccounts.size,
       externalSourceCount: this.externalSources.size,
       emailActionProposalCount: this.emailActionProposals.size,
+      opportunityCount: this.opportunities.size,
+      opportunityProposalCount: this.opportunityProposals.size,
       shoppingListCount: this.shoppingLists.size,
       shoppingListItemCount: this.shoppingListItems.size,
       shoppingCatalogItemCount: this.shoppingCatalogItems.size,
+      vocabularyEntryCount: this.vocabularyEntries.size,
+      vocabularyEncounterCount: this.vocabularyEncounters.length,
       auditLogCount: this.auditLogs.length
     };
   }

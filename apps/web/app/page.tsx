@@ -3,6 +3,7 @@ import { ChatPanel } from "./chat-panel";
 import { DailyFocusPanel } from "./daily-focus-panel";
 import { EmailProposalsPanel } from "./email-proposals-panel";
 import { ItemsPanel } from "./items-panel";
+import { OpportunityProposalsPanel } from "./opportunity-proposals-panel";
 
 export default function Home() {
   return (
@@ -17,6 +18,12 @@ export default function Home() {
               </h1>
             </div>
             <div className="flex flex-wrap gap-2">
+              <Link
+                href="/vocabulary"
+                className="inline-flex h-9 items-center justify-center rounded-md border border-indigo-200 bg-indigo-50 px-3 text-sm font-medium text-indigo-900 hover:bg-indigo-100"
+              >
+                Vocabulary
+              </Link>
               <Link
                 href="/shopping"
                 className="inline-flex h-9 items-center justify-center rounded-md border border-emerald-200 bg-emerald-50 px-3 text-sm font-medium text-emerald-900 hover:bg-emerald-100"
@@ -40,6 +47,7 @@ export default function Home() {
         <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
           <ChatPanel />
           <div className="space-y-6">
+            <OpportunityProposalsPanel />
             <EmailProposalsPanel />
             <ItemsPanel />
           </div>

@@ -22,6 +22,7 @@ data class WidgetPayloadResult(
 object RyanOsApi {
   private const val WIDGET_ITEM_LIMIT = 100
   private const val SHOPPING_SUGGESTION_LIMIT = 12
+  private const val VOCABULARY_ENTRY_LIMIT = 100
   private const val REQUEST_RETRY_DELAY_MS = 500L
   private val SHOPPING_CHECKED_LINGER_DURATION: Duration = Duration.ofHours(24)
 
@@ -78,6 +79,27 @@ object RyanOsApi {
   }
 
   @Throws(IOException::class)
+  fun fetchVocabularyPayload(settings: RyanOsSettings, limit: Int = VOCABULARY_ENTRY_LIMIT): VocabularyPayloadResult {
+    val query = mapOf(
+      "userId" to settings.userId,
+      "limit" to limit.toString()
+    ).toQueryString()
+    val rawJson = request(
+      method = "GET",
+      url = "${settings.normalizedBaseUrl}/v1/mobile/vocabulary/entries?$query"
+    )
+    val syncedAt = Instant.now().toString()
+    return VocabularyPayloadResult(
+      rawJson = rawJson,
+      snapshot = parseVocabularySnapshot(
+        rawJson = rawJson,
+        lastSyncedAt = syncedAt,
+        configured = true
+      )
+    )
+  }
+
+  @Throws(IOException::class)
   fun createItem(settings: RyanOsSettings, title: String) {
     val body = JSONObject()
       .put("userId", settings.userId)
@@ -109,6 +131,27 @@ object RyanOsApi {
     request(
       method = "POST",
       url = "${settings.normalizedBaseUrl}/v1/mobile/shopping/items",
+      body = body
+    )
+  }
+
+  @Throws(IOException::class)
+  fun createVocabularyEntry(
+    settings: RyanOsSettings,
+    term: String,
+    languageCode: String?,
+    category: String?,
+    context: String?
+  ) {
+    val body = JSONObject()
+      .put("userId", settings.userId)
+      .put("term", term)
+    if (!languageCode.isNullOrBlank()) body.put("languageCode", languageCode)
+    if (!category.isNullOrBlank()) body.put("category", category)
+    if (!context.isNullOrBlank()) body.put("context", context)
+    request(
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/mobile/vocabulary/entries",
       body = body
     )
   }
@@ -356,6 +399,51 @@ object RyanOsApi {
     }
   }
 
+  fun parseVocabularySnapshot(
+    rawJson: String?,
+    lastSyncedAt: String? = null,
+    configured: Boolean = true,
+    error: String? = null
+  ): VocabularySnapshot {
+    if (!configured) {
+      return VocabularySnapshot(
+        configured = false,
+        readOnly = true,
+        error = error
+      )
+    }
+    if (rawJson.isNullOrBlank()) {
+      return VocabularySnapshot(
+        configured = true,
+        readOnly = error != null,
+        lastSyncedAt = lastSyncedAt,
+        error = error
+      )
+    }
+
+    return runCatching {
+      val root = JSONObject(rawJson)
+      val entries = parseVocabularyEntries(root.optJSONArray("entries"))
+      VocabularySnapshot(
+        generatedAt = root.optStringOrNull("generatedAt") ?: "",
+        lastSyncedAt = lastSyncedAt,
+        configured = true,
+        readOnly = error != null,
+        error = error,
+        categories = parseStringArray(root.optJSONArray("categories")),
+        entries = entries,
+        encountersByEntryId = parseVocabularyEncounters(root.optJSONObject("encountersByEntryId"))
+      )
+    }.getOrElse { parseError ->
+      VocabularySnapshot(
+        configured = true,
+        readOnly = true,
+        lastSyncedAt = lastSyncedAt,
+        error = error ?: "Could not read vocabulary data: ${parseError.message ?: parseError.javaClass.simpleName}"
+      )
+    }
+  }
+
   private fun parseShoppingItems(items: JSONArray?, now: Instant): List<ShoppingItem> =
     buildList {
       if (items == null) return@buildList
@@ -416,6 +504,67 @@ object RyanOsApi {
         )
       }
     }
+
+  private fun parseVocabularyEntries(items: JSONArray?): List<VocabularyEntry> =
+    buildList {
+      if (items == null) return@buildList
+      for (index in 0 until items.length()) {
+        val item = items.optJSONObject(index) ?: continue
+        val id = item.optString("id")
+        val term = item.optString("term")
+        if (id.isBlank() || term.isBlank()) continue
+        add(
+          VocabularyEntry(
+            id = id,
+            term = term,
+            normalizedTerm = item.optStringOrNull("normalizedTerm") ?: term.lowercase(),
+            languageCode = item.optStringOrNull("languageCode") ?: "en",
+            category = item.optStringOrNull("category") ?: "general",
+            definition = item.optStringOrNull("definition"),
+            partOfSpeech = item.optStringOrNull("partOfSpeech"),
+            pronunciation = item.optStringOrNull("pronunciation"),
+            translation = item.optStringOrNull("translation"),
+            notes = item.optStringOrNull("notes"),
+            tags = parseStringArray(item.optJSONArray("tags")),
+            definitionSource = item.optStringOrNull("definitionSource") ?: "manual",
+            status = item.optStringOrNull("status") ?: "active",
+            createdAt = item.optStringOrNull("createdAt") ?: "",
+            updatedAt = item.optStringOrNull("updatedAt") ?: ""
+          )
+        )
+      }
+    }
+
+  private fun parseVocabularyEncounters(root: JSONObject?): Map<String, List<VocabularyEncounter>> {
+    if (root == null) return emptyMap()
+    val result = mutableMapOf<String, List<VocabularyEncounter>>()
+    val keys = root.keys()
+    while (keys.hasNext()) {
+      val entryId = keys.next()
+      val encounters = root.optJSONArray(entryId) ?: continue
+      val parsed = buildList {
+        for (index in 0 until encounters.length()) {
+          val encounter = encounters.optJSONObject(index) ?: continue
+          val id = encounter.optString("id")
+          if (id.isBlank()) continue
+          add(
+            VocabularyEncounter(
+              id = id,
+              entryId = encounter.optStringOrNull("entryId") ?: entryId,
+              sourceType = encounter.optStringOrNull("sourceType"),
+              sourceTitle = encounter.optStringOrNull("sourceTitle"),
+              sourceUrl = encounter.optStringOrNull("sourceUrl"),
+              context = encounter.optStringOrNull("context"),
+              occurredAt = encounter.optStringOrNull("occurredAt") ?: "",
+              createdAt = encounter.optStringOrNull("createdAt") ?: ""
+            )
+          )
+        }
+      }
+      result[entryId] = parsed
+    }
+    return result
+  }
 
   private fun parseStringArray(items: JSONArray?): List<String> =
     buildList {

@@ -5,6 +5,7 @@ object RyanOsWidgetActions {
   const val ACTION_ROW = "com.ryanos.android.widget.ROW"
   const val ACTION_SHOPPING_REFRESH = "com.ryanos.android.widget.SHOPPING_REFRESH"
   const val ACTION_SHOPPING_ROW = "com.ryanos.android.widget.SHOPPING_ROW"
+  const val ACTION_VOCABULARY_REFRESH = "com.ryanos.android.widget.VOCABULARY_REFRESH"
   const val ACTION_TOGGLE_ITEM = "toggle_item"
   const val ACTION_TOGGLE_DAYS = "toggle_days"
   const val ACTION_TOGGLE_SHOPPING_ITEM = "toggle_shopping_item"

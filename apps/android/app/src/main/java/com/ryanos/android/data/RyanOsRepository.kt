@@ -81,6 +81,26 @@ class RyanOsRepository private constructor(context: Context) {
       )
     }
 
+  val vocabularySnapshotFlow: Flow<VocabularySnapshot> = dataStore.data
+    .map { preferences ->
+      val settings = preferences.toSettings()
+      RyanOsApi.parseVocabularySnapshot(
+        rawJson = preferences[CACHED_VOCABULARY_PAYLOAD],
+        lastSyncedAt = preferences[VOCABULARY_LAST_SYNCED_AT],
+        configured = settings.isConfigured,
+        error = preferences[VOCABULARY_LAST_ERROR]
+      )
+    }
+    .catch {
+      emit(
+        VocabularySnapshot(
+          configured = false,
+          readOnly = true,
+          error = it.message ?: "Could not read vocabulary settings."
+        )
+      )
+    }
+
   suspend fun saveSettings(settings: RyanOsSettings) {
     dataStore.edit { preferences ->
       preferences[API_BASE_URL] = settings.apiBaseUrl.trim()
@@ -91,6 +111,7 @@ class RyanOsRepository private constructor(context: Context) {
       preferences[COLOR_CODE_BY_AREA] = settings.colorCodeByArea
       preferences.remove(LAST_ERROR)
       preferences.remove(SHOPPING_LAST_ERROR)
+      preferences.remove(VOCABULARY_LAST_ERROR)
     }
   }
 
@@ -249,6 +270,33 @@ class RyanOsRepository private constructor(context: Context) {
     }
   }
 
+  suspend fun refreshVocabulary(): VocabularySnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) {
+      dataStore.edit { preferences ->
+        preferences.remove(CACHED_VOCABULARY_PAYLOAD)
+        preferences.remove(VOCABULARY_LAST_SYNCED_AT)
+        preferences[VOCABULARY_LAST_ERROR] = "Connect the widget to your RyanOS API."
+      }
+      return@withContext vocabularySnapshotFlow.first()
+    }
+
+    runCatching {
+      val result = RyanOsApi.fetchVocabularyPayload(settings)
+      dataStore.edit { preferences ->
+        preferences[CACHED_VOCABULARY_PAYLOAD] = result.rawJson
+        preferences[VOCABULARY_LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()
+        preferences.remove(VOCABULARY_LAST_ERROR)
+      }
+      vocabularySnapshotFlow.first()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[VOCABULARY_LAST_ERROR] = error.userFacingMessage()
+      }
+      vocabularySnapshotFlow.first()
+    }
+  }
+
   suspend fun createItem(title: String): WidgetSnapshot = withContext(Dispatchers.IO) {
     val settings = settingsFlow.first()
     if (!settings.isConfigured) return@withContext refresh()
@@ -282,6 +330,31 @@ class RyanOsRepository private constructor(context: Context) {
         shoppingSnapshotFlow.first()
       }
     }
+
+  suspend fun createVocabularyEntry(
+    term: String,
+    languageCode: String?,
+    category: String?,
+    context: String?
+  ): VocabularySnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext refreshVocabulary()
+    runCatching {
+      RyanOsApi.createVocabularyEntry(
+        settings = settings,
+        term = term.trim(),
+        languageCode = languageCode?.trim()?.ifBlank { null },
+        category = category?.trim()?.ifBlank { null },
+        context = context?.trim()?.ifBlank { null }
+      )
+      refreshVocabulary()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[VOCABULARY_LAST_ERROR] = error.userFacingMessage()
+      }
+      vocabularySnapshotFlow.first()
+    }
+  }
 
   suspend fun toggleShoppingItemOptimistically(itemId: String, checked: Boolean): ShoppingSnapshot =
     withContext(Dispatchers.IO) {
@@ -533,6 +606,9 @@ class RyanOsRepository private constructor(context: Context) {
     private val CACHED_SHOPPING_PAYLOAD = stringPreferencesKey("cached_shopping_payload")
     private val SHOPPING_LAST_SYNCED_AT = stringPreferencesKey("shopping_last_synced_at")
     private val SHOPPING_LAST_ERROR = stringPreferencesKey("shopping_last_error")
+    private val CACHED_VOCABULARY_PAYLOAD = stringPreferencesKey("cached_vocabulary_payload")
+    private val VOCABULARY_LAST_SYNCED_AT = stringPreferencesKey("vocabulary_last_synced_at")
+    private val VOCABULARY_LAST_ERROR = stringPreferencesKey("vocabulary_last_error")
 
     @Volatile
     private var instance: RyanOsRepository? = null

@@ -126,6 +126,51 @@ data class ShoppingSuggestion(
   val purchaseCount: Int
 )
 
+data class VocabularyPayloadResult(
+  val rawJson: String,
+  val snapshot: VocabularySnapshot
+)
+
+data class VocabularySnapshot(
+  val generatedAt: String = "",
+  val lastSyncedAt: String? = null,
+  val configured: Boolean = false,
+  val readOnly: Boolean = false,
+  val error: String? = null,
+  val categories: List<String> = emptyList(),
+  val entries: List<VocabularyEntry> = emptyList(),
+  val encountersByEntryId: Map<String, List<VocabularyEncounter>> = emptyMap()
+)
+
+data class VocabularyEntry(
+  val id: String,
+  val term: String,
+  val normalizedTerm: String,
+  val languageCode: String,
+  val category: String,
+  val definition: String?,
+  val partOfSpeech: String?,
+  val pronunciation: String?,
+  val translation: String?,
+  val notes: String?,
+  val tags: List<String>,
+  val definitionSource: String,
+  val status: String,
+  val createdAt: String,
+  val updatedAt: String
+)
+
+data class VocabularyEncounter(
+  val id: String,
+  val entryId: String,
+  val sourceType: String?,
+  val sourceTitle: String?,
+  val sourceUrl: String?,
+  val context: String?,
+  val occurredAt: String,
+  val createdAt: String
+)
+
 const val DEFAULT_RECURRENCE_LEAD_DAYS = 1
 
 fun clampRecurrenceLeadDays(value: Int): Int = value.coerceIn(0, 30)

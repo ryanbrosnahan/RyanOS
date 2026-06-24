@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, CheckCircle2, ChevronDown, Loader2, MessageSquare, RefreshCw, Star, Target } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, Loader2, RefreshCw, Star, Target } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 type ScopeLabel = {
@@ -49,11 +49,8 @@ type FocusItem = {
 type DailyPlanPayload = {
   date: string;
   timezone: string;
-  prompt: string;
   plan: {
     id?: string;
-    response: string;
-    successCriteria: string[];
     selectedItemIds: string[];
     suggestedItemIds: string[];
     suggestionSource: "ai" | "heuristic" | "user";
@@ -258,18 +255,6 @@ export function DailyFocusPanel() {
     }
   }
 
-  function startChatAnswer() {
-    window.dispatchEvent(
-      new CustomEvent("ryanos:chat-prefill", {
-        detail: { text: "For today's focus: " }
-      })
-    );
-    document.getElementById("assistant-intake")?.scrollIntoView({
-      behavior: "smooth",
-      block: "start"
-    });
-  }
-
   useEffect(() => {
     void loadPlan();
     const handleExternalRefresh = () => {
@@ -351,25 +336,9 @@ export function DailyFocusPanel() {
           <h2 className="mt-1 text-2xl font-semibold tracking-normal text-stone-950">
             Today's focus
           </h2>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-stone-700">{payload.prompt}</p>
-
-          {payload.plan.response.trim().length > 0 ? (
-            <div className="mt-3 max-w-3xl border-l-2 border-sky-700 pl-3">
-              <p className="text-xs font-medium text-stone-500">Today's answer</p>
-              <p className="mt-1 text-sm leading-6 text-stone-700">{payload.plan.response}</p>
-            </div>
-          ) : null}
         </div>
 
         <div className="flex flex-wrap gap-2 lg:justify-end">
-          <button
-            type="button"
-            onClick={startChatAnswer}
-            className="inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-md border border-sky-700 bg-sky-700 px-3 text-sm font-medium text-white hover:bg-sky-800 sm:flex-none"
-          >
-            <MessageSquare className="h-4 w-4" aria-hidden="true" />
-            Answer in chat
-          </button>
           <button
             type="button"
             onClick={() => void refreshSuggestion()}

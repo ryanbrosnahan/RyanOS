@@ -118,8 +118,7 @@ expose it publicly.
 
 Use the Admin page's AI smoke test to verify that the bridge can complete a
 structured no-tool interpretation, not just report that the CLI is logged in.
-The same page exposes the daily coach prompt trigger and attention-scoring
-debug view.
+The same page exposes the attention-scoring debug view.
 
 While Docker services are running, treat dependencies as Docker-owned. To switch
 back to direct host development, stop the services and run:

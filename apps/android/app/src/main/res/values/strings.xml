@@ -5,4 +5,6 @@
   <string name="widget_description">See and complete RyanOS to-do items from the home screen.</string>
   <string name="shopping_widget_name">RyanOS Shopping</string>
   <string name="shopping_widget_description">See and check off RyanOS shopping list items from the home screen.</string>
+  <string name="vocabulary_widget_name">RyanOS Vocabulary</string>
+  <string name="vocabulary_widget_description">See recent RyanOS vocabulary entries from the home screen.</string>
 </resources>

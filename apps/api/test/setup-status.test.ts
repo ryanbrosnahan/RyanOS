@@ -384,8 +384,8 @@ describe("setup status", () => {
     await app.close();
 
     expect(plan.statusCode).toBe(200);
+    expect(plan.json()).not.toHaveProperty("prompt");
     expect(plan.json()).toMatchObject({
-      prompt: expect.stringContaining("make today count"),
       suggestedItems: expect.arrayContaining([
         expect.objectContaining({ title: "File court proposal" })
       ]),
@@ -396,6 +396,22 @@ describe("setup status", () => {
     expect(saved.statusCode).toBe(200);
     expect(saved.json().plan.response).toBe("File court proposal");
     expect(saved.json().plan.suggestionSource).toBe("user");
+  });
+
+  it("does not expose the retired daily prompt endpoint", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/daily-plan/prompt",
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    await app.close();
+
+    expect(response.statusCode).toBe(404);
   });
 
   it("uses starred items as active daily focus instead of saved selected items", async () => {

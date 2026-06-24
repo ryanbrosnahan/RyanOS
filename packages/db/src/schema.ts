@@ -6,6 +6,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -256,6 +257,70 @@ export const shoppingListItems = pgTable("shopping_list_items", {
   )
 }));
 
+export const vocabularyEntries = pgTable("vocabulary_entries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  term: text("term").notNull(),
+  normalizedTerm: text("normalized_term").notNull(),
+  languageCode: text("language_code").notNull().default("en"),
+  category: text("category").notNull().default("general"),
+  definition: text("definition"),
+  partOfSpeech: text("part_of_speech"),
+  pronunciation: text("pronunciation"),
+  translation: text("translation"),
+  notes: text("notes"),
+  tags: jsonb("tags").notNull().default([]),
+  definitionSource: text("definition_source").notNull().default("manual"),
+  status: text("status").notNull().default("active"),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  userLanguageTermIdx: uniqueIndex("vocabulary_entries_user_language_term_idx").on(
+    table.userId,
+    table.languageCode,
+    table.normalizedTerm
+  ),
+  userCategoryIdx: index("vocabulary_entries_user_category_idx").on(
+    table.userId,
+    table.category,
+    table.updatedAt
+  ),
+  userLanguageIdx: index("vocabulary_entries_user_language_idx").on(
+    table.userId,
+    table.languageCode,
+    table.updatedAt
+  ),
+  userStatusUpdatedIdx: index("vocabulary_entries_user_status_updated_idx").on(
+    table.userId,
+    table.status,
+    table.updatedAt
+  )
+}));
+
+export const vocabularyEncounters = pgTable("vocabulary_encounters", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  entryId: uuid("entry_id").notNull().references(() => vocabularyEntries.id),
+  sourceType: text("source_type"),
+  sourceTitle: text("source_title"),
+  sourceUrl: text("source_url"),
+  context: text("context"),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+  metadata: jsonb("metadata").notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, (table) => ({
+  userEntryOccurredIdx: index("vocabulary_encounters_user_entry_occurred_idx").on(
+    table.userId,
+    table.entryId,
+    table.occurredAt
+  ),
+  userOccurredIdx: index("vocabulary_encounters_user_occurred_idx").on(
+    table.userId,
+    table.occurredAt
+  )
+}));
+
 export const recurrencePolicies = pgTable("recurrence_policies", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),
@@ -443,7 +508,50 @@ export const opportunities = pgTable("opportunities", {
   metadata: jsonb("metadata").notNull().default({}),
   ...timestamps,
   ...softDelete
-});
+}, (table) => ({
+  userStatusIdx: index("opportunities_user_status_idx").on(
+    table.userId,
+    table.status,
+    table.updatedAt
+  )
+}));
+
+export const opportunityProposals = pgTable("opportunity_proposals", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  sourceId: uuid("source_id").notNull().references(() => externalSources.id),
+  idempotencyKey: text("idempotency_key").notNull(),
+  status: text("status").notNull().default("proposed"),
+  projectSlug: text("project_slug").notNull(),
+  title: text("title").notNull(),
+  summary: text("summary"),
+  rating: real("rating"),
+  fit: text("fit").notNull().default("unknown"),
+  priority: priorityEnum("priority").notNull().default("normal"),
+  dueAt: timestamp("due_at", { withTimezone: true }),
+  decisionBy: timestamp("decision_by", { withTimezone: true }),
+  valueEstimate: text("value_estimate"),
+  recommendedAction: text("recommended_action"),
+  rationale: text("rationale"),
+  acceptedOpportunityId: uuid("accepted_opportunity_id").references(() => opportunities.id),
+  acceptedItemId: uuid("accepted_item_id").references(() => items.id),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+  rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  idempotencyIdx: uniqueIndex("opportunity_proposals_idempotency_idx").on(
+    table.idempotencyKey
+  ),
+  userStatusIdx: index("opportunity_proposals_user_status_idx").on(
+    table.userId,
+    table.status,
+    table.createdAt
+  ),
+  sourceIdx: index("opportunity_proposals_source_idx").on(table.sourceId),
+  projectIdx: index("opportunity_proposals_project_idx").on(table.userId, table.projectSlug)
+}));
 
 export const sourceLinks = pgTable("source_links", {
   id: uuid("id").primaryKey().defaultRandom(),

@@ -5,8 +5,7 @@ import {
   EyeOff,
   Gauge,
   Loader2,
-  RefreshCw,
-  Send
+  RefreshCw
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -22,20 +21,6 @@ type AiSmokeResponse = {
     text?: string;
     toolCalls: Array<{ name: string }>;
     warnings?: string[];
-  };
-};
-
-type DailyPromptResponse = {
-  date: string;
-  prompt: string;
-  web: {
-    status: string;
-    reason?: string;
-  };
-  telegram?: {
-    status: string;
-    reason?: string;
-    error?: string;
   };
 };
 
@@ -71,14 +56,6 @@ function formatShortDate(value: string | undefined): string | undefined {
     month: "short",
     day: "numeric"
   }).format(new Date(value));
-}
-
-function statusText(response: DailyPromptResponse | null): string {
-  if (!response) return "";
-  const telegram = response.telegram
-    ? ` Telegram: ${response.telegram.status}${response.telegram.reason ? ` (${response.telegram.reason})` : ""}.`
-    : "";
-  return `Web prompt: ${response.web.status}${response.web.reason ? ` (${response.web.reason})` : ""}.${telegram}`;
 }
 
 function smokeWarnings(smoke: AiSmokeResponse): string[] {
@@ -127,9 +104,7 @@ function ItemScoreRow({ item }: { item: DebugItem }) {
 
 export function AiDiagnosticsPanel() {
   const [smoke, setSmoke] = useState<AiSmokeResponse | null>(null);
-  const [promptResponse, setPromptResponse] = useState<DailyPromptResponse | null>(null);
   const [loadingSmoke, setLoadingSmoke] = useState(false);
-  const [sendingPrompt, setSendingPrompt] = useState<"web" | "telegram" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function runSmoke() {
@@ -150,30 +125,6 @@ export function AiDiagnosticsPanel() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoadingSmoke(false);
-    }
-  }
-
-  async function sendDailyPrompt(channel: "web" | "telegram") {
-    setSendingPrompt(channel);
-    setError(null);
-    try {
-      const response = await fetch(`${apiUrl}/v1/daily-plan/prompt`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          userId: "local-owner",
-          sendTelegram: channel === "telegram"
-        })
-      });
-      const payload = (await response.json()) as DailyPromptResponse;
-      if (!response.ok) throw new Error(`Daily prompt returned ${response.status}`);
-      setPromptResponse(payload);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSendingPrompt(null);
     }
   }
 
@@ -219,29 +170,6 @@ export function AiDiagnosticsPanel() {
         </div>
       ) : null}
 
-      <div className="mt-4 flex flex-wrap gap-2 border-t border-stone-200 pt-3">
-        <button
-          type="button"
-          onClick={() => void sendDailyPrompt("web")}
-          disabled={sendingPrompt !== null}
-          className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-stone-300 px-3 text-sm font-medium text-stone-700 hover:bg-stone-100 disabled:cursor-wait disabled:opacity-60"
-        >
-          {sendingPrompt === "web" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Send className="h-4 w-4" aria-hidden="true" />}
-          Queue coach prompt
-        </button>
-        <button
-          type="button"
-          onClick={() => void sendDailyPrompt("telegram")}
-          disabled={sendingPrompt !== null}
-          className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-stone-300 px-3 text-sm font-medium text-stone-700 hover:bg-stone-100 disabled:cursor-wait disabled:opacity-60"
-        >
-          {sendingPrompt === "telegram" ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <Send className="h-4 w-4" aria-hidden="true" />}
-          Send Telegram prompt
-        </button>
-      </div>
-      {promptResponse ? (
-        <p className="mt-2 text-sm leading-6 text-stone-700">{statusText(promptResponse)}</p>
-      ) : null}
     </div>
   );
 }

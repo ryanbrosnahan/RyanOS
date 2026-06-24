@@ -18,7 +18,9 @@ import {
   type RecurrenceState,
   type RyanStore,
   type ShoppingCatalogItem,
-  type ShoppingListItem
+  type ShoppingListItem,
+  type VocabularyEncounter,
+  type VocabularyEntry
 } from "@ryanos/core";
 import {
   createDb,
@@ -45,6 +47,13 @@ import {
   type GmailClientLike
 } from "./email-triage.js";
 import { GogGmailClient } from "./gog-gmail.js";
+import {
+  acceptOpportunityProposal,
+  ingestOpportunityReport,
+  opportunityProposalView,
+  parseOpportunityReportIngestBody,
+  rejectOpportunityProposal
+} from "./opportunity-proposals.js";
 import { sendTelegramMessage } from "./telegram-client.js";
 import { resolveTelegramBotToken } from "./telegram-credentials.js";
 import { getTelegramSenderId, normalizeTelegramUpdate } from "./telegram.js";
@@ -80,7 +89,7 @@ const taxonomyQuerySchema = z.object({
   userId: z.string().default("local-owner")
 });
 
-const dailyPlanPrompt = "What 1-3 outcomes would make today count?";
+const dailyPlanSuggestionPrompt = "Starred daily focus suggestion";
 
 const dailyPlanQuerySchema = z.object({
   userId: z.string().default("local-owner"),
@@ -95,14 +104,6 @@ const dailyPlanBodySchema = z.object({
   response: z.string().optional(),
   successCriteria: z.array(z.string()).default([]),
   selectedItemIds: z.array(z.string()).default([])
-});
-
-const dailyPlanPromptBodySchema = z.object({
-  userId: z.string().default("local-owner"),
-  timezone: z.string().default("America/Chicago"),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  sendTelegram: z.boolean().default(false),
-  telegramChatId: z.string().optional()
 });
 
 const mobileWidgetItemsQuerySchema = z.object({
@@ -141,6 +142,18 @@ const shoppingCategorySchema = z.enum([
   "miscellaneous"
 ]);
 
+const vocabularyCategories = [
+  "general",
+  "medical",
+  "language",
+  "technical",
+  "slang",
+  "proper_noun",
+  "other"
+] as const;
+
+const vocabularyCategorySchema = z.enum(vocabularyCategories);
+
 const shoppingListQuerySchema = z.object({
   userId: z.string().default("local-owner"),
   lingerHours: z.coerce.number().int().min(1).max(168).default(24),
@@ -176,6 +189,54 @@ const shoppingCheckItemBodySchema = z.object({
 const shoppingSuggestionsQuerySchema = z.object({
   userId: z.string().default("local-owner"),
   limit: z.coerce.number().int().min(1).max(50).default(12)
+});
+
+const vocabularyEntriesQuerySchema = z.object({
+  userId: z.string().default("local-owner"),
+  query: z.string().optional(),
+  category: z.string().optional(),
+  languageCode: z.string().optional(),
+  tag: z.string().optional(),
+  status: z.enum(["active", "archived"]).default("active"),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+});
+
+const vocabularyCreateEntryBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  term: z.string().min(1),
+  languageCode: z.string().optional(),
+  category: vocabularyCategorySchema.optional(),
+  definition: z.string().optional(),
+  partOfSpeech: z.string().optional(),
+  pronunciation: z.string().optional(),
+  translation: z.string().optional(),
+  notes: z.string().optional(),
+  tags: z.array(z.string()).default([]),
+  sourceType: z.string().optional(),
+  sourceTitle: z.string().optional(),
+  sourceUrl: z.string().optional(),
+  context: z.string().optional(),
+  occurredAt: z.string().optional(),
+  draftWithAi: z.boolean().default(true)
+});
+
+const vocabularyEntryParamsSchema = z.object({
+  entryId: z.string().min(1)
+});
+
+const vocabularyPatchEntryBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  term: z.string().min(1).optional(),
+  languageCode: z.string().optional(),
+  category: vocabularyCategorySchema.optional(),
+  definition: z.string().nullable().optional(),
+  partOfSpeech: z.string().nullable().optional(),
+  pronunciation: z.string().nullable().optional(),
+  translation: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+  tags: z.array(z.string()).optional(),
+  status: z.enum(["active", "archived"]).optional(),
+  deleted: z.boolean().optional()
 });
 
 const aiSmokeBodySchema = z.object({
@@ -219,6 +280,21 @@ const emailProposalParamsSchema = z.object({
 });
 
 const emailProposalActionBodySchema = z.object({
+  userId: z.string().default("local-owner")
+});
+
+const opportunityProposalsQuerySchema = z.object({
+  userId: z.string().default("local-owner"),
+  status: z.enum(["proposed", "accepted", "rejected"]).default("proposed"),
+  projectSlug: z.string().trim().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25)
+});
+
+const opportunityProposalParamsSchema = z.object({
+  id: z.string().min(1)
+});
+
+const opportunityProposalActionBodySchema = z.object({
   userId: z.string().default("local-owner")
 });
 
@@ -314,6 +390,44 @@ function inferShoppingCategory(name: string): ShoppingCategory {
 
 function shoppingLingerAfter(hours: number): string {
   return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+}
+
+type VocabularyCategory = (typeof vocabularyCategories)[number];
+
+function normalizeVocabularyTerm(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFKC")
+    .replace(/\s+/g, " ");
+}
+
+function normalizeLanguageCode(value: string | undefined): string {
+  const normalized = (value ?? "en").trim().toLowerCase().replace("_", "-");
+  return normalized.length > 0 ? normalized : "en";
+}
+
+function cleanVocabularyTags(tags: string[] | undefined): string[] {
+  return [...new Set((tags ?? []).map((tag) => tag.trim().toLowerCase()).filter(Boolean))].slice(0, 20);
+}
+
+function inferVocabularyCategory(input: {
+  term: string;
+  languageCode?: string | undefined;
+  category?: VocabularyCategory | undefined;
+  context?: string | undefined;
+  tags?: string[] | undefined;
+}): VocabularyCategory {
+  if (input.category !== undefined) return input.category;
+  const languageCode = normalizeLanguageCode(input.languageCode);
+  if (languageCode !== "en") return "language";
+  const text = normalizeVocabularyTerm(`${input.term} ${input.context ?? ""} ${(input.tags ?? []).join(" ")}`);
+  if (/\b(spanish|french|german|italian|foreign|translation|translate|language)\b/.test(text)) return "language";
+  if (/\b(medical|medicine|clinical|doctor|diagnosis|symptom|disease|agonist|receptor|drug|dose|anatomy)\b/.test(text)) return "medical";
+  if (/\b(api|code|database|protocol|algorithm|technical|software|hardware|server)\b/.test(text)) return "technical";
+  if (/\b(slang|idiom|colloquial)\b/.test(text)) return "slang";
+  if (/^[A-Z][\p{L}'-]+(?:\s+[A-Z][\p{L}'-]+)+$/u.test(input.term.trim())) return "proper_noun";
+  return "general";
 }
 
 function corsOriginsFromEnv(): Set<string> {
@@ -1164,6 +1278,81 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     }
   });
 
+  app.post("/v1/opportunity-proposals/ingest", async (request, reply) => {
+    try {
+      const body = parseOpportunityReportIngestBody(request.body ?? {});
+      const result = await ingestOpportunityReport({
+        store,
+        userId: body.userId,
+        report: body.report
+      });
+      return {
+        result
+      };
+    } catch (err) {
+      reply.code(400);
+      return {
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
+  });
+
+  app.get("/v1/opportunity-proposals", async (request) => {
+    const query = opportunityProposalsQuerySchema.parse(request.query);
+    const filters: Parameters<typeof store.listOpportunityProposals>[0] = {
+      userId: query.userId,
+      status: query.status,
+      limit: query.limit
+    };
+    if (query.projectSlug !== undefined) filters.projectSlug = query.projectSlug;
+    const proposals = await store.listOpportunityProposals(filters);
+    return {
+      proposals: await Promise.all(proposals.map((proposal) => opportunityProposalView(store, proposal)))
+    };
+  });
+
+  app.post("/v1/opportunity-proposals/:id/accept", async (request, reply) => {
+    const params = opportunityProposalParamsSchema.parse(request.params);
+    const body = opportunityProposalActionBodySchema.parse(request.body ?? {});
+    try {
+      const result = await acceptOpportunityProposal({
+        store,
+        userId: body.userId,
+        proposalId: params.id
+      });
+      return {
+        proposal: await opportunityProposalView(store, result.proposal),
+        opportunity: result.opportunity,
+        item: result.item
+      };
+    } catch (err) {
+      reply.code(400);
+      return {
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
+  });
+
+  app.post("/v1/opportunity-proposals/:id/reject", async (request, reply) => {
+    const params = opportunityProposalParamsSchema.parse(request.params);
+    const body = opportunityProposalActionBodySchema.parse(request.body ?? {});
+    try {
+      const proposal = await rejectOpportunityProposal({
+        store,
+        userId: body.userId,
+        proposalId: params.id
+      });
+      return {
+        proposal: await opportunityProposalView(store, proposal)
+      };
+    } catch (err) {
+      reply.code(400);
+      return {
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
+  });
+
   app.get("/v1/messages", async (request) => {
     const query = listMessagesQuerySchema.parse(request.query);
     return {
@@ -1940,99 +2129,266 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     };
   }
 
-  async function ensureDailyPlanPromptMessage(input: {
-    userId: string;
-    dateKey: string;
-    provider?: "web" | "telegram";
-    chatId?: string;
-  }): Promise<StoredMessage | undefined> {
-    if (!messageStore) return undefined;
-    const provider = input.provider ?? "web";
-    const chatId = input.chatId ?? "dashboard";
-    return messageStore.saveOutgoingMessage({
-      provider,
-      chatId,
-      userId: input.userId,
-      text: dailyPlanPrompt,
-      providerMessageId:
-        provider === "web" && chatId === "dashboard"
-          ? `daily-plan-prompt:${input.dateKey}`
-          : `daily-plan-prompt:${provider}:${chatId}:${input.dateKey}`,
-      metadata: {
-        kind: "daily_plan_prompt",
-        dateKey: input.dateKey
-      }
-    });
+  type VocabularyEntryView = {
+    id: string;
+    term: string;
+    normalizedTerm: string;
+    languageCode: string;
+    category: string;
+    definition?: string;
+    partOfSpeech?: string;
+    pronunciation?: string;
+    translation?: string;
+    notes?: string;
+    tags: string[];
+    definitionSource: string;
+    status: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+
+  type VocabularyEncounterView = {
+    id: string;
+    entryId: string;
+    sourceType?: string;
+    sourceTitle?: string;
+    sourceUrl?: string;
+    context?: string;
+    occurredAt: string;
+    createdAt: string;
+  };
+
+  function vocabularyEntryView(entry: VocabularyEntry): VocabularyEntryView {
+    const view: VocabularyEntryView = {
+      id: entry.id,
+      term: entry.term,
+      normalizedTerm: entry.normalizedTerm,
+      languageCode: entry.languageCode,
+      category: entry.category,
+      tags: entry.tags,
+      definitionSource: entry.definitionSource,
+      status: entry.status,
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt
+    };
+    if (entry.definition !== undefined) view.definition = entry.definition;
+    if (entry.partOfSpeech !== undefined) view.partOfSpeech = entry.partOfSpeech;
+    if (entry.pronunciation !== undefined) view.pronunciation = entry.pronunciation;
+    if (entry.translation !== undefined) view.translation = entry.translation;
+    if (entry.notes !== undefined) view.notes = entry.notes;
+    return view;
   }
 
-  async function sendDailyPlanPromptToTelegram(input: {
-    userId: string;
-    dateKey: string;
-    telegramChatId?: string | undefined;
-  }): Promise<AssistantDelivery> {
-    const chatId = input.telegramChatId ?? csvValues(process.env.TELEGRAM_ALLOWED_USER_IDS)[0];
-    if (!chatId) {
-      return {
-        provider: "telegram",
-        status: "skipped",
-        reason: "telegram_chat_id_missing"
-      };
-    }
-    const storedMessage = await ensureDailyPlanPromptMessage({
+  function vocabularyEncounterView(encounter: VocabularyEncounter): VocabularyEncounterView {
+    const view: VocabularyEncounterView = {
+      id: encounter.id,
+      entryId: encounter.entryId,
+      occurredAt: encounter.occurredAt,
+      createdAt: encounter.createdAt
+    };
+    if (encounter.sourceType !== undefined) view.sourceType = encounter.sourceType;
+    if (encounter.sourceTitle !== undefined) view.sourceTitle = encounter.sourceTitle;
+    if (encounter.sourceUrl !== undefined) view.sourceUrl = encounter.sourceUrl;
+    if (encounter.context !== undefined) view.context = encounter.context;
+    return view;
+  }
+
+  async function vocabularyListPayload(input: z.infer<typeof vocabularyEntriesQuerySchema>) {
+    const filters: Parameters<typeof store.listVocabularyEntries>[0] = {
       userId: input.userId,
-      dateKey: input.dateKey,
-      provider: "telegram",
-      chatId
+      status: input.status,
+      limit: input.limit
+    };
+    if (input.query !== undefined && input.query.trim().length > 0) filters.query = input.query.trim();
+    if (input.category !== undefined && input.category.trim().length > 0) filters.category = input.category.trim();
+    if (input.languageCode !== undefined && input.languageCode.trim().length > 0) {
+      filters.languageCode = normalizeLanguageCode(input.languageCode);
+    }
+    if (input.tag !== undefined && input.tag.trim().length > 0) filters.tag = input.tag.trim();
+
+    const entries = await store.listVocabularyEntries(filters);
+    const entryIds = new Set(entries.map((entry) => entry.id));
+    const encounters = (await store.listVocabularyEncounters({
+      userId: input.userId,
+      limit: Math.min(Math.max(entries.length * 3, 50), 300)
+    })).filter((encounter) => entryIds.has(encounter.entryId));
+    const encountersByEntryId: Record<string, VocabularyEncounterView[]> = {};
+    for (const encounter of encounters) {
+      const bucket = encountersByEntryId[encounter.entryId] ?? [];
+      if (bucket.length < 3) bucket.push(vocabularyEncounterView(encounter));
+      encountersByEntryId[encounter.entryId] = bucket;
+    }
+    return {
+      categories: vocabularyCategories,
+      entries: entries.map(vocabularyEntryView),
+      encountersByEntryId
+    };
+  }
+
+  async function upsertVocabularyEntryPayload(
+    body: z.infer<typeof vocabularyCreateEntryBodySchema>,
+    sourceDefault: string
+  ) {
+    const term = body.term.trim();
+    const languageCode = normalizeLanguageCode(body.languageCode);
+    const normalizedTerm = normalizeVocabularyTerm(term);
+    const tags = cleanVocabularyTags(body.tags);
+    const category = inferVocabularyCategory({
+      term,
+      languageCode,
+      category: body.category,
+      context: body.context,
+      tags
     });
-    if (!storedMessage) {
-      return {
-        provider: "telegram",
-        status: "skipped",
-        reason: "message_store_missing"
+    const existing = await store.findVocabularyEntry(body.userId, languageCode, normalizedTerm);
+    let entry: VocabularyEntry;
+    let merged = false;
+    if (existing) {
+      const patch: Parameters<typeof store.updateVocabularyEntry>[1] = {
+        term,
+        category,
+        tags: cleanVocabularyTags([...existing.tags, ...tags]),
+        status: "active",
+        metadata: asJsonObject({
+          ...existing.metadata,
+          lastQuickAddAt: nowIso()
+        })
       };
-    }
-    if (storedMessage.duplicate) {
-      return {
-        provider: "telegram",
-        status: "skipped",
-        reason: "duplicate_prompt"
+      if ((existing.definition ?? "").trim().length === 0 && body.definition !== undefined) {
+        patch.definition = body.definition;
+        patch.definitionSource = "ai_draft";
+      }
+      if ((existing.partOfSpeech ?? "").trim().length === 0 && body.partOfSpeech !== undefined) {
+        patch.partOfSpeech = body.partOfSpeech;
+      }
+      if ((existing.pronunciation ?? "").trim().length === 0 && body.pronunciation !== undefined) {
+        patch.pronunciation = body.pronunciation;
+      }
+      if ((existing.translation ?? "").trim().length === 0 && body.translation !== undefined) {
+        patch.translation = body.translation;
+      }
+      if (body.notes !== undefined && body.notes.trim().length > 0) {
+        patch.notes = [existing.notes, body.notes].filter(Boolean).join("\n");
+      }
+      entry = await store.updateVocabularyEntry(existing.id, patch);
+      merged = true;
+    } else {
+      const createData: Parameters<typeof store.createVocabularyEntry>[0] = {
+        userId: body.userId,
+        term,
+        normalizedTerm,
+        languageCode,
+        category,
+        tags,
+        definitionSource: body.definition ? "ai_draft" : "manual",
+        metadata: asJsonObject({
+          firstQuickAddAt: nowIso()
+        })
       };
+      if (body.definition !== undefined) createData.definition = body.definition;
+      if (body.partOfSpeech !== undefined) createData.partOfSpeech = body.partOfSpeech;
+      if (body.pronunciation !== undefined) createData.pronunciation = body.pronunciation;
+      if (body.translation !== undefined) createData.translation = body.translation;
+      if (body.notes !== undefined) createData.notes = body.notes;
+      entry = await store.createVocabularyEntry(createData);
     }
 
-    const tokenResolutionInput: { db?: RyanDb } = {};
-    if (database) tokenResolutionInput.db = database.db;
-    const tokenResolution = await resolveTelegramBotToken(tokenResolutionInput);
-    if (!tokenResolution.token) {
-      return {
-        provider: "telegram",
-        status: "skipped",
-        reason: "telegram_token_missing",
-        warnings: tokenResolution.warnings
-      };
-    }
+    const encounterData: Parameters<typeof store.addVocabularyEncounter>[0] = {
+      userId: body.userId,
+      entryId: entry.id,
+      sourceType: body.sourceType ?? sourceDefault,
+      metadata: {}
+    };
+    if (body.sourceTitle !== undefined) encounterData.sourceTitle = body.sourceTitle;
+    if (body.sourceUrl !== undefined) encounterData.sourceUrl = body.sourceUrl;
+    if (body.context !== undefined) encounterData.context = body.context;
+    if (body.occurredAt !== undefined) encounterData.occurredAt = body.occurredAt;
+    const encounter = await store.addVocabularyEncounter(encounterData);
+    return {
+      entry: vocabularyEntryView(entry),
+      encounter: vocabularyEncounterView(encounter),
+      merged,
+      ...(await vocabularyListPayload({
+        userId: body.userId,
+        status: "active",
+        limit: 50
+      }))
+    };
+  }
 
+  async function tryVocabularyAiDraft(
+    body: z.infer<typeof vocabularyCreateEntryBodySchema>,
+    sourceDefault: string
+  ) {
+    if (!body.draftWithAi || body.definition !== undefined) return undefined;
+    const status = await ai.getStatus();
+    if (!status.ready || ai.name === "none") return undefined;
+    const vocabularyTool = tools.list().find((tool) => tool.name === "vocabulary.addEntries");
+    if (!vocabularyTool) return undefined;
+    const message: IncomingMessage = {
+      id: `vocabulary:${crypto.randomUUID()}`,
+      provider: "system",
+      chatId: "vocabulary-draft",
+      userId: body.userId,
+      text: [
+        `Save this vocabulary entry and draft a concise editable definition.`,
+        `Term: ${body.term.trim()}`,
+        `Language: ${normalizeLanguageCode(body.languageCode)}`,
+        body.category ? `Category: ${body.category}` : undefined,
+        body.context ? `Context: ${body.context}` : undefined,
+        body.sourceTitle ? `Source title: ${body.sourceTitle}` : undefined
+      ].filter(Boolean).join("\n"),
+      timestamp: nowIso(),
+      attachments: [],
+      metadata: {
+        kind: "vocabulary_draft",
+        source: sourceDefault
+      }
+    };
     try {
-      const result = await sendTelegramMessage({
-        token: tokenResolution.token,
-        chatId,
-        text: dailyPlanPrompt
-      });
+      const interpreted = await ai.interpret(message, [vocabularyTool]);
+      const toolCall = interpreted.toolCalls.find((call) => call.name === "vocabulary.addEntries");
+      if (!toolCall) return undefined;
+      const result = await tools.execute(
+        toolCall.name,
+        enrichToolInput(
+          {
+            ...(asRecord(toolCall.input) ?? {}),
+            userId: body.userId,
+            source: sourceDefault
+          },
+          message,
+          toolCall.name,
+          0
+        )
+      );
+      if (result.status !== "applied") return undefined;
+      const entry = await store.findVocabularyEntry(
+        body.userId,
+        normalizeLanguageCode(body.languageCode),
+        normalizeVocabularyTerm(body.term)
+      );
       return {
-        provider: "telegram",
-        status: "sent",
-        ...(tokenResolution.source ? { source: tokenResolution.source } : {}),
-        ...(result.providerMessageId ? { providerMessageId: result.providerMessageId } : {}),
-        ...(tokenResolution.warnings.length > 0 ? { warnings: tokenResolution.warnings } : {})
+        result,
+        entry: entry ? vocabularyEntryView(entry) : undefined,
+        ...(await vocabularyListPayload({
+          userId: body.userId,
+          status: "active",
+          limit: 50
+        }))
       };
-    } catch (err) {
-      return {
-        provider: "telegram",
-        status: "failed",
-        ...(tokenResolution.source ? { source: tokenResolution.source } : {}),
-        error: err instanceof Error ? err.message : String(err),
-        ...(tokenResolution.warnings.length > 0 ? { warnings: tokenResolution.warnings } : {})
-      };
+    } catch {
+      return undefined;
     }
+  }
+
+  async function createVocabularyEntryPayload(
+    body: z.infer<typeof vocabularyCreateEntryBodySchema>,
+    sourceDefault: string
+  ) {
+    const aiDraft = await tryVocabularyAiDraft(body, sourceDefault);
+    if (aiDraft !== undefined) return aiDraft;
+    return upsertVocabularyEntryPayload(body, sourceDefault);
   }
 
   async function dailyPlanPayload(input: { userId: string; timezone: string; dateKey: string }) {
@@ -2049,7 +2405,6 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     return {
       date: input.dateKey,
       timezone: input.timezone,
-      prompt: dailyPlanPrompt,
       plan: dashboardPlan,
       starredItems,
       suggestedItems: items.filter((item) => suggestedIdSet.has(item.id)),
@@ -2150,46 +2505,70 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     return checkShoppingItemPayload(params.itemId, body, reply);
   });
 
+  app.get("/v1/vocabulary/entries", async (request) => {
+    const query = vocabularyEntriesQuerySchema.parse(request.query);
+    return vocabularyListPayload(query);
+  });
+
+  app.post("/v1/vocabulary/entries", async (request) => {
+    const body = vocabularyCreateEntryBodySchema.parse(request.body);
+    return createVocabularyEntryPayload(body, "web");
+  });
+
+  app.patch("/v1/vocabulary/entries/:entryId", async (request, reply) => {
+    const params = vocabularyEntryParamsSchema.parse(request.params);
+    const body = vocabularyPatchEntryBodySchema.parse(request.body);
+    const existing = await store.getVocabularyEntry(params.entryId);
+    if (!existing || existing.deletedAt !== undefined) {
+      reply.code(404);
+      return { error: "Vocabulary entry not found" };
+    }
+    const patch: Parameters<typeof store.updateVocabularyEntry>[1] = {
+      definitionSource: "edited"
+    };
+    if (body.term !== undefined) {
+      patch.term = body.term.trim();
+      patch.normalizedTerm = normalizeVocabularyTerm(body.term);
+    }
+    if (body.languageCode !== undefined) patch.languageCode = normalizeLanguageCode(body.languageCode);
+    if (body.category !== undefined) patch.category = body.category;
+    if (body.definition !== undefined) patch.definition = body.definition ?? "";
+    if (body.partOfSpeech !== undefined) patch.partOfSpeech = body.partOfSpeech ?? "";
+    if (body.pronunciation !== undefined) patch.pronunciation = body.pronunciation ?? "";
+    if (body.translation !== undefined) patch.translation = body.translation ?? "";
+    if (body.notes !== undefined) patch.notes = body.notes ?? "";
+    if (body.tags !== undefined) patch.tags = cleanVocabularyTags(body.tags);
+    if (body.status !== undefined) patch.status = body.status;
+    if (body.deleted === true) patch.deletedAt = nowIso();
+    const updated = await store.updateVocabularyEntry(params.entryId, patch);
+    return {
+      entry: vocabularyEntryView(updated),
+      ...(await vocabularyListPayload({
+        userId: body.userId,
+        status: body.status ?? "active",
+        limit: 50
+      }))
+    };
+  });
+
+  app.get("/v1/mobile/vocabulary/entries", async (request) => {
+    const query = vocabularyEntriesQuerySchema.parse(request.query);
+    return vocabularyListPayload(query);
+  });
+
+  app.post("/v1/mobile/vocabulary/entries", async (request) => {
+    const body = vocabularyCreateEntryBodySchema.parse(request.body);
+    return createVocabularyEntryPayload(body, "android");
+  });
+
   app.get("/v1/daily-plan", async (request) => {
     const query = dailyPlanQuerySchema.parse(request.query);
     const dateKey = query.date ?? localDateKey(new Date(), query.timezone);
-    await ensureDailyPlanPromptMessage({ userId: query.userId, dateKey });
     return dailyPlanPayload({
       userId: query.userId,
       timezone: query.timezone,
       dateKey
     });
-  });
-
-  app.post("/v1/daily-plan/prompt", async (request) => {
-    const body = dailyPlanPromptBodySchema.parse(request.body ?? {});
-    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
-    const webMessage = await ensureDailyPlanPromptMessage({
-      userId: body.userId,
-      dateKey
-    });
-    const telegram = body.sendTelegram
-      ? await sendDailyPlanPromptToTelegram({
-          userId: body.userId,
-          dateKey,
-          telegramChatId: body.telegramChatId
-        })
-      : undefined;
-    return {
-      date: dateKey,
-      timezone: body.timezone,
-      prompt: dailyPlanPrompt,
-      web: webMessage
-        ? {
-            status: webMessage.duplicate ? "duplicate" : "stored",
-            messageId: webMessage.id
-          }
-        : {
-            status: "skipped",
-            reason: "message_store_missing"
-          },
-      ...(telegram ? { telegram } : {})
-    };
   });
 
   app.post("/v1/daily-plan", async (request) => {
@@ -2210,7 +2589,7 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       userId: body.userId,
       dateKey,
       timezone: body.timezone,
-      prompt: dailyPlanPrompt,
+      prompt: existing?.prompt ?? dailyPlanSuggestionPrompt,
       successCriteria: body.successCriteria
         .map((criterion) => criterion.trim())
         .filter((criterion) => criterion.length > 0),
@@ -2258,12 +2637,12 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       chatId: "daily-plan",
       userId: body.userId,
       text: [
-        "Create today's RyanOS daily focus suggestion.",
+        "Create today's RyanOS starred-focus candidate suggestion.",
         `Date: ${dateKey}`,
-        `Question: ${dailyPlanPrompt}`,
-        "Select one to three item IDs. Prefer a realistic mix of one easy win, one medium item, and one important larger item when available.",
+        "Suggest a short list of item IDs that could be starred for focus. Starred items are the active focus; suggestions are only candidates.",
+        "Prefer a realistic mix of one easy win, one medium item, and one important larger item when available.",
         "Use daily_plan.upsert exactly once. Put exact item IDs in selectedItemRefs and suggestedItemRefs.",
-        "Do not answer the daily focus question for the user; leave response and successCriteria unset.",
+        "Leave response and successCriteria unset.",
         "Do not invent tasks.",
         "",
         "Recent daily focus responses:",
@@ -2315,7 +2694,7 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
         userId: body.userId,
         dateKey,
         timezone: body.timezone,
-        prompt: dailyPlanPrompt,
+        prompt: dailyPlanSuggestionPrompt,
         suggestionSource: "ai"
       };
       delete suggestedInput.response;

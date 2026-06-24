@@ -51,9 +51,12 @@ import com.ryanos.android.data.RyanOsRepository
 import com.ryanos.android.data.RyanOsSettings
 import com.ryanos.android.data.ShoppingItem
 import com.ryanos.android.data.ShoppingSnapshot
+import com.ryanos.android.data.VocabularyEntry
+import com.ryanos.android.data.VocabularySnapshot
 import com.ryanos.android.data.WidgetItem
 import com.ryanos.android.data.WidgetSnapshot
 import com.ryanos.android.widget.RyanOsShoppingWidgetRenderer
+import com.ryanos.android.widget.RyanOsVocabularyWidgetRenderer
 import com.ryanos.android.widget.RyanOsWidgetRenderer
 import kotlinx.coroutines.launch
 
@@ -75,6 +78,7 @@ class MainActivity : ComponentActivity() {
   companion object {
     const val EXTRA_INITIAL_SCREEN = "initial_screen"
     const val SCREEN_SHOPPING = "shopping"
+    const val SCREEN_VOCABULARY = "vocabulary"
   }
 }
 
@@ -108,6 +112,9 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository, initialScreen: St
   val shoppingSnapshot by repository.shoppingSnapshotFlow.collectAsState(
     initial = ShoppingSnapshot(configured = settings.isConfigured)
   )
+  val vocabularySnapshot by repository.vocabularySnapshotFlow.collectAsState(
+    initial = VocabularySnapshot(configured = settings.isConfigured)
+  )
   var apiBaseUrl by remember { mutableStateOf(settings.apiBaseUrl) }
   var userId by remember { mutableStateOf(settings.userId) }
   var timezone by remember { mutableStateOf(settings.timezone) }
@@ -118,6 +125,10 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository, initialScreen: St
   var shoppingName by remember { mutableStateOf("") }
   var shoppingCategory by remember { mutableStateOf("") }
   var shoppingQuantity by remember { mutableStateOf("") }
+  var vocabularyTerm by remember { mutableStateOf("") }
+  var vocabularyLanguage by remember { mutableStateOf("en") }
+  var vocabularyCategory by remember { mutableStateOf("") }
+  var vocabularyContext by remember { mutableStateOf("") }
   var busy by remember { mutableStateOf(false) }
   var statusText by remember { mutableStateOf("") }
 
@@ -133,6 +144,8 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository, initialScreen: St
   LaunchedEffect(initialScreen) {
     if (initialScreen == MainActivity.SCREEN_SHOPPING) {
       scrollState.animateScrollTo(900)
+    } else if (initialScreen == MainActivity.SCREEN_VOCABULARY) {
+      scrollState.animateScrollTo(1400)
     }
   }
 
@@ -144,6 +157,7 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository, initialScreen: St
         block()
         RyanOsWidgetRenderer.updateAll(context)
         RyanOsShoppingWidgetRenderer.updateAll(context)
+        RyanOsVocabularyWidgetRenderer.updateAll(context)
       }.onFailure { error ->
         statusText = error.message ?: "Action failed"
       }
@@ -208,6 +222,7 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository, initialScreen: St
             )
             val refreshed = repository.refresh()
             repository.refreshShopping()
+            repository.refreshVocabulary()
             statusText = refreshed.error ?: "Settings saved"
           }
         }
@@ -278,6 +293,45 @@ private fun RyanOsSettingsScreen(repository: RyanOsRepository, initialScreen: St
             statusText = updated.error ?: if (targetChecked) "Marked bought" else "Shopping item restored"
             repository.sendShoppingToggle(item.id, targetChecked)
             repository.refreshShopping()
+          }
+        }
+      )
+
+      VocabularySection(
+        snapshot = vocabularySnapshot,
+        term = vocabularyTerm,
+        onTermChange = { vocabularyTerm = it },
+        languageCode = vocabularyLanguage,
+        onLanguageCodeChange = { vocabularyLanguage = it },
+        category = vocabularyCategory,
+        onCategoryChange = { vocabularyCategory = it },
+        contextText = vocabularyContext,
+        onContextTextChange = { vocabularyContext = it },
+        busy = busy,
+        onAdd = {
+          val term = vocabularyTerm.trim()
+          if (term.isNotEmpty()) {
+            launchWork("Adding vocabulary entry") {
+              val refreshed = repository.createVocabularyEntry(
+                term = term,
+                languageCode = vocabularyLanguage,
+                category = vocabularyCategory,
+                context = vocabularyContext
+              )
+              if (refreshed.error == null) {
+                vocabularyTerm = ""
+                vocabularyContext = ""
+                statusText = "Vocabulary entry added"
+              } else {
+                statusText = refreshed.error
+              }
+            }
+          }
+        },
+        onRefresh = {
+          launchWork("Refreshing vocabulary") {
+            val refreshed = repository.refreshVocabulary()
+            statusText = refreshed.error ?: "Vocabulary refreshed"
           }
         }
       )
@@ -658,6 +712,195 @@ private fun ShoppingItemRow(
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+      )
+    }
+  }
+}
+
+@Composable
+private fun VocabularySection(
+  snapshot: VocabularySnapshot,
+  term: String,
+  onTermChange: (String) -> Unit,
+  languageCode: String,
+  onLanguageCodeChange: (String) -> Unit,
+  category: String,
+  onCategoryChange: (String) -> Unit,
+  contextText: String,
+  onContextTextChange: (String) -> Unit,
+  busy: Boolean,
+  onAdd: () -> Unit,
+  onRefresh: () -> Unit
+) {
+  val categories = snapshot.categories.ifEmpty {
+    listOf("general", "medical", "language", "technical", "slang", "proper_noun", "other")
+  }
+
+  Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Text(
+        text = "Vocabulary",
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold
+      )
+      TextButton(
+        enabled = !busy,
+        onClick = onRefresh
+      ) {
+        Text("Refresh")
+      }
+    }
+
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+      OutlinedTextField(
+        value = term,
+        onValueChange = onTermChange,
+        modifier = Modifier.weight(1f),
+        singleLine = true,
+        label = { Text("Word or term") }
+      )
+      Button(
+        enabled = !busy && term.isNotBlank(),
+        onClick = onAdd
+      ) {
+        Text("Add")
+      }
+    }
+
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+      OutlinedTextField(
+        value = languageCode,
+        onValueChange = onLanguageCodeChange,
+        modifier = Modifier.weight(0.7f),
+        singleLine = true,
+        label = { Text("Lang") },
+        placeholder = { Text("en") }
+      )
+      OutlinedTextField(
+        value = category,
+        onValueChange = onCategoryChange,
+        modifier = Modifier.weight(1.3f),
+        singleLine = true,
+        label = { Text("Category") },
+        placeholder = { Text("auto") }
+      )
+    }
+
+    OutlinedTextField(
+      value = contextText,
+      onValueChange = onContextTextChange,
+      modifier = Modifier.fillMaxWidth(),
+      maxLines = 3,
+      label = { Text("Context") }
+    )
+
+    CategoryShortcuts(
+      categories = categories,
+      selected = category,
+      onSelect = onCategoryChange
+    )
+
+    if (!snapshot.configured) {
+      Text(
+        text = "Connect RyanOS to load vocabulary.",
+        style = MaterialTheme.typography.bodyMedium
+      )
+      return
+    }
+
+    snapshot.error?.let { error ->
+      Text(
+        text = error,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.error
+      )
+    }
+
+    if (snapshot.entries.isEmpty()) {
+      Text(
+        text = "No vocabulary entries.",
+        style = MaterialTheme.typography.bodyMedium
+      )
+    } else {
+      snapshot.entries.take(10).forEach { entry ->
+        VocabularyEntryRow(
+          entry = entry,
+          encounters = snapshot.encountersByEntryId[entry.id].orEmpty()
+        )
+      }
+    }
+
+    snapshot.lastSyncedAt?.let { syncedAt ->
+      Text(
+        text = "Vocabulary sync $syncedAt",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+      )
+    }
+  }
+}
+
+@Composable
+private fun VocabularyEntryRow(
+  entry: VocabularyEntry,
+  encounters: List<com.ryanos.android.data.VocabularyEncounter>
+) {
+  Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Text(
+        text = entry.term,
+        style = MaterialTheme.typography.bodyLarge,
+        fontWeight = FontWeight.Medium,
+        modifier = Modifier.weight(1f),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+      )
+      Text(
+        text = "${entry.languageCode} / ${entry.category}",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+      )
+    }
+    entry.partOfSpeech?.let { partOfSpeech ->
+      Text(
+        text = partOfSpeech,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+      )
+    }
+    Text(
+      text = entry.definition?.takeIf { it.isNotBlank() } ?: "No definition yet.",
+      style = MaterialTheme.typography.bodyMedium,
+      maxLines = 3,
+      overflow = TextOverflow.Ellipsis
+    )
+    encounters.firstOrNull()?.context?.let { context ->
+      Text(
+        text = context,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 2,
         overflow = TextOverflow.Ellipsis
       )
     }

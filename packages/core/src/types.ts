@@ -251,6 +251,57 @@ export type SourceLink = {
   createdAt: ISODateString;
 };
 
+export type OpportunityStatus = "tracking" | "active" | "submitted" | "won" | "lost" | "declined";
+export type OpportunityFit = "unknown" | "low" | "medium" | "high";
+
+export type Opportunity = {
+  id: UUID;
+  userId: UUID;
+  areaId?: UUID;
+  projectId?: UUID;
+  title: string;
+  status: OpportunityStatus;
+  fit: OpportunityFit;
+  dueAt?: ISODateString;
+  decisionBy?: ISODateString;
+  valueEstimate?: string;
+  nextActionItemId?: UUID;
+  summary?: string;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type OpportunityProposalStatus = "proposed" | "accepted" | "rejected";
+
+export type OpportunityProposal = {
+  id: UUID;
+  userId: UUID;
+  sourceId: UUID;
+  idempotencyKey: string;
+  status: OpportunityProposalStatus;
+  projectSlug: string;
+  title: string;
+  summary?: string;
+  rating?: number;
+  fit: OpportunityFit;
+  priority: Priority;
+  dueAt?: ISODateString;
+  decisionBy?: ISODateString;
+  valueEstimate?: string;
+  recommendedAction?: string;
+  rationale?: string;
+  acceptedOpportunityId?: UUID;
+  acceptedItemId?: UUID;
+  acceptedAt?: ISODateString;
+  rejectedAt?: ISODateString;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
 export type EmailActionProposalStatus = "proposed" | "accepted" | "rejected";
 
 export type EmailActionType =
@@ -326,4 +377,40 @@ export type ShoppingCatalogItem = {
   createdAt: ISODateString;
   updatedAt: ISODateString;
   deletedAt?: ISODateString;
+};
+
+export type VocabularyEntryStatus = "active" | "archived";
+
+export type VocabularyEntry = {
+  id: UUID;
+  userId: UUID;
+  term: string;
+  normalizedTerm: string;
+  languageCode: string;
+  category: string;
+  definition?: string;
+  partOfSpeech?: string;
+  pronunciation?: string;
+  translation?: string;
+  notes?: string;
+  tags: string[];
+  definitionSource: string;
+  status: VocabularyEntryStatus;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type VocabularyEncounter = {
+  id: UUID;
+  userId: UUID;
+  entryId: UUID;
+  sourceType?: string;
+  sourceTitle?: string;
+  sourceUrl?: string;
+  context?: string;
+  occurredAt: ISODateString;
+  metadata: JsonObject;
+  createdAt: ISODateString;
 };

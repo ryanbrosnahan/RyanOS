@@ -112,6 +112,45 @@ proposed to-dos, and only creates a normal RyanOS item after accepting a
 proposal. It does not mark messages read, label messages, create Gmail drafts,
 or send mail.
 
+## RFP and grant reports
+
+RyanOS can ingest machine-readable sidecar files from Codex RFP/grant search
+automations. The project automation should keep writing its human notes to
+`docs/rfp-auto-search.md` and also write a JSON sidecar such as
+`docs/rfp-auto-search.ryanos.json`:
+
+```json
+{
+  "automationId": "court-nox-rfp-search",
+  "projectSlug": "court-nox",
+  "runAt": "2026-06-24T14:03:58Z",
+  "reportPath": "/Users/ryan/Projects/active/NoxJury/docs/rfp-auto-search.md",
+  "candidates": [
+    {
+      "title": "James City County Commonwealth Attorney Case Management Software",
+      "sourceUrls": ["https://www.jamescitycountyva.gov/DocumentCenter/View/42989"],
+      "rating": 7.5,
+      "dueAt": "2026-07-06",
+      "fit": "high",
+      "summary": "RFI for case management software.",
+      "rationale": "Good shaping opportunity for CourtNox workflows.",
+      "recommendedAction": "Decide whether to submit the James City RFI."
+    }
+  ]
+}
+```
+
+Configure the worker with local paths visible from the RyanOS runtime:
+
+```bash
+RYANOS_RFP_REPORT_SOURCES='["/Users/ryan/Projects/active/NoxJury/docs/rfp-auto-search.ryanos.json","/Users/ryan/Projects/active/filemytro/docs/rfp-auto-search.ryanos.json"]'
+RFP_REPORT_INGEST_INTERVAL_MINUTES=60
+```
+
+RyanOS only surfaces candidates rated at least 7/10, marked `urgent`, or marked
+`promoteToRyanOS`. Accepting a proposed lead creates an opportunity plus one
+`opportunity_action` item; rejecting it creates nothing.
+
 ## Codex bridge
 
 The API calls Codex through a host-side bridge, not by exposing Codex to the
