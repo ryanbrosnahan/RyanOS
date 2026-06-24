@@ -191,6 +191,26 @@ object RyanOsApi {
     )
   }
 
+  @Throws(IOException::class)
+  fun toggleChecklistItem(
+    settings: RyanOsSettings,
+    itemId: String,
+    checklistItemId: String,
+    checked: Boolean
+  ) {
+    val body = JSONObject()
+      .put("userId", settings.userId)
+      .put("checked", checked)
+      .put("timezone", settings.timezone)
+      .put("date", todayDateKey(settings.timezone))
+      .put("toggle", false)
+    request(
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/mobile/items/${itemId.urlEncode()}/checklist-items/${checklistItemId.urlEncode()}/toggle",
+      body = body
+    )
+  }
+
   fun optimisticallyToggleWidgetPayload(
     rawJson: String?,
     itemId: String,
@@ -227,6 +247,35 @@ object RyanOsApi {
     }.getOrElse { rawJson }
   }
 
+  fun optimisticallyToggleChecklistPayload(
+    rawJson: String?,
+    itemId: String,
+    checklistItemId: String,
+    checked: Boolean
+  ): String? {
+    if (rawJson.isNullOrBlank()) return rawJson
+    return runCatching {
+      val root = JSONObject(rawJson)
+      val items = root.optJSONArray("items") ?: return rawJson
+      val item = items.findItem(itemId) ?: return rawJson
+      val checklist = item.optJSONObject("checklist") ?: return rawJson
+      val checklistItems = checklist.optJSONArray("items") ?: return rawJson
+      val checklistItem = checklistItems.findItem(checklistItemId) ?: return rawJson
+      val wasChecked = checklistItem.optBoolean("checked", false)
+      checklistItem.put("checked", checked)
+      if (checked) {
+        checklistItem.put("checkedAt", Instant.now().toString())
+      } else {
+        checklistItem.remove("checkedAt")
+      }
+      if (wasChecked != checked) {
+        val currentCompleted = checklist.optInt("completed", 0)
+        checklist.put("completed", (currentCompleted + if (checked) 1 else -1).coerceAtLeast(0))
+      }
+      root.toString()
+    }.getOrElse { rawJson }
+  }
+
   fun optimisticallyToggleShoppingPayload(
     rawJson: String?,
     itemId: String,
@@ -255,7 +304,8 @@ object RyanOsApi {
     recurrenceLeadDaysBeforeDue: Int = DEFAULT_RECURRENCE_LEAD_DAYS,
     showTaskDetails: Boolean = true,
     colorCodeByArea: Boolean = true,
-    expandedRecurrenceItemIds: Set<String> = emptySet()
+    expandedRecurrenceItemIds: Set<String> = emptySet(),
+    expandedDetailItemIds: Set<String> = emptySet()
   ): WidgetSnapshot {
     if (!configured) {
       return WidgetSnapshot(
@@ -265,7 +315,8 @@ object RyanOsApi {
         recurrenceLeadDaysBeforeDue = recurrenceLeadDaysBeforeDue,
         showTaskDetails = showTaskDetails,
         colorCodeByArea = colorCodeByArea,
-        expandedRecurrenceItemIds = expandedRecurrenceItemIds
+        expandedRecurrenceItemIds = expandedRecurrenceItemIds,
+        expandedDetailItemIds = expandedDetailItemIds
       )
     }
     if (rawJson.isNullOrBlank()) {
@@ -276,7 +327,8 @@ object RyanOsApi {
         recurrenceLeadDaysBeforeDue = recurrenceLeadDaysBeforeDue,
         showTaskDetails = showTaskDetails,
         colorCodeByArea = colorCodeByArea,
-        expandedRecurrenceItemIds = expandedRecurrenceItemIds
+        expandedRecurrenceItemIds = expandedRecurrenceItemIds,
+        expandedDetailItemIds = expandedDetailItemIds
       )
     }
 
@@ -318,6 +370,8 @@ object RyanOsApi {
                 },
                 dueAt = item.optStringOrNull("dueAt"),
                 secondaryText = item.optStringOrNull("secondaryText"),
+                progress = parseProgress(item.optJSONObject("progress")),
+                checklist = parseChecklist(item.optJSONObject("checklist")),
                 recurrence = parseRecurrence(item.optJSONObject("recurrence")),
                 scope = parseScope(item.optJSONObject("scope")),
                 action = action
@@ -338,6 +392,7 @@ object RyanOsApi {
         showTaskDetails = showTaskDetails,
         colorCodeByArea = colorCodeByArea,
         expandedRecurrenceItemIds = expandedRecurrenceItemIds,
+        expandedDetailItemIds = expandedDetailItemIds,
         items = parsedItems
       )
     }.getOrElse { parseError ->
@@ -349,7 +404,8 @@ object RyanOsApi {
         recurrenceLeadDaysBeforeDue = recurrenceLeadDaysBeforeDue,
         showTaskDetails = showTaskDetails,
         colorCodeByArea = colorCodeByArea,
-        expandedRecurrenceItemIds = expandedRecurrenceItemIds
+        expandedRecurrenceItemIds = expandedRecurrenceItemIds,
+        expandedDetailItemIds = expandedDetailItemIds
       )
     }
   }
@@ -574,6 +630,64 @@ object RyanOsApi {
         if (value.isNotBlank()) add(value)
       }
     }
+
+  private fun parseProgress(progress: JSONObject?): WidgetProgress {
+    if (progress == null) return WidgetProgress()
+    val latest = progress.optJSONArray("latest")
+    return WidgetProgress(
+      count = progress.optInt("count", 0),
+      latest = buildList {
+        if (latest != null) {
+          for (index in 0 until latest.length()) {
+            val note = latest.optJSONObject(index) ?: continue
+            val id = note.optString("id")
+            val body = note.optString("body")
+            if (id.isBlank() || body.isBlank()) continue
+            add(
+              WidgetProgressNote(
+                id = id,
+                body = body,
+                occurredAt = note.optStringOrNull("occurredAt") ?: "",
+                createdAt = note.optStringOrNull("createdAt") ?: "",
+                updatedAt = note.optStringOrNull("updatedAt") ?: ""
+              )
+            )
+          }
+        }
+      }
+    )
+  }
+
+  private fun parseChecklist(checklist: JSONObject?): WidgetChecklist {
+    if (checklist == null) return WidgetChecklist()
+    val items = checklist.optJSONArray("items")
+    return WidgetChecklist(
+      total = checklist.optInt("total", 0),
+      completed = checklist.optInt("completed", 0),
+      moreCount = checklist.optInt("moreCount", 0),
+      items = buildList {
+        if (items != null) {
+          for (index in 0 until items.length()) {
+            val item = items.optJSONObject(index) ?: continue
+            val id = item.optString("id")
+            val title = item.optString("title")
+            if (id.isBlank() || title.isBlank()) continue
+            add(
+              WidgetChecklistItem(
+                id = id,
+                title = title,
+                checked = item.optBoolean("checked", false),
+                checkedAt = item.optStringOrNull("checkedAt"),
+                sortOrder = item.optInt("sortOrder", index),
+                createdAt = item.optStringOrNull("createdAt") ?: "",
+                updatedAt = item.optStringOrNull("updatedAt") ?: ""
+              )
+            )
+          }
+        }
+      }
+    )
+  }
 
   private fun parseRecurrence(recurrence: JSONObject?): WidgetRecurrence? {
     if (recurrence == null) return null

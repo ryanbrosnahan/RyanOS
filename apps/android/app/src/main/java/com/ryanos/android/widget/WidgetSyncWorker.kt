@@ -126,10 +126,73 @@ class WidgetToggleSyncWorker(
   }
 }
 
+class WidgetChecklistToggleSyncWorker(
+  appContext: Context,
+  workerParams: WorkerParameters
+) : CoroutineWorker(appContext, workerParams) {
+  override suspend fun doWork(): ListenableWorker.Result {
+    val itemId = inputData.getString(KEY_ITEM_ID) ?: return Result.success()
+    val checklistItemId = inputData.getString(KEY_CHECKLIST_ITEM_ID) ?: return Result.success()
+    val checked = inputData.getBoolean(KEY_CHECKED, false)
+    val workerStart = WidgetTiming.now()
+    WidgetTiming.event(
+      operation = "widget-checklist-toggle-sync-worker",
+      event = "start",
+      details = "item=${WidgetTiming.shortId(itemId)} checklist=${WidgetTiming.shortId(checklistItemId)} checked=$checked"
+    )
+    return runCatching {
+      val repository = RyanOsRepository.getInstance(applicationContext)
+      val sent = repository.sendToggleChecklistItem(
+        itemId = itemId,
+        checklistItemId = checklistItemId,
+        checked = checked
+      )
+      if (!sent) return Result.retry()
+
+      val currentChecked = repository.cachedChecklistState(
+        itemId = itemId,
+        checklistItemId = checklistItemId
+      )
+      if (currentChecked != checked) {
+        WidgetTiming.event(
+          operation = "widget-checklist-toggle-sync-worker",
+          event = "skip-stale-refresh",
+          details = "item=${WidgetTiming.shortId(itemId)} checklist=${WidgetTiming.shortId(checklistItemId)} current=$currentChecked expected=$checked"
+        )
+        return Result.success()
+      }
+
+      val snapshot = repository.refresh()
+      RyanOsWidgetRenderer.updateAll(applicationContext)
+      WidgetTiming.mark(
+        operation = "widget-checklist-toggle-sync-worker",
+        stage = "refresh.updateAll",
+        startedAt = workerStart,
+        details = "items=${snapshot.items.size} total=${WidgetTiming.elapsed(workerStart)}ms"
+      )
+      Result.success()
+    }.getOrElse {
+      WidgetTiming.event(
+        operation = "widget-checklist-toggle-sync-worker",
+        event = "error",
+        details = it.message.orEmpty()
+      )
+      Result.retry()
+    }
+  }
+
+  companion object {
+    const val KEY_ITEM_ID = "item_id"
+    const val KEY_CHECKLIST_ITEM_ID = "checklist_item_id"
+    const val KEY_CHECKED = "checked"
+  }
+}
+
 object WidgetSyncScheduler {
   private const val ONE_TIME_WORK = "ryanos_widget_sync_now"
   private const val PERIODIC_WORK = "ryanos_widget_sync_periodic"
   private const val TOGGLE_WORK_PREFIX = "ryanos_widget_toggle_sync"
+  private const val CHECKLIST_TOGGLE_WORK_PREFIX = "ryanos_widget_checklist_toggle_sync"
   private const val TOGGLE_DEBOUNCE_MS = 300L
 
   fun enqueueNow(context: Context) {
@@ -178,6 +241,30 @@ object WidgetSyncScheduler {
     )
   }
 
+  fun enqueueChecklistToggle(
+    context: Context,
+    itemId: String,
+    checklistItemId: String,
+    checked: Boolean
+  ) {
+    val request = OneTimeWorkRequestBuilder<WidgetChecklistToggleSyncWorker>()
+      .setConstraints(networkConstraints())
+      .setInitialDelay(TOGGLE_DEBOUNCE_MS, TimeUnit.MILLISECONDS)
+      .setInputData(
+        workDataOf(
+          WidgetChecklistToggleSyncWorker.KEY_ITEM_ID to itemId,
+          WidgetChecklistToggleSyncWorker.KEY_CHECKLIST_ITEM_ID to checklistItemId,
+          WidgetChecklistToggleSyncWorker.KEY_CHECKED to checked
+        )
+      )
+      .build()
+    WorkManager.getInstance(context).enqueueUniqueWork(
+      checklistToggleWorkName(itemId, checklistItemId),
+      ExistingWorkPolicy.REPLACE,
+      request
+    )
+  }
+
   fun schedulePeriodic(context: Context) {
     val request = PeriodicWorkRequestBuilder<WidgetSyncWorker>(30, TimeUnit.MINUTES)
       .setConstraints(networkConstraints())
@@ -200,6 +287,9 @@ object WidgetSyncScheduler {
 
   private fun toggleWorkName(itemId: String, date: String?): String =
     "$TOGGLE_WORK_PREFIX:${stableWorkKey(itemId)}:${date.orEmpty()}"
+
+  private fun checklistToggleWorkName(itemId: String, checklistItemId: String): String =
+    "$CHECKLIST_TOGGLE_WORK_PREFIX:${stableWorkKey(itemId)}:${stableWorkKey(checklistItemId)}"
 
   private fun stableWorkKey(seed: String): String {
     val hash = seed.fold(1125899906842597L) { acc, char -> 31L * acc + char.code }

@@ -41,6 +41,8 @@ const emailProposalInputSchema = z.object({
   actionType: emailActionTypeSchema.default("task"),
   title: z.string().trim().min(1).max(240),
   body: z.string().trim().max(4000).optional(),
+  initialProgressNote: z.string().trim().min(1).max(4000).optional(),
+  checklistItems: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
   priority: z.enum(["low", "normal", "high", "urgent"]).default("normal"),
   dueAt: z.string().trim().min(1).optional(),
   draftReplyText: z.string().trim().max(8000).optional(),
@@ -78,6 +80,19 @@ export const emailProposeActionTool: PublicToolDefinition = {
       },
       title: { type: "string", maxLength: 240 },
       body: { type: "string", maxLength: 4000 },
+      initialProgressNote: {
+        type: "string",
+        maxLength: 4000,
+        description:
+          "Optional progress note only when the email clearly documents useful task progress that already happened."
+      },
+      checklistItems: {
+        type: "array",
+        maxItems: 20,
+        items: { type: "string", maxLength: 500 },
+        description:
+          "Optional concrete substeps only when the email clearly implies a useful flat checklist."
+      },
       priority: { type: "string", enum: ["low", "normal", "high", "urgent"] },
       dueAt: {
         type: "string",
@@ -529,6 +544,8 @@ async function triageMessage(input: {
         messageId: input.message.id,
         subject: input.message.subject,
         from: input.message.from,
+        initialProgressNote: proposalInput.initialProgressNote,
+        checklistItems: proposalInput.checklistItems,
         aiProvider: input.ai.name,
         interpretedText: interpreted.text,
         warnings: interpreted.warnings
@@ -771,6 +788,22 @@ function itemBodyForProposal(proposal: EmailActionProposal, source: ExternalSour
   return pieces.length > 0 ? pieces.join("\n\n") : undefined;
 }
 
+function initialProgressNoteForProposal(proposal: EmailActionProposal): string | undefined {
+  const metadata = asRecord(proposal.metadata) ?? {};
+  const value = metadata.initialProgressNote;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function checklistItemsForProposal(proposal: EmailActionProposal): string[] {
+  const metadata = asRecord(proposal.metadata) ?? {};
+  const values = Array.isArray(metadata.checklistItems) ? metadata.checklistItems : [];
+  return values
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+    .slice(0, 20);
+}
+
 async function getEmailProposalForUser(input: {
   store: RyanStore;
   userId: UUID;
@@ -833,6 +866,62 @@ export async function acceptEmailProposal(input: {
       sourceId: proposal.sourceId
     })
   });
+  const initialProgressNote = initialProgressNoteForProposal(proposal);
+  if (initialProgressNote !== undefined) {
+    const note = await input.store.createItemProgressNote({
+      userId: input.userId,
+      itemId: item.id,
+      body: initialProgressNote,
+      metadata: asJsonObject({
+        source: "gmail_proposal",
+        proposalId: proposal.id,
+        sourceId: proposal.sourceId
+      })
+    });
+    await input.store.addItemEvent({
+      userId: input.userId,
+      itemId: item.id,
+      eventType: "progress_note_added",
+      occurredAt: note.occurredAt,
+      idempotencyKey: `email-proposal:${proposal.id}:initial-progress-note`,
+      payload: asJsonObject({
+        source: "gmail_proposal",
+        proposalId: proposal.id,
+        progressNoteId: note.id
+      })
+    });
+  }
+  const checklistItems = checklistItemsForProposal(proposal);
+  if (checklistItems.length > 0) {
+    const createdChecklistItems = [];
+    for (const [index, title] of checklistItems.entries()) {
+      createdChecklistItems.push(
+        await input.store.createItemChecklistItem({
+          userId: input.userId,
+          itemId: item.id,
+          title,
+          sortOrder: index,
+          metadata: asJsonObject({
+            source: "gmail_proposal",
+            proposalId: proposal.id,
+            sourceId: proposal.sourceId
+          })
+        })
+      );
+    }
+    await input.store.addItemEvent({
+      userId: input.userId,
+      itemId: item.id,
+      eventType: "checklist_item_added",
+      occurredAt: nowIso(),
+      idempotencyKey: `email-proposal:${proposal.id}:checklist`,
+      payload: asJsonObject({
+        source: "gmail_proposal",
+        proposalId: proposal.id,
+        checklistItemIds: createdChecklistItems.map((checklistItem) => checklistItem.id)
+      })
+    });
+  }
   await input.store.addSourceLink({
     userId: input.userId,
     sourceId: proposal.sourceId,

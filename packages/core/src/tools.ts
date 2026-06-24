@@ -4,7 +4,16 @@ import { z } from "zod";
 import { calculateRecurrenceState, isBeforeMinimumInterval } from "./recurrence.js";
 import type { ItemCreateData, ItemPatch, RyanStore, VocabularyEntryPatch } from "./store.js";
 import type { JsonObject, UUID } from "@ryanos/shared";
-import type { Area, Project, ShoppingCatalogItem, ShoppingListItem, VocabularyEntry } from "./types.js";
+import type {
+  Area,
+  Item,
+  ItemChecklistItem,
+  ItemProgressNote,
+  Project,
+  ShoppingCatalogItem,
+  ShoppingListItem,
+  VocabularyEntry
+} from "./types.js";
 
 const userIdSchema = z.string().min(1).default("local-owner");
 const dateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -366,6 +375,47 @@ async function resolveItemIds(
     ids.push(best.record.id);
   }
   return ids;
+}
+
+async function resolveItem(
+  store: RyanStore,
+  userId: string,
+  itemRef: string
+): Promise<{ item: Item; matchedBy: string } | undefined> {
+  const matches = await store.searchItems(userId, itemRef, 3);
+  const best = matches[0];
+  if (!best || best.confidence < 0.75) return undefined;
+  return { item: best.record, matchedBy: best.reason };
+}
+
+async function itemProgressNoteForUser(
+  store: RyanStore,
+  userId: string,
+  noteId: string
+): Promise<ItemProgressNote | undefined> {
+  const note = await store.getItemProgressNote(noteId);
+  if (!note || note.deletedAt !== undefined) return undefined;
+  const visibleNotes = await store.listItemProgressNotes({
+    userId,
+    itemId: note.itemId,
+    limit: 200
+  });
+  return visibleNotes.find((candidate) => candidate.id === noteId);
+}
+
+async function itemChecklistItemForUser(
+  store: RyanStore,
+  userId: string,
+  checklistItemId: string
+): Promise<ItemChecklistItem | undefined> {
+  const checklistItem = await store.getItemChecklistItem(checklistItemId);
+  if (!checklistItem || checklistItem.deletedAt !== undefined) return undefined;
+  const visibleChecklistItems = await store.listItemChecklistItems({
+    userId,
+    itemId: checklistItem.itemId,
+    limit: 200
+  });
+  return visibleChecklistItems.find((candidate) => candidate.id === checklistItemId);
 }
 
 async function findShoppingCatalogItem(
@@ -1336,6 +1386,499 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
         eventIds: [event.id],
         auditId: auditLog.id,
         messageForUser: input.starred ? `Starred "${item.title}".` : `Unstarred "${item.title}".`
+      };
+    }
+  });
+
+  registry.register({
+    name: "item.progress.add",
+    description: "Add a timestamped progress note to an item without completing it.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "not_required",
+      retrySafety: "safe_with_idempotency_key",
+      descriptionForModel: "Use when the user reports progress on a task but does not want to mark it complete."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      itemRef: z.string().min(1),
+      body: z.string().trim().min(1).max(4000),
+      occurredAt: z.string().optional(),
+      metadata: z.record(z.string(), z.unknown()).optional()
+    }),
+    handler: async (input) => {
+      if (input.idempotencyKey) {
+        const replayed = await store.findItemEventByIdempotencyKey(input.userId, input.idempotencyKey);
+        if (replayed) {
+          return {
+            status: "replayed",
+            data: { event: replayed },
+            eventIds: [replayed.id],
+            messageForUser: "That progress note was already recorded."
+          };
+        }
+      }
+      const resolved = await resolveItem(store, input.userId, input.itemRef);
+      if (!resolved) {
+        return {
+          status: "needs_clarification",
+          clarificationPrompt: `Which item should I add progress to for "${input.itemRef}"?`
+        };
+      }
+      const noteInput: Parameters<RyanStore["createItemProgressNote"]>[0] = {
+        userId: input.userId,
+        itemId: resolved.item.id,
+        body: input.body,
+        metadata: asJsonObject(input.metadata)
+      };
+      if (input.occurredAt !== undefined) noteInput.occurredAt = input.occurredAt;
+      const note = await store.createItemProgressNote(noteInput);
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: resolved.item.id,
+        eventType: "progress_note_added",
+        occurredAt: note.occurredAt,
+        payload: { progressNoteId: note.id, matchedBy: resolved.matchedBy }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.progress.add",
+        toolName: "item.progress.add",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: resolved.item.id, progressNoteId: note.id, eventId: event.id }
+      });
+      return {
+        status: "applied",
+        data: { note },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser: `Added progress to "${resolved.item.title}".`
+      };
+    }
+  });
+
+  registry.register({
+    name: "item.progress.update",
+    description: "Edit an existing item progress note.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "not_required",
+      retrySafety: "unsafe",
+      descriptionForModel: "Use when the user wants to correct or refine a progress note."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      noteId: z.string().min(1),
+      body: z.string().trim().min(1).max(4000).optional(),
+      occurredAt: z.string().optional(),
+      metadata: z.record(z.string(), z.unknown()).optional()
+    }),
+    handler: async (input) => {
+      const note = await itemProgressNoteForUser(store, input.userId, input.noteId);
+      if (!note) {
+        return {
+          status: "failed",
+          messageForUser: `Progress note not found: ${input.noteId}`
+        };
+      }
+      const patch: Parameters<RyanStore["updateItemProgressNote"]>[1] = {};
+      if (input.body !== undefined) patch.body = input.body;
+      if (input.occurredAt !== undefined) patch.occurredAt = input.occurredAt;
+      if (input.metadata !== undefined) patch.metadata = asJsonObject(input.metadata);
+      const updated = await store.updateItemProgressNote(note.id, patch);
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: note.itemId,
+        eventType: "progress_note_updated",
+        occurredAt: nowIso(),
+        payload: { progressNoteId: note.id }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.progress.update",
+        toolName: "item.progress.update",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: note.itemId, progressNoteId: note.id, eventId: event.id }
+      });
+      return {
+        status: "applied",
+        data: { note: updated },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser: "Updated progress note."
+      };
+    }
+  });
+
+  registry.register({
+    name: "item.progress.delete",
+    description: "Delete an existing item progress note.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "low_confidence",
+      retrySafety: "unsafe",
+      descriptionForModel: "Use when the user wants to remove a progress note from a task."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      noteId: z.string().min(1)
+    }),
+    handler: async (input) => {
+      const note = await itemProgressNoteForUser(store, input.userId, input.noteId);
+      if (!note) {
+        return {
+          status: "failed",
+          messageForUser: `Progress note not found: ${input.noteId}`
+        };
+      }
+      const deleted = await store.updateItemProgressNote(note.id, { deletedAt: nowIso() });
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: note.itemId,
+        eventType: "progress_note_deleted",
+        occurredAt: nowIso(),
+        payload: { progressNoteId: note.id }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.progress.delete",
+        toolName: "item.progress.delete",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: note.itemId, progressNoteId: note.id, eventId: event.id }
+      });
+      return {
+        status: "applied",
+        data: { note: deleted },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser: "Deleted progress note."
+      };
+    }
+  });
+
+  registry.register({
+    name: "item.checklist.add",
+    description: "Add one or more ordered checklist items to a task.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "not_required",
+      retrySafety: "safe_with_idempotency_key",
+      descriptionForModel: "Use when the user wants to break a task into concrete checklist steps."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      itemRef: z.string().min(1),
+      title: z.string().trim().min(1).max(500).optional(),
+      titles: z.array(z.string().trim().min(1).max(500)).default([]),
+      sortOrder: z.number().int().optional(),
+      metadata: z.record(z.string(), z.unknown()).optional()
+    }),
+    handler: async (input) => {
+      if (input.idempotencyKey) {
+        const replayed = await store.findItemEventByIdempotencyKey(input.userId, input.idempotencyKey);
+        if (replayed) {
+          return {
+            status: "replayed",
+            data: { event: replayed },
+            eventIds: [replayed.id],
+            messageForUser: "That checklist update was already recorded."
+          };
+        }
+      }
+      const titles = [input.title, ...input.titles]
+        .filter((title): title is string => typeof title === "string")
+        .map((title) => title.trim())
+        .filter(Boolean);
+      if (titles.length === 0) {
+        return {
+          status: "rejected",
+          messageForUser: "Checklist items need at least one title."
+        };
+      }
+      const resolved = await resolveItem(store, input.userId, input.itemRef);
+      if (!resolved) {
+        return {
+          status: "needs_clarification",
+          clarificationPrompt: `Which item should I add checklist steps to for "${input.itemRef}"?`
+        };
+      }
+      const checklistItems = [];
+      for (const [index, title] of titles.entries()) {
+        const checklistInput: Parameters<RyanStore["createItemChecklistItem"]>[0] = {
+          userId: input.userId,
+          itemId: resolved.item.id,
+          title,
+          metadata: asJsonObject(input.metadata)
+        };
+        if (input.sortOrder !== undefined) checklistInput.sortOrder = input.sortOrder + index;
+        checklistItems.push(await store.createItemChecklistItem(checklistInput));
+      }
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: resolved.item.id,
+        eventType: "checklist_item_added",
+        occurredAt: nowIso(),
+        payload: {
+          checklistItemIds: checklistItems.map((item) => item.id),
+          matchedBy: resolved.matchedBy
+        }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.checklist.add",
+        toolName: "item.checklist.add",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: resolved.item.id, checklistItemIds: checklistItems.map((item) => item.id), eventId: event.id }
+      });
+      return {
+        status: "applied",
+        data: { checklistItems },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser: `Added ${checklistItems.length} checklist ${checklistItems.length === 1 ? "item" : "items"} to "${resolved.item.title}".`
+      };
+    }
+  });
+
+  registry.register({
+    name: "item.checklist.update",
+    description: "Edit a checklist item's title or order.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "not_required",
+      retrySafety: "unsafe",
+      descriptionForModel: "Use when the user wants to rename or move a checklist step."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      checklistItemId: z.string().min(1),
+      title: z.string().trim().min(1).max(500).optional(),
+      sortOrder: z.number().int().optional(),
+      metadata: z.record(z.string(), z.unknown()).optional()
+    }),
+    handler: async (input) => {
+      const checklistItem = await itemChecklistItemForUser(store, input.userId, input.checklistItemId);
+      if (!checklistItem) {
+        return {
+          status: "failed",
+          messageForUser: `Checklist item not found: ${input.checklistItemId}`
+        };
+      }
+      const patch: Parameters<RyanStore["updateItemChecklistItem"]>[1] = {};
+      if (input.title !== undefined) patch.title = input.title;
+      if (input.sortOrder !== undefined) patch.sortOrder = input.sortOrder;
+      if (input.metadata !== undefined) patch.metadata = asJsonObject(input.metadata);
+      const updated = await store.updateItemChecklistItem(checklistItem.id, patch);
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: checklistItem.itemId,
+        eventType: "checklist_item_updated",
+        occurredAt: nowIso(),
+        payload: { checklistItemId: checklistItem.id }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.checklist.update",
+        toolName: "item.checklist.update",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: checklistItem.itemId, checklistItemId: checklistItem.id, eventId: event.id }
+      });
+      return {
+        status: "applied",
+        data: { checklistItem: updated },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser: "Updated checklist item."
+      };
+    }
+  });
+
+  registry.register({
+    name: "item.checklist.check",
+    description: "Check or uncheck a checklist item without completing the parent task.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "not_required",
+      retrySafety: "idempotent",
+      descriptionForModel: "Use when the user finishes or reopens one checklist step inside a task."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      checklistItemId: z.string().min(1),
+      checked: z.boolean(),
+      checkedAt: z.string().optional()
+    }),
+    handler: async (input) => {
+      const checklistItem = await itemChecklistItemForUser(store, input.userId, input.checklistItemId);
+      if (!checklistItem) {
+        return {
+          status: "failed",
+          messageForUser: `Checklist item not found: ${input.checklistItemId}`
+        };
+      }
+      const checkedAt = input.checked ? input.checkedAt ?? nowIso() : null;
+      const updated = await store.updateItemChecklistItem(checklistItem.id, { checkedAt });
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: checklistItem.itemId,
+        eventType: input.checked ? "checklist_item_checked" : "checklist_item_unchecked",
+        occurredAt: input.checked && checkedAt !== null ? checkedAt : nowIso(),
+        payload: { checklistItemId: checklistItem.id }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.checklist.check",
+        toolName: "item.checklist.check",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: checklistItem.itemId, checklistItemId: checklistItem.id, checked: input.checked, eventId: event.id }
+      });
+      return {
+        status: "applied",
+        data: { checklistItem: updated },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser: input.checked ? "Checked checklist item." : "Unchecked checklist item."
+      };
+    }
+  });
+
+  registry.register({
+    name: "item.checklist.delete",
+    description: "Delete a checklist item.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "low_confidence",
+      retrySafety: "unsafe",
+      descriptionForModel: "Use when the user wants to remove a checklist step from a task."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      checklistItemId: z.string().min(1)
+    }),
+    handler: async (input) => {
+      const checklistItem = await itemChecklistItemForUser(store, input.userId, input.checklistItemId);
+      if (!checklistItem) {
+        return {
+          status: "failed",
+          messageForUser: `Checklist item not found: ${input.checklistItemId}`
+        };
+      }
+      const deleted = await store.updateItemChecklistItem(checklistItem.id, { deletedAt: nowIso() });
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: checklistItem.itemId,
+        eventType: "checklist_item_deleted",
+        occurredAt: nowIso(),
+        payload: { checklistItemId: checklistItem.id }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.checklist.delete",
+        toolName: "item.checklist.delete",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: checklistItem.itemId, checklistItemId: checklistItem.id, eventId: event.id }
+      });
+      return {
+        status: "applied",
+        data: { checklistItem: deleted },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser: "Deleted checklist item."
+      };
+    }
+  });
+
+  registry.register({
+    name: "item.checklist.reorder",
+    description: "Reorder checklist items for a task.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "not_required",
+      retrySafety: "idempotent",
+      descriptionForModel: "Use when the user wants checklist steps in a specific order."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      itemRef: z.string().min(1),
+      checklistItemIds: z.array(z.string().min(1)).min(1)
+    }),
+    handler: async (input) => {
+      const resolved = await resolveItem(store, input.userId, input.itemRef);
+      if (!resolved) {
+        return {
+          status: "needs_clarification",
+          clarificationPrompt: `Which item should I reorder checklist steps for "${input.itemRef}"?`
+        };
+      }
+      const existing = await store.listItemChecklistItems({
+        userId: input.userId,
+        itemId: resolved.item.id,
+        limit: 200
+      });
+      const existingIds = new Set(existing.map((item) => item.id));
+      const requestedIds = input.checklistItemIds.filter((id) => existingIds.has(id));
+      if (requestedIds.length !== input.checklistItemIds.length) {
+        return {
+          status: "failed",
+          messageForUser: "One or more checklist items do not belong to that task."
+        };
+      }
+      const reordered = [];
+      for (const [index, checklistItemId] of requestedIds.entries()) {
+        reordered.push(await store.updateItemChecklistItem(checklistItemId, { sortOrder: index }));
+      }
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: resolved.item.id,
+        eventType: "checklist_item_reordered",
+        occurredAt: nowIso(),
+        payload: { checklistItemIds: requestedIds }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.checklist.reorder",
+        toolName: "item.checklist.reorder",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: resolved.item.id, checklistItemIds: requestedIds, eventId: event.id }
+      });
+      return {
+        status: "applied",
+        data: { checklistItems: reordered },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser: "Reordered checklist."
       };
     }
   });

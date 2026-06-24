@@ -11,6 +11,9 @@ import type {
   ExternalSource,
   ExternalSourceUpsertData,
   Item,
+  ItemChecklistItem,
+  ItemChecklistItemCreateData,
+  ItemChecklistItemPatch,
   ItemEvent,
   Opportunity,
   OpportunityCreateData,
@@ -41,6 +44,9 @@ import type {
   ItemCreateData,
   ItemListFilters,
   ItemPatch,
+  ItemProgressNote,
+  ItemProgressNoteCreateData,
+  ItemProgressNotePatch,
   PolicyUpsertData,
   ProjectUpsertData,
   SearchMatch,
@@ -162,6 +168,40 @@ function itemEventFromRow(row: typeof schema.itemEvents.$inferSelect): ItemEvent
   if (row.sourceMessageId !== null) event.sourceMessageId = row.sourceMessageId;
   if (row.idempotencyKey !== null) event.idempotencyKey = row.idempotencyKey;
   return event;
+}
+
+function itemProgressNoteFromRow(row: typeof schema.itemProgressNotes.$inferSelect): ItemProgressNote {
+  const note: ItemProgressNote = {
+    id: row.id,
+    userId: row.userId,
+    itemId: row.itemId,
+    body: row.body,
+    occurredAt: row.occurredAt.toISOString(),
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) note.deletedAt = deletedAt;
+  return note;
+}
+
+function itemChecklistItemFromRow(row: typeof schema.itemChecklistItems.$inferSelect): ItemChecklistItem {
+  const checklistItem: ItemChecklistItem = {
+    id: row.id,
+    userId: row.userId,
+    itemId: row.itemId,
+    title: row.title,
+    sortOrder: row.sortOrder,
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  const checkedAt = toIso(row.checkedAt);
+  if (checkedAt !== undefined) checklistItem.checkedAt = checkedAt;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) checklistItem.deletedAt = deletedAt;
+  return checklistItem;
 }
 
 function shoppingListFromRow(row: typeof schema.shoppingLists.$inferSelect): ShoppingList {
@@ -962,6 +1002,150 @@ export class PostgresRyanStore implements RyanStore {
       )
     });
     return row ? itemEventFromRow(row) : undefined;
+  }
+
+  async createItemProgressNote(data: ItemProgressNoteCreateData): Promise<ItemProgressNote> {
+    const userId = await this.resolveUserId(data.userId);
+    const values: typeof schema.itemProgressNotes.$inferInsert = {
+      userId,
+      itemId: data.itemId,
+      body: data.body,
+      occurredAt: data.occurredAt === undefined ? new Date() : new Date(data.occurredAt),
+      metadata: data.metadata ?? {}
+    };
+    const [row] = await this.db.insert(schema.itemProgressNotes).values(values).returning();
+    if (!row) throw new Error("Failed to create item progress note");
+    return itemProgressNoteFromRow(row);
+  }
+
+  async updateItemProgressNote(noteId: UUID, patch: ItemProgressNotePatch): Promise<ItemProgressNote> {
+    const values: Partial<typeof schema.itemProgressNotes.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.body !== undefined) values.body = patch.body;
+    if (patch.occurredAt !== undefined) values.occurredAt = new Date(patch.occurredAt);
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    if (patch.deletedAt !== undefined) {
+      values.deletedAt = patch.deletedAt === null ? null : new Date(patch.deletedAt);
+    }
+    const [row] = await this.db
+      .update(schema.itemProgressNotes)
+      .set(values)
+      .where(eq(schema.itemProgressNotes.id, noteId))
+      .returning();
+    if (!row) throw new Error(`Item progress note not found: ${noteId}`);
+    return itemProgressNoteFromRow(row);
+  }
+
+  async listItemProgressNotes(filters: {
+    userId: UUID;
+    itemId: UUID;
+    limit?: number;
+  }): Promise<ItemProgressNote[]> {
+    const resolvedUserId = await this.resolveUserId(filters.userId);
+    const rows = await this.db
+      .select()
+      .from(schema.itemProgressNotes)
+      .where(
+        and(
+          eq(schema.itemProgressNotes.userId, resolvedUserId),
+          eq(schema.itemProgressNotes.itemId, filters.itemId),
+          isNull(schema.itemProgressNotes.deletedAt)
+        )
+      )
+      .orderBy(desc(schema.itemProgressNotes.occurredAt), desc(schema.itemProgressNotes.createdAt))
+      .limit(Math.min(Math.max(filters.limit ?? 100, 1), 200));
+    return rows.map(itemProgressNoteFromRow);
+  }
+
+  async getItemProgressNote(noteId: UUID): Promise<ItemProgressNote | undefined> {
+    const row = await this.db.query.itemProgressNotes.findFirst({
+      where: eq(schema.itemProgressNotes.id, noteId)
+    });
+    return row ? itemProgressNoteFromRow(row) : undefined;
+  }
+
+  async createItemChecklistItem(data: ItemChecklistItemCreateData): Promise<ItemChecklistItem> {
+    const userId = await this.resolveUserId(data.userId);
+    const sortOrder =
+      data.sortOrder ??
+      (
+        await this.db
+          .select({ value: count() })
+          .from(schema.itemChecklistItems)
+          .where(
+            and(
+              eq(schema.itemChecklistItems.userId, userId),
+              eq(schema.itemChecklistItems.itemId, data.itemId),
+              isNull(schema.itemChecklistItems.deletedAt)
+            )
+          )
+      )[0]?.value ??
+      0;
+    const values: typeof schema.itemChecklistItems.$inferInsert = {
+      userId,
+      itemId: data.itemId,
+      title: data.title,
+      sortOrder,
+      metadata: data.metadata ?? {}
+    };
+    if (data.checkedAt !== undefined) values.checkedAt = new Date(data.checkedAt);
+    const [row] = await this.db.insert(schema.itemChecklistItems).values(values).returning();
+    if (!row) throw new Error("Failed to create item checklist item");
+    return itemChecklistItemFromRow(row);
+  }
+
+  async updateItemChecklistItem(
+    checklistItemId: UUID,
+    patch: ItemChecklistItemPatch
+  ): Promise<ItemChecklistItem> {
+    const values: Partial<typeof schema.itemChecklistItems.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.title !== undefined) values.title = patch.title;
+    if (patch.sortOrder !== undefined) values.sortOrder = patch.sortOrder;
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    if (patch.checkedAt !== undefined) {
+      values.checkedAt = patch.checkedAt === null ? null : new Date(patch.checkedAt);
+    }
+    if (patch.deletedAt !== undefined) {
+      values.deletedAt = patch.deletedAt === null ? null : new Date(patch.deletedAt);
+    }
+    const [row] = await this.db
+      .update(schema.itemChecklistItems)
+      .set(values)
+      .where(eq(schema.itemChecklistItems.id, checklistItemId))
+      .returning();
+    if (!row) throw new Error(`Item checklist item not found: ${checklistItemId}`);
+    return itemChecklistItemFromRow(row);
+  }
+
+  async listItemChecklistItems(filters: {
+    userId: UUID;
+    itemId: UUID;
+    limit?: number;
+  }): Promise<ItemChecklistItem[]> {
+    const resolvedUserId = await this.resolveUserId(filters.userId);
+    const rows = await this.db
+      .select()
+      .from(schema.itemChecklistItems)
+      .where(
+        and(
+          eq(schema.itemChecklistItems.userId, resolvedUserId),
+          eq(schema.itemChecklistItems.itemId, filters.itemId),
+          isNull(schema.itemChecklistItems.deletedAt)
+        )
+      )
+      .orderBy(asc(schema.itemChecklistItems.sortOrder), asc(schema.itemChecklistItems.createdAt))
+      .limit(Math.min(Math.max(filters.limit ?? 100, 1), 200));
+    return rows.map(itemChecklistItemFromRow);
+  }
+
+  async getItemChecklistItem(checklistItemId: UUID): Promise<ItemChecklistItem | undefined> {
+    const row = await this.db.query.itemChecklistItems.findFirst({
+      where: eq(schema.itemChecklistItems.id, checklistItemId)
+    });
+    return row ? itemChecklistItemFromRow(row) : undefined;
   }
 
   async upsertRecurrencePolicy(

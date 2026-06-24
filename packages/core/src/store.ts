@@ -6,7 +6,9 @@ import type {
   EmailActionProposal,
   ExternalSource,
   Item,
+  ItemChecklistItem,
   ItemEvent,
+  ItemProgressNote,
   Opportunity,
   OpportunityProposal,
   Policy,
@@ -83,6 +85,33 @@ export type ItemListFilters = {
   completedAfter?: string;
   completedBefore?: string;
   limit?: number;
+};
+
+export type ItemProgressNoteCreateData = {
+  userId: UUID;
+  itemId: UUID;
+  body: string;
+  occurredAt?: string;
+  metadata?: JsonObject;
+};
+
+export type ItemProgressNotePatch = Partial<Pick<ItemProgressNote, "body" | "metadata">> & {
+  occurredAt?: string;
+  deletedAt?: string | null;
+};
+
+export type ItemChecklistItemCreateData = {
+  userId: UUID;
+  itemId: UUID;
+  title: string;
+  checkedAt?: string;
+  sortOrder?: number;
+  metadata?: JsonObject;
+};
+
+export type ItemChecklistItemPatch = Partial<Pick<ItemChecklistItem, "title" | "sortOrder" | "metadata">> & {
+  checkedAt?: string | null;
+  deletedAt?: string | null;
 };
 
 export type PolicyUpsertData = Omit<
@@ -387,6 +416,14 @@ export interface RyanStore {
   getItem(itemId: UUID): Promise<Item | undefined>;
   addItemEvent(event: Omit<ItemEvent, "id" | "createdAt">): Promise<ItemEvent>;
   findItemEventByIdempotencyKey(userId: UUID, key: string): Promise<ItemEvent | undefined>;
+  createItemProgressNote(data: ItemProgressNoteCreateData): Promise<ItemProgressNote>;
+  updateItemProgressNote(noteId: UUID, patch: ItemProgressNotePatch): Promise<ItemProgressNote>;
+  listItemProgressNotes(filters: { userId: UUID; itemId: UUID; limit?: number }): Promise<ItemProgressNote[]>;
+  getItemProgressNote(noteId: UUID): Promise<ItemProgressNote | undefined>;
+  createItemChecklistItem(data: ItemChecklistItemCreateData): Promise<ItemChecklistItem>;
+  updateItemChecklistItem(checklistItemId: UUID, patch: ItemChecklistItemPatch): Promise<ItemChecklistItem>;
+  listItemChecklistItems(filters: { userId: UUID; itemId: UUID; limit?: number }): Promise<ItemChecklistItem[]>;
+  getItemChecklistItem(checklistItemId: UUID): Promise<ItemChecklistItem | undefined>;
 
   upsertRecurrencePolicy(
     policy: Omit<RecurrencePolicy, "id" | "createdAt" | "updatedAt">

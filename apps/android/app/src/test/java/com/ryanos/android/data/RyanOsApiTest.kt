@@ -29,6 +29,42 @@ class RyanOsApiTest {
               "priorityScore": 84,
               "prioritySignals": ["high priority"],
               "secondaryText": "2026-05-27",
+              "progress": {
+                "count": 2,
+                "latest": [
+                  {
+                    "id": "note-1",
+                    "body": "emailed tux company",
+                    "occurredAt": "2026-05-27T13:30:00.000Z",
+                    "createdAt": "2026-05-27T13:30:00.000Z",
+                    "updatedAt": "2026-05-27T13:30:00.000Z"
+                  }
+                ]
+              },
+              "checklist": {
+                "total": 3,
+                "completed": 1,
+                "moreCount": 0,
+                "items": [
+                  {
+                    "id": "step-1",
+                    "title": "Email rental place",
+                    "checked": true,
+                    "checkedAt": "2026-05-27T13:30:00.000Z",
+                    "sortOrder": 0,
+                    "createdAt": "2026-05-27T12:00:00.000Z",
+                    "updatedAt": "2026-05-27T13:30:00.000Z"
+                  },
+                  {
+                    "id": "step-2",
+                    "title": "Confirm sizes",
+                    "checked": false,
+                    "sortOrder": 1,
+                    "createdAt": "2026-05-27T12:00:00.000Z",
+                    "updatedAt": "2026-05-27T12:00:00.000Z"
+                  }
+                ]
+              },
               "scope": {
                 "area": {
                   "id": "area-1",
@@ -95,7 +131,8 @@ class RyanOsApiTest {
       recurrenceLeadDaysBeforeDue = 3,
       showTaskDetails = false,
       colorCodeByArea = false,
-      expandedRecurrenceItemIds = setOf("item-2")
+      expandedRecurrenceItemIds = setOf("item-2"),
+      expandedDetailItemIds = setOf("item-1")
     )
 
     assertTrue(snapshot.configured)
@@ -104,9 +141,16 @@ class RyanOsApiTest {
     assertFalse(snapshot.showTaskDetails)
     assertFalse(snapshot.colorCodeByArea)
     assertTrue(snapshot.expandedRecurrenceItemIds.contains("item-2"))
+    assertTrue(snapshot.expandedDetailItemIds.contains("item-1"))
     assertEquals(2, snapshot.items.size)
     assertFalse(snapshot.items[0].checked)
     assertTrue(snapshot.items[0].starred)
+    assertEquals(2, snapshot.items[0].progress.count)
+    assertEquals("emailed tux company", snapshot.items[0].progress.latest[0].body)
+    assertEquals(3, snapshot.items[0].checklist.total)
+    assertEquals(1, snapshot.items[0].checklist.completed)
+    assertTrue(snapshot.items[0].checklist.items[0].checked)
+    assertFalse(snapshot.items[0].checklist.items[1].checked)
     assertEquals("item_complete", snapshot.items[0].action.type)
     assertEquals("Home", snapshot.items[0].scope?.area?.name)
     assertEquals("amber", snapshot.items[0].scope?.area?.color)
@@ -153,7 +197,10 @@ class RyanOsApiTest {
     assertTrue(snapshot.showTaskDetails)
     assertTrue(snapshot.colorCodeByArea)
     assertTrue(snapshot.expandedRecurrenceItemIds.isEmpty())
+    assertTrue(snapshot.expandedDetailItemIds.isEmpty())
     assertFalse(snapshot.items[0].starred)
+    assertEquals(0, snapshot.items[0].progress.count)
+    assertEquals(0, snapshot.items[0].checklist.total)
     assertNull(snapshot.items[0].scope)
     assertNull(snapshot.items[0].recurrence)
   }
@@ -209,6 +256,59 @@ class RyanOsApiTest {
 
     assertFalse(undoneSnapshot.items[0].checked)
     assertEquals("open", undoneSnapshot.items[0].status)
+  }
+
+  @Test
+  fun optimisticToggleUpdatesChecklistItem() {
+    val rawJson = """
+      {
+        "date": "2026-06-18",
+        "timezone": "America/Chicago",
+        "generatedAt": "2026-06-18T12:00:00.000Z",
+        "items": [
+          {
+            "id": "item-1",
+            "title": "Reserve tuxedos",
+            "kind": "task",
+            "status": "open",
+            "checked": false,
+            "priority": "normal",
+            "priorityScore": 10,
+            "prioritySignals": [],
+            "checklist": {
+              "total": 2,
+              "completed": 0,
+              "moreCount": 0,
+              "items": [
+                {
+                  "id": "step-1",
+                  "title": "Email rental place",
+                  "checked": false,
+                  "sortOrder": 0,
+                  "createdAt": "2026-06-18T12:00:00.000Z",
+                  "updatedAt": "2026-06-18T12:00:00.000Z"
+                }
+              ]
+            },
+            "action": {
+              "type": "item_complete",
+              "itemId": "item-1"
+            }
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val checkedPayload = RyanOsApi.optimisticallyToggleChecklistPayload(
+      rawJson = rawJson,
+      itemId = "item-1",
+      checklistItemId = "step-1",
+      checked = true
+    )
+    val snapshot = RyanOsApi.parseSnapshot(checkedPayload)
+
+    assertTrue(snapshot.items[0].checklist.items[0].checked)
+    assertEquals(1, snapshot.items[0].checklist.completed)
   }
 
   @Test

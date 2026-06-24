@@ -571,6 +571,107 @@ describe("core tools", () => {
     expect(item?.starredAt).toBeUndefined();
   });
 
+  it("adds updates and deletes item progress notes", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Reserve tuxedos",
+      kind: "task"
+    });
+
+    const added = await tools.execute("item.progress.add", {
+      userId: "user-1",
+      itemRef: "Reserve tuxedos",
+      body: "emailed tux company",
+      occurredAt: "2026-06-24T15:00:00.000Z"
+    });
+    const note = [...store.itemProgressNotes.values()][0];
+    const updated = await tools.execute("item.progress.update", {
+      userId: "user-1",
+      noteId: note!.id,
+      body: "emailed tux rental company"
+    });
+    const deleted = await tools.execute("item.progress.delete", {
+      userId: "user-1",
+      noteId: note!.id
+    });
+
+    expect(added.status).toBe("applied");
+    expect(updated.status).toBe("applied");
+    expect(deleted.status).toBe("applied");
+    expect(store.itemProgressNotes.get(note!.id)?.body).toBe("emailed tux rental company");
+    expect(store.itemProgressNotes.get(note!.id)?.deletedAt).toBeDefined();
+    expect(
+      store.itemEvents.map((event) => event.eventType)
+    ).toEqual(expect.arrayContaining(["progress_note_added", "progress_note_updated", "progress_note_deleted"]));
+  });
+
+  it("adds checks unchecks deletes and reorders checklist items", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Reserve tuxedos",
+      kind: "task"
+    });
+
+    const added = await tools.execute("item.checklist.add", {
+      userId: "user-1",
+      itemRef: "Reserve tuxedos",
+      titles: ["Email rental place", "Confirm sizes", "Pay deposit"]
+    });
+    const checklistItems = [...store.itemChecklistItems.values()].sort((a, b) => a.sortOrder - b.sortOrder);
+    const checked = await tools.execute("item.checklist.check", {
+      userId: "user-1",
+      checklistItemId: checklistItems[0]!.id,
+      checked: true,
+      checkedAt: "2026-06-24T15:00:00.000Z"
+    });
+    const unchecked = await tools.execute("item.checklist.check", {
+      userId: "user-1",
+      checklistItemId: checklistItems[0]!.id,
+      checked: false
+    });
+    const updated = await tools.execute("item.checklist.update", {
+      userId: "user-1",
+      checklistItemId: checklistItems[1]!.id,
+      title: "Confirm groomsman sizes"
+    });
+    const reordered = await tools.execute("item.checklist.reorder", {
+      userId: "user-1",
+      itemRef: "Reserve tuxedos",
+      checklistItemIds: [checklistItems[2]!.id, checklistItems[1]!.id, checklistItems[0]!.id]
+    });
+    const deleted = await tools.execute("item.checklist.delete", {
+      userId: "user-1",
+      checklistItemId: checklistItems[2]!.id
+    });
+
+    expect(added.status).toBe("applied");
+    expect(checked.status).toBe("applied");
+    expect(unchecked.status).toBe("applied");
+    expect(updated.status).toBe("applied");
+    expect(reordered.status).toBe("applied");
+    expect(deleted.status).toBe("applied");
+    expect(store.itemChecklistItems.get(checklistItems[0]!.id)?.checkedAt).toBeUndefined();
+    expect(store.itemChecklistItems.get(checklistItems[1]!.id)?.title).toBe("Confirm groomsman sizes");
+    expect(store.itemChecklistItems.get(checklistItems[2]!.id)?.sortOrder).toBe(0);
+    expect(store.itemChecklistItems.get(checklistItems[2]!.id)?.deletedAt).toBeDefined();
+    expect(store.itemEvents.map((event) => event.eventType)).toEqual(
+      expect.arrayContaining([
+        "checklist_item_added",
+        "checklist_item_checked",
+        "checklist_item_unchecked",
+        "checklist_item_updated",
+        "checklist_item_reordered",
+        "checklist_item_deleted"
+      ])
+    );
+  });
+
   it("reopens a completed one-off item", async () => {
     const store = new InMemoryRyanStore();
     const tools = createCoreToolRegistry(store);

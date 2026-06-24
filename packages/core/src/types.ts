@@ -74,6 +74,31 @@ export type Item = {
   deletedAt?: ISODateString;
 };
 
+export type ItemProgressNote = {
+  id: UUID;
+  userId: UUID;
+  itemId: UUID;
+  body: string;
+  occurredAt: ISODateString;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type ItemChecklistItem = {
+  id: UUID;
+  userId: UUID;
+  itemId: UUID;
+  title: string;
+  checkedAt?: ISODateString;
+  sortOrder: number;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
 export type ItemEventType =
   | "created"
   | "updated"
@@ -85,7 +110,16 @@ export type ItemEventType =
   | "cancelled"
   | "deleted"
   | "linked_source"
-  | "policy_changed";
+  | "policy_changed"
+  | "progress_note_added"
+  | "progress_note_updated"
+  | "progress_note_deleted"
+  | "checklist_item_added"
+  | "checklist_item_updated"
+  | "checklist_item_checked"
+  | "checklist_item_unchecked"
+  | "checklist_item_deleted"
+  | "checklist_item_reordered";
 
 export type ItemEvent = {
   id: UUID;

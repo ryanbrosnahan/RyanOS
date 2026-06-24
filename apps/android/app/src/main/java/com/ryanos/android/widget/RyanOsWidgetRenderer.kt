@@ -18,6 +18,7 @@ import android.widget.RemoteViewsService
 import com.ryanos.android.MainActivity
 import com.ryanos.android.R
 import com.ryanos.android.data.RyanOsRepository
+import com.ryanos.android.data.WidgetChecklistItem
 import com.ryanos.android.data.WidgetItem
 import com.ryanos.android.data.WidgetRecurrenceDay
 import com.ryanos.android.data.WidgetScopeLabel
@@ -120,7 +121,7 @@ private class RyanOsWidgetRemoteViewsFactory(
       operation = "native-list-factory",
       stage = "onDataSetChanged",
       startedAt = start,
-      details = "items=${rows.size} expanded=${snapshot.expandedRecurrenceItemIds.size}"
+      details = "items=${rows.size} expanded=${snapshot.expandedRecurrenceItemIds.size}/${snapshot.expandedDetailItemIds.size}"
     )
   }
 
@@ -135,9 +136,10 @@ private class RyanOsWidgetRemoteViewsFactory(
       ?: return RemoteViews(context.packageName, R.layout.widget_task_row)
     val showDetails = snapshot.showTaskDetails
     val colorCodeByArea = snapshot.colorCodeByArea && showDetails
-    val expanded = snapshot.expandedRecurrenceItemIds.contains(item.id)
+    val recurrenceExpanded = snapshot.expandedRecurrenceItemIds.contains(item.id)
+    val detailsExpanded = snapshot.expandedDetailItemIds.contains(item.id)
     return RemoteViews(context.packageName, R.layout.widget_task_row).apply {
-      bindRow(item, showDetails, colorCodeByArea, expanded)
+      bindRow(item, showDetails, colorCodeByArea, recurrenceExpanded, detailsExpanded)
     }
   }
 
@@ -146,7 +148,13 @@ private class RyanOsWidgetRemoteViewsFactory(
   override fun getViewTypeCount(): Int = 1
 
   override fun getItemId(position: Int): Long =
-    rows.getOrNull(position)?.let { stableItemId(it, snapshot.expandedRecurrenceItemIds.contains(it.id)) }
+    rows.getOrNull(position)?.let {
+      stableItemId(
+        item = it,
+        recurrenceExpanded = snapshot.expandedRecurrenceItemIds.contains(it.id),
+        detailsExpanded = snapshot.expandedDetailItemIds.contains(it.id)
+      )
+    }
       ?: position.toLong()
 
   override fun hasStableIds(): Boolean = true
@@ -155,7 +163,8 @@ private class RyanOsWidgetRemoteViewsFactory(
     item: WidgetItem,
     showDetails: Boolean,
     colorCodeByArea: Boolean,
-    expanded: Boolean
+    recurrenceExpanded: Boolean,
+    detailsExpanded: Boolean
   ) {
     setInt(
       R.id.widget_row_root,
@@ -202,7 +211,8 @@ private class RyanOsWidgetRemoteViewsFactory(
 
     bindScope(item, showDetails)
     bindDetail(item, showDetails)
-    bindDays(item, showDetails, colorCodeByArea, expanded)
+    bindDetails(item, showDetails, colorCodeByArea, detailsExpanded)
+    bindDays(item, showDetails, colorCodeByArea, recurrenceExpanded)
   }
 
   private fun RemoteViews.bindScope(item: WidgetItem, showDetails: Boolean) {
@@ -228,10 +238,10 @@ private class RyanOsWidgetRemoteViewsFactory(
 
   private fun RemoteViews.bindDetail(item: WidgetItem, showDetails: Boolean) {
     val recurrenceSummary = item.recurrence?.summary?.takeIf { it.isNotBlank() }
+    val progressSummary = progressSummary(item)
     val detail = when {
-      recurrenceSummary != null && item.secondaryText != null -> "${item.secondaryText} / $recurrenceSummary"
-      recurrenceSummary != null -> recurrenceSummary
-      item.secondaryText != null -> item.secondaryText
+      item.secondaryText != null || recurrenceSummary != null || progressSummary != null ->
+        listOfNotNull(item.secondaryText, recurrenceSummary, progressSummary).joinToString(" / ")
       item.dueAt != null -> item.dueAt
       else -> null
     }
@@ -241,6 +251,92 @@ private class RyanOsWidgetRemoteViewsFactory(
     } else {
       setViewVisibility(R.id.widget_item_detail, View.GONE)
     }
+  }
+
+  private fun RemoteViews.bindDetails(
+    item: WidgetItem,
+    showDetails: Boolean,
+    colorCodeByArea: Boolean,
+    expanded: Boolean
+  ) {
+    val hasDetails = item.progress.count > 0 || item.checklist.total > 0 || item.progress.latest.isNotEmpty()
+    if (!showDetails || !hasDetails) {
+      setViewVisibility(R.id.widget_details_toggle, View.GONE)
+      setViewVisibility(R.id.widget_details_container, View.GONE)
+      return
+    }
+
+    setViewVisibility(R.id.widget_details_toggle, View.VISIBLE)
+    setTextViewText(R.id.widget_details_toggle, if (expanded) "×" else "⋯")
+    setTextColor(R.id.widget_details_toggle, if (expanded) COLOR_BUTTON_SELECTED_TEXT else COLOR_TEXT_SECONDARY)
+    setInt(
+      R.id.widget_details_toggle,
+      "setBackgroundResource",
+      if (expanded) R.drawable.widget_button_selected_background else R.drawable.widget_button_background
+    )
+    setOnClickFillInIntent(
+      R.id.widget_details_toggle,
+      Intent()
+        .putExtra(RyanOsWidgetActions.EXTRA_WIDGET_ACTION, RyanOsWidgetActions.ACTION_TOGGLE_DETAILS)
+        .putExtra(RyanOsWidgetActions.EXTRA_ITEM_ID, item.id)
+    )
+
+    setViewVisibility(R.id.widget_details_container, if (expanded) View.VISIBLE else View.GONE)
+    if (!expanded) return
+    setViewPadding(
+      R.id.widget_details_container,
+      context.dp(if (colorCodeByArea) 46 else 36),
+      0,
+      0,
+      0
+    )
+
+    PROGRESS_NOTE_VIEW_IDS.forEachIndexed { index, viewId ->
+      val note = item.progress.latest.getOrNull(index)
+      if (note == null) {
+        setViewVisibility(viewId, View.GONE)
+      } else {
+        setViewVisibility(viewId, View.VISIBLE)
+        setTextViewText(viewId, "• ${note.body}")
+      }
+    }
+
+    if (item.checklist.total > 0) {
+      setViewVisibility(R.id.widget_checklist_summary, View.VISIBLE)
+      setTextViewText(R.id.widget_checklist_summary, "Checklist ${item.checklist.completed}/${item.checklist.total}")
+    } else {
+      setViewVisibility(R.id.widget_checklist_summary, View.GONE)
+    }
+
+    CHECKLIST_VIEW_IDS.forEachIndexed { index, viewId ->
+      val checklistItem = item.checklist.items.getOrNull(index)
+      if (checklistItem == null) {
+        setViewVisibility(viewId, View.GONE)
+      } else {
+        bindChecklistRow(viewId, item, checklistItem)
+      }
+    }
+  }
+
+  private fun RemoteViews.bindChecklistRow(
+    viewId: Int,
+    item: WidgetItem,
+    checklistItem: WidgetChecklistItem
+  ) {
+    setViewVisibility(viewId, View.VISIBLE)
+    setTextViewText(
+      viewId,
+      if (checklistItem.checked) strikethrough("☑ ${checklistItem.title}") else "☐ ${checklistItem.title}"
+    )
+    setTextColor(viewId, if (checklistItem.checked) COLOR_TEXT_SECONDARY else COLOR_TEXT_PRIMARY)
+    setOnClickFillInIntent(
+      viewId,
+      Intent()
+        .putExtra(RyanOsWidgetActions.EXTRA_WIDGET_ACTION, RyanOsWidgetActions.ACTION_TOGGLE_CHECKLIST_ITEM)
+        .putExtra(RyanOsWidgetActions.EXTRA_ITEM_ID, item.id)
+        .putExtra(RyanOsWidgetActions.EXTRA_CHECKLIST_ITEM_ID, checklistItem.id)
+        .putExtra(RyanOsWidgetActions.EXTRA_CHECKED, !checklistItem.checked)
+    )
   }
 
   private fun RemoteViews.bindDays(
@@ -321,6 +417,18 @@ private class RyanOsWidgetRemoteViewsFactory(
       R.id.widget_day_5,
       R.id.widget_day_6
     )
+    private val PROGRESS_NOTE_VIEW_IDS = intArrayOf(
+      R.id.widget_progress_note_0,
+      R.id.widget_progress_note_1
+    )
+    private val CHECKLIST_VIEW_IDS = intArrayOf(
+      R.id.widget_checklist_0,
+      R.id.widget_checklist_1,
+      R.id.widget_checklist_2,
+      R.id.widget_checklist_3,
+      R.id.widget_checklist_4,
+      R.id.widget_checklist_5
+    )
 
     private const val COLOR_BACKGROUND = 0xFFFBFCF8.toInt()
     private const val COLOR_ROW_CHECKED = 0xFFF1F4F0.toInt()
@@ -337,7 +445,7 @@ private class RyanOsWidgetRemoteViewsFactory(
       ) +
         items.filter { it.checked }.sortedByDescending { it.priorityScore }
 
-    private fun stableItemId(item: WidgetItem, expanded: Boolean): Long {
+    private fun stableItemId(item: WidgetItem, recurrenceExpanded: Boolean, detailsExpanded: Boolean): Long {
       val seed = buildString {
         append(item.id)
         append(':')
@@ -347,7 +455,21 @@ private class RyanOsWidgetRemoteViewsFactory(
         append(':')
         append(item.starred)
         append(':')
-        append(expanded)
+        append(recurrenceExpanded)
+        append(':')
+        append(detailsExpanded)
+        append(':')
+        append(item.progress.count)
+        append(':')
+        append(item.checklist.completed)
+        append('/')
+        append(item.checklist.total)
+        item.checklist.items.forEach { checklistItem ->
+          append('|')
+          append(checklistItem.id)
+          append('=')
+          append(checklistItem.checked)
+        }
         item.recurrence?.let { recurrence ->
           append(':')
           append(recurrence.summary)
@@ -398,6 +520,14 @@ private class RyanOsWidgetRemoteViewsFactory(
         day.status == "skipped" || day.status == "deferred" -> R.drawable.widget_day_skipped
         else -> R.drawable.widget_day_neutral
       }
+
+    private fun progressSummary(item: WidgetItem): String? {
+      val parts = buildList {
+        if (item.progress.count > 0) add("${item.progress.count} note${if (item.progress.count == 1) "" else "s"}")
+        if (item.checklist.total > 0) add("${item.checklist.completed}/${item.checklist.total} steps")
+      }
+      return parts.takeIf { it.isNotEmpty() }?.joinToString(" / ")
+    }
 
     private fun areaAccentColor(color: String?): Int =
       when (color) {

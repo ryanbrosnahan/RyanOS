@@ -29,6 +29,7 @@ data class WidgetSnapshot(
   val showTaskDetails: Boolean = true,
   val colorCodeByArea: Boolean = true,
   val expandedRecurrenceItemIds: Set<String> = emptySet(),
+  val expandedDetailItemIds: Set<String> = emptySet(),
   val items: List<WidgetItem> = emptyList()
 )
 
@@ -44,6 +45,8 @@ data class WidgetItem(
   val prioritySignals: List<String>,
   val dueAt: String?,
   val secondaryText: String?,
+  val progress: WidgetProgress,
+  val checklist: WidgetChecklist,
   val recurrence: WidgetRecurrence?,
   val scope: WidgetScope?,
   val action: WidgetAction
@@ -71,6 +74,36 @@ data class WidgetRecurrenceDay(
   val allowEarly: Boolean,
   val isToday: Boolean,
   val isIntended: Boolean
+)
+
+data class WidgetProgress(
+  val count: Int = 0,
+  val latest: List<WidgetProgressNote> = emptyList()
+)
+
+data class WidgetProgressNote(
+  val id: String,
+  val body: String,
+  val occurredAt: String,
+  val createdAt: String,
+  val updatedAt: String
+)
+
+data class WidgetChecklist(
+  val total: Int = 0,
+  val completed: Int = 0,
+  val moreCount: Int = 0,
+  val items: List<WidgetChecklistItem> = emptyList()
+)
+
+data class WidgetChecklistItem(
+  val id: String,
+  val title: String,
+  val checked: Boolean,
+  val checkedAt: String?,
+  val sortOrder: Int,
+  val createdAt: String,
+  val updatedAt: String
 )
 
 data class WidgetScope(

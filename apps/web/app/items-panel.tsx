@@ -9,6 +9,7 @@ import {
   ClipboardList,
   Code2,
   CalendarDays,
+  ChevronDown,
   Folder,
   FolderKanban,
   Gauge,
@@ -26,6 +27,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { ItemProgressDetails, ItemProgressSummaryLine } from "./item-progress-details";
 
 type RecurrenceDay = {
   date: string;
@@ -84,6 +86,20 @@ type Item = {
   priority: string;
   priorityScore: number;
   prioritySignals: string[];
+  progress?: {
+    count: number;
+    latest?: {
+      id: string;
+      body: string;
+      occurredAt: string;
+      createdAt: string;
+      updatedAt: string;
+    };
+  };
+  checklist?: {
+    total: number;
+    completed: number;
+  };
   hiddenUntil?: string;
   dueAt?: string;
   completedAt?: string;
@@ -384,6 +400,7 @@ export function ItemsPanel() {
   const [refreshing, setRefreshing] = useState(false);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [editingScopeItemId, setEditingScopeItemId] = useState<string | null>(null);
+  const [expandedDetailItemIds, setExpandedDetailItemIds] = useState<Set<string>>(new Set());
   const timezone = useMemo(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago",
     []
@@ -749,6 +766,7 @@ export function ItemsPanel() {
               return project.areaId === undefined || project.areaId === selectedAreaId;
             });
             const editingScope = editingScopeItemId === item.id;
+            const detailsExpanded = expandedDetailItemIds.has(item.id);
             return (
               <div key={item.id} className="py-3 first:pt-0 last:pb-0">
                 <div className="flex items-start justify-between gap-4">
@@ -817,6 +835,28 @@ export function ItemsPanel() {
                         >
                           <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
                         </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedDetailItemIds((current) => {
+                              const next = new Set(current);
+                              if (next.has(item.id)) next.delete(item.id);
+                              else next.add(item.id);
+                              return next;
+                            })
+                          }
+                          className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900 ${
+                            detailsExpanded ? "bg-stone-100 text-stone-900" : ""
+                          }`}
+                          aria-label={`${detailsExpanded ? "Hide" : "Show"} progress and checklist for ${item.title}`}
+                          aria-expanded={detailsExpanded}
+                          title={detailsExpanded ? "Hide details" : "Details"}
+                        >
+                          <ChevronDown
+                            className={`h-3.5 w-3.5 transition ${detailsExpanded ? "rotate-180" : ""}`}
+                            aria-hidden="true"
+                          />
+                        </button>
                       </div>
                       <div className="mt-1 flex min-w-0 flex-wrap gap-1.5">
                         {item.scope?.area ? (
@@ -834,6 +874,7 @@ export function ItemsPanel() {
                       <p className="mt-1 text-xs text-stone-600">
                         {item.kind} / {item.priority} / {completed ? "done today" : item.status}
                       </p>
+                      <ItemProgressSummaryLine item={item} />
                       {editingScope ? (
                         <div className="mt-2 grid gap-2 sm:grid-cols-2">
                           <label className="sr-only" htmlFor={`area-${item.id}`}>
@@ -989,6 +1030,19 @@ export function ItemsPanel() {
                         {lastDoneLabel}
                       </span>
                     ) : null}
+                  </div>
+                ) : null}
+                {detailsExpanded ? (
+                  <div className="pl-12">
+                    <ItemProgressDetails
+                      item={item}
+                      timezone={timezone}
+                      onChanged={(updatedItem) =>
+                        setItems((current) =>
+                          current.map((candidate) => (candidate.id === updatedItem.id ? updatedItem : candidate))
+                        )
+                      }
+                    />
                   </div>
                 ) : null}
               </div>

@@ -11,6 +11,8 @@ import {
   type Area,
   type DailyPlan,
   type Item,
+  type ItemChecklistItem,
+  type ItemProgressNote,
   type ProviderAccount,
   type Project,
   type RecurrenceEvent,
@@ -132,6 +134,60 @@ const mobileToggleItemBodySchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   toggle: z.boolean().default(false),
   allowEarly: z.boolean().default(false)
+});
+
+const itemDetailsQuerySchema = z.object({
+  userId: z.string().default("local-owner"),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+});
+
+const progressNoteBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  body: z.string().trim().min(1).max(4000),
+  occurredAt: z.string().optional()
+});
+
+const progressNotePatchBodySchema = progressNoteBodySchema.partial({
+  body: true,
+  occurredAt: true
+}).extend({
+  userId: z.string().default("local-owner"),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+});
+
+const checklistItemBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  title: z.string().trim().min(1).max(500)
+});
+
+const checklistItemPatchBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  title: z.string().trim().min(1).max(500).optional(),
+  checked: z.boolean().optional(),
+  sortOrder: z.number().int().optional()
+});
+
+const checklistReorderBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  checklistItemIds: z.array(z.string().min(1)).min(1)
+});
+
+const mobileToggleChecklistItemBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  checked: z.boolean().optional(),
+  timezone: z.string().default("America/Chicago"),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  toggle: z.boolean().default(true)
 });
 
 const shoppingCategorySchema = z.enum([
@@ -300,6 +356,14 @@ const opportunityProposalActionBodySchema = z.object({
 
 const itemActionParamsSchema = z.object({
   itemId: z.string().min(1)
+});
+
+const progressNoteParamsSchema = itemActionParamsSchema.extend({
+  noteId: z.string().min(1)
+});
+
+const checklistItemParamsSchema = itemActionParamsSchema.extend({
+  checklistItemId: z.string().min(1)
 });
 
 const completeItemBodySchema = z.object({
@@ -1365,9 +1429,35 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     project: ReturnType<typeof projectForDashboard> | undefined;
   };
 
+  type DashboardProgressNote = {
+    id: string;
+    body: string;
+    occurredAt: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+
+  type DashboardChecklistItem = {
+    id: string;
+    title: string;
+    checked: boolean;
+    checkedAt?: string;
+    sortOrder: number;
+    createdAt: string;
+    updatedAt: string;
+  };
+
   type DashboardItemBase = Item & {
     scope: DashboardScope;
     starred: boolean;
+    progress: {
+      count: number;
+      latest?: DashboardProgressNote;
+    };
+    checklist: {
+      total: number;
+      completed: number;
+    };
     completion: {
       completedToday: boolean;
       completedAt?: string;
@@ -1380,6 +1470,29 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     prioritySignals: string[];
     hiddenUntil?: string;
   };
+
+  function progressNoteForDashboard(note: ItemProgressNote): DashboardProgressNote {
+    return {
+      id: note.id,
+      body: note.body,
+      occurredAt: note.occurredAt,
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt
+    };
+  }
+
+  function checklistItemForDashboard(item: ItemChecklistItem): DashboardChecklistItem {
+    const checklistItem: DashboardChecklistItem = {
+      id: item.id,
+      title: item.title,
+      checked: item.checkedAt !== undefined,
+      sortOrder: item.sortOrder,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt
+    };
+    if (item.checkedAt !== undefined) checklistItem.checkedAt = item.checkedAt;
+    return checklistItem;
+  }
 
   function priorityRank(priority: Item["priority"]): number {
     switch (priority) {
@@ -1539,10 +1652,12 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
   }
 
   async function itemForDashboard(item: Item, timeZone: string, referenceDateKey: string): Promise<DashboardItem> {
-    const [policy, itemArea, itemProject] = await Promise.all([
+    const [policy, itemArea, itemProject, progressNotes, checklistItems] = await Promise.all([
       store.findRecurrencePolicyForItem(item.id),
       item.areaId === undefined ? Promise.resolve(undefined) : store.getArea(item.areaId),
-      item.projectId === undefined ? Promise.resolve(undefined) : store.getProject(item.projectId)
+      item.projectId === undefined ? Promise.resolve(undefined) : store.getProject(item.projectId),
+      store.listItemProgressNotes({ userId: item.userId, itemId: item.id, limit: 200 }),
+      store.listItemChecklistItems({ userId: item.userId, itemId: item.id, limit: 200 })
     ]);
     const projectArea =
       itemArea === undefined && itemProject?.areaId !== undefined
@@ -1566,6 +1681,14 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       ...item,
       starred: item.starredAt !== undefined,
       scope,
+      progress: {
+        count: progressNotes.length,
+        ...(progressNotes[0] === undefined ? {} : { latest: progressNoteForDashboard(progressNotes[0]) })
+      },
+      checklist: {
+        total: checklistItems.length,
+        completed: checklistItems.filter((checklistItem) => checklistItem.checkedAt !== undefined).length
+      },
       completion
     };
     if (!policy) return withDashboardPriority(dashboardItem, timeZone, referenceDateKey);
@@ -1578,6 +1701,29 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       ...dashboardItem,
       recurrence: recurrenceProgress(policy, state, events, timeZone, referenceDateKey)
     }, timeZone, referenceDateKey);
+  }
+
+  async function itemForUser(userId: string, itemId: string): Promise<Item | undefined> {
+    const match = (await store.searchItems(userId, itemId, 1))[0];
+    return match?.record.id === itemId ? match.record : undefined;
+  }
+
+  async function itemDetailsPayload(input: {
+    userId: string;
+    item: Item;
+    timezone: string;
+    dateKey: string;
+  }) {
+    const [dashboardItem, progressNotes, checklistItems] = await Promise.all([
+      itemForDashboard(input.item, input.timezone, input.dateKey),
+      store.listItemProgressNotes({ userId: input.userId, itemId: input.item.id, limit: 200 }),
+      store.listItemChecklistItems({ userId: input.userId, itemId: input.item.id, limit: 200 })
+    ]);
+    return {
+      item: dashboardItem,
+      progressNotes: progressNotes.map(progressNoteForDashboard),
+      checklistItems: checklistItems.map(checklistItemForDashboard)
+    };
   }
 
   function itemEffort(item: DashboardItem): "easy" | "medium" | "big" {
@@ -1746,6 +1892,18 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     lastDoneLabel?: string;
   };
 
+  type MobileWidgetProgress = {
+    count: number;
+    latest: DashboardProgressNote[];
+  };
+
+  type MobileWidgetChecklist = {
+    total: number;
+    completed: number;
+    moreCount: number;
+    items: DashboardChecklistItem[];
+  };
+
   type MobileWidgetItem = {
     id: string;
     title: string;
@@ -1760,6 +1918,8 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     starredAt?: string;
     dueAt?: string;
     secondaryText?: string;
+    progress: MobileWidgetProgress;
+    checklist: MobileWidgetChecklist;
     recurrence?: MobileWidgetRecurrence;
     scope?: {
       area?: ReturnType<typeof areaForDashboard>;
@@ -1867,7 +2027,11 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     return widgetRecurrence;
   }
 
-  function mobileWidgetItemForDashboard(item: DashboardItem, timeZone: string, dateKey: string): MobileWidgetItem {
+  async function mobileWidgetItemForDashboard(
+    item: DashboardItem,
+    timeZone: string,
+    dateKey: string
+  ): Promise<MobileWidgetItem> {
     const hasRecurrence = item.recurrence !== undefined;
     const action: MobileWidgetItemAction = hasRecurrence
       ? {
@@ -1880,6 +2044,11 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
           type: "item_complete",
           itemId: item.id
         };
+    const [progressNotes, checklistItems] = await Promise.all([
+      store.listItemProgressNotes({ userId: item.userId, itemId: item.id, limit: 2 }),
+      store.listItemChecklistItems({ userId: item.userId, itemId: item.id, limit: 200 })
+    ]);
+    const visibleChecklistItems = checklistItems.slice(0, 6);
     const widgetItem: MobileWidgetItem = {
       id: item.id,
       title: item.title,
@@ -1890,7 +2059,17 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       priority: item.priority,
       priorityScore: item.priorityScore,
       prioritySignals: item.prioritySignals,
-      action
+      action,
+      progress: {
+        count: item.progress.count,
+        latest: progressNotes.map(progressNoteForDashboard)
+      },
+      checklist: {
+        total: item.checklist.total,
+        completed: item.checklist.completed,
+        moreCount: Math.max(0, checklistItems.length - visibleChecklistItems.length),
+        items: visibleChecklistItems.map(checklistItemForDashboard)
+      }
     };
     if (item.starredAt !== undefined) widgetItem.starredAt = item.starredAt;
     const dueAt = mobileDueAt(item);
@@ -1924,9 +2103,11 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       date: input.dateKey,
       timezone: input.timezone,
       generatedAt: nowIso(),
-      items: items
-        .slice(0, input.limit)
-        .map((item) => mobileWidgetItemForDashboard(item, input.timezone, input.dateKey))
+      items: await Promise.all(
+        items
+          .slice(0, input.limit)
+          .map((item) => mobileWidgetItemForDashboard(item, input.timezone, input.dateKey))
+      )
     };
   }
 
@@ -2751,7 +2932,7 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       item:
         dashboardItem === undefined
           ? undefined
-          : mobileWidgetItemForDashboard(dashboardItem, body.timezone, dateKey),
+          : await mobileWidgetItemForDashboard(dashboardItem, body.timezone, dateKey),
       widget: await mobileWidgetPayload({
         userId: body.userId,
         timezone: body.timezone,
@@ -2806,7 +2987,299 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
       item:
         updatedDashboardItem === undefined
           ? undefined
-          : mobileWidgetItemForDashboard(updatedDashboardItem, body.timezone, dateKey)
+          : await mobileWidgetItemForDashboard(updatedDashboardItem, body.timezone, dateKey)
+    };
+  });
+
+  app.post("/v1/mobile/items/:itemId/checklist-items/:checklistItemId/toggle", async (request, reply) => {
+    const params = checklistItemParamsSchema.parse(request.params);
+    const body = mobileToggleChecklistItemBodySchema.parse(request.body);
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const item = await itemForUser(body.userId, params.itemId);
+    const checklistItem = item
+      ? (await store.listItemChecklistItems({ userId: body.userId, itemId: item.id, limit: 200 }))
+          .find((candidate) => candidate.id === params.checklistItemId)
+      : undefined;
+    if (!item || !checklistItem) {
+      reply.code(404);
+      return {
+        result: {
+          status: "failed",
+          messageForUser: `Checklist item not found: ${params.checklistItemId}`
+        }
+      };
+    }
+    const checked = body.toggle ? checklistItem.checkedAt === undefined : body.checked ?? true;
+    const result = await tools.execute("item.checklist.check", {
+      userId: body.userId,
+      checklistItemId: params.checklistItemId,
+      checked
+    });
+    if (result.status === "failed" || result.status === "rejected" || result.status === "needs_clarification") {
+      reply.code(400);
+    }
+    const updated = await store.getItem(params.itemId);
+    const updatedDashboardItem =
+      updated === undefined ? undefined : await itemForDashboard(updated, body.timezone, dateKey);
+    return {
+      result,
+      item:
+        updatedDashboardItem === undefined
+          ? undefined
+          : await mobileWidgetItemForDashboard(updatedDashboardItem, body.timezone, dateKey)
+    };
+  });
+
+  app.get("/v1/items/:itemId/details", async (request, reply) => {
+    const params = itemActionParamsSchema.parse(request.params);
+    const query = itemDetailsQuerySchema.parse(request.query);
+    const dateKey = query.date ?? localDateKey(new Date(), query.timezone);
+    const item = await itemForUser(query.userId, params.itemId);
+    if (!item) {
+      reply.code(404);
+      return { error: `Item not found: ${params.itemId}` };
+    }
+    return itemDetailsPayload({
+      userId: query.userId,
+      item,
+      timezone: query.timezone,
+      dateKey
+    });
+  });
+
+  app.post("/v1/items/:itemId/progress-notes", async (request, reply) => {
+    const params = itemActionParamsSchema.parse(request.params);
+    const body = progressNoteBodySchema.parse(request.body);
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const item = await itemForUser(body.userId, params.itemId);
+    if (!item) {
+      reply.code(404);
+      return { error: `Item not found: ${params.itemId}` };
+    }
+    const result = await tools.execute("item.progress.add", {
+      userId: body.userId,
+      itemRef: params.itemId,
+      body: body.body,
+      occurredAt: body.occurredAt
+    });
+    if (result.status === "failed" || result.status === "rejected" || result.status === "needs_clarification") {
+      reply.code(400);
+    }
+    const updated = await store.getItem(params.itemId);
+    return {
+      result,
+      ...(await itemDetailsPayload({
+        userId: body.userId,
+        item: updated ?? item,
+        timezone: body.timezone,
+        dateKey
+      }))
+    };
+  });
+
+  app.patch("/v1/items/:itemId/progress-notes/:noteId", async (request, reply) => {
+    const params = progressNoteParamsSchema.parse(request.params);
+    const body = progressNotePatchBodySchema.parse(request.body);
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const item = await itemForUser(body.userId, params.itemId);
+    const note = await store.getItemProgressNote(params.noteId);
+    if (!item || !note || note.itemId !== params.itemId) {
+      reply.code(404);
+      return { error: `Progress note not found: ${params.noteId}` };
+    }
+    if (body.body === undefined && body.occurredAt === undefined) {
+      reply.code(400);
+      return { error: "Progress note update requires body or occurredAt." };
+    }
+    const result = await tools.execute("item.progress.update", {
+      userId: body.userId,
+      noteId: params.noteId,
+      body: body.body,
+      occurredAt: body.occurredAt
+    });
+    if (result.status === "failed" || result.status === "rejected" || result.status === "needs_clarification") {
+      reply.code(400);
+    }
+    return {
+      result,
+      ...(await itemDetailsPayload({
+        userId: body.userId,
+        item,
+        timezone: body.timezone,
+        dateKey
+      }))
+    };
+  });
+
+  app.delete("/v1/items/:itemId/progress-notes/:noteId", async (request, reply) => {
+    const params = progressNoteParamsSchema.parse(request.params);
+    const body = itemDetailsQuerySchema.parse(request.body ?? {});
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const item = await itemForUser(body.userId, params.itemId);
+    const note = await store.getItemProgressNote(params.noteId);
+    if (!item || !note || note.itemId !== params.itemId) {
+      reply.code(404);
+      return { error: `Progress note not found: ${params.noteId}` };
+    }
+    const result = await tools.execute("item.progress.delete", {
+      userId: body.userId,
+      noteId: params.noteId
+    });
+    if (result.status === "failed" || result.status === "rejected" || result.status === "needs_clarification") {
+      reply.code(400);
+    }
+    return {
+      result,
+      ...(await itemDetailsPayload({
+        userId: body.userId,
+        item,
+        timezone: body.timezone,
+        dateKey
+      }))
+    };
+  });
+
+  app.post("/v1/items/:itemId/checklist-items", async (request, reply) => {
+    const params = itemActionParamsSchema.parse(request.params);
+    const body = checklistItemBodySchema.parse(request.body);
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const item = await itemForUser(body.userId, params.itemId);
+    if (!item) {
+      reply.code(404);
+      return { error: `Item not found: ${params.itemId}` };
+    }
+    const result = await tools.execute("item.checklist.add", {
+      userId: body.userId,
+      itemRef: params.itemId,
+      title: body.title
+    });
+    if (result.status === "failed" || result.status === "rejected" || result.status === "needs_clarification") {
+      reply.code(400);
+    }
+    return {
+      result,
+      ...(await itemDetailsPayload({
+        userId: body.userId,
+        item,
+        timezone: body.timezone,
+        dateKey
+      }))
+    };
+  });
+
+  app.patch("/v1/items/:itemId/checklist-items/:checklistItemId", async (request, reply) => {
+    const params = checklistItemParamsSchema.parse(request.params);
+    const body = checklistItemPatchBodySchema.parse(request.body);
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const item = await itemForUser(body.userId, params.itemId);
+    const checklistItem = item
+      ? (await store.listItemChecklistItems({ userId: body.userId, itemId: item.id, limit: 200 }))
+          .find((candidate) => candidate.id === params.checklistItemId)
+      : undefined;
+    if (!item || !checklistItem) {
+      reply.code(404);
+      return { error: `Checklist item not found: ${params.checklistItemId}` };
+    }
+    const results: unknown[] = [];
+    if (body.title !== undefined || body.sortOrder !== undefined) {
+      results.push(
+        await tools.execute("item.checklist.update", {
+          userId: body.userId,
+          checklistItemId: params.checklistItemId,
+          title: body.title,
+          sortOrder: body.sortOrder
+        })
+      );
+    }
+    if (body.checked !== undefined) {
+      results.push(
+        await tools.execute("item.checklist.check", {
+          userId: body.userId,
+          checklistItemId: params.checklistItemId,
+          checked: body.checked
+        })
+      );
+    }
+    if (results.length === 0) {
+      reply.code(400);
+      return { error: "Checklist update requires title, sortOrder, or checked." };
+    }
+    const failed = results.find(
+      (result) =>
+        typeof result === "object" &&
+        result !== null &&
+        "status" in result &&
+        ["failed", "rejected", "needs_clarification"].includes(String((result as { status?: unknown }).status))
+    );
+    if (failed !== undefined) reply.code(400);
+    return {
+      result: results[results.length - 1],
+      results,
+      ...(await itemDetailsPayload({
+        userId: body.userId,
+        item,
+        timezone: body.timezone,
+        dateKey
+      }))
+    };
+  });
+
+  app.delete("/v1/items/:itemId/checklist-items/:checklistItemId", async (request, reply) => {
+    const params = checklistItemParamsSchema.parse(request.params);
+    const body = itemDetailsQuerySchema.parse(request.body ?? {});
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const item = await itemForUser(body.userId, params.itemId);
+    const checklistItem = item
+      ? (await store.listItemChecklistItems({ userId: body.userId, itemId: item.id, limit: 200 }))
+          .find((candidate) => candidate.id === params.checklistItemId)
+      : undefined;
+    if (!item || !checklistItem) {
+      reply.code(404);
+      return { error: `Checklist item not found: ${params.checklistItemId}` };
+    }
+    const result = await tools.execute("item.checklist.delete", {
+      userId: body.userId,
+      checklistItemId: params.checklistItemId
+    });
+    if (result.status === "failed" || result.status === "rejected" || result.status === "needs_clarification") {
+      reply.code(400);
+    }
+    return {
+      result,
+      ...(await itemDetailsPayload({
+        userId: body.userId,
+        item,
+        timezone: body.timezone,
+        dateKey
+      }))
+    };
+  });
+
+  app.post("/v1/items/:itemId/checklist-items/reorder", async (request, reply) => {
+    const params = itemActionParamsSchema.parse(request.params);
+    const body = checklistReorderBodySchema.parse(request.body);
+    const dateKey = body.date ?? localDateKey(new Date(), body.timezone);
+    const item = await itemForUser(body.userId, params.itemId);
+    if (!item) {
+      reply.code(404);
+      return { error: `Item not found: ${params.itemId}` };
+    }
+    const result = await tools.execute("item.checklist.reorder", {
+      userId: body.userId,
+      itemRef: params.itemId,
+      checklistItemIds: body.checklistItemIds
+    });
+    if (result.status === "failed" || result.status === "rejected" || result.status === "needs_clarification") {
+      reply.code(400);
+    }
+    return {
+      result,
+      ...(await itemDetailsPayload({
+        userId: body.userId,
+        item,
+        timezone: body.timezone,
+        dateKey
+      }))
     };
   });
 

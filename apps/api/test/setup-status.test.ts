@@ -1163,6 +1163,133 @@ describe("setup status", () => {
     });
   });
 
+  it("exposes task progress notes and checklist details through item and widget APIs", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Reserve tuxedos",
+          kind: "task",
+          priority: "high"
+        }
+      }
+    });
+    const itemId = created.json().data.item.id as string;
+
+    const progress = await app.inject({
+      method: "POST",
+      url: `/v1/items/${itemId}/progress-notes`,
+      payload: {
+        userId: "local-owner",
+        timezone: "UTC",
+        body: "emailed tux company",
+        occurredAt: "2026-06-24T15:00:00.000Z"
+      }
+    });
+    const checklist = await app.inject({
+      method: "POST",
+      url: `/v1/items/${itemId}/checklist-items`,
+      payload: {
+        userId: "local-owner",
+        timezone: "UTC",
+        title: "Confirm groomsman sizes"
+      }
+    });
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-06-24&timezone=UTC"
+    });
+    const details = await app.inject({
+      method: "GET",
+      url: `/v1/items/${itemId}/details?userId=local-owner&date=2026-06-24&timezone=UTC`
+    });
+    const checklistItemId = details.json().checklistItems[0].id as string;
+    const widget = await app.inject({
+      method: "GET",
+      url: "/v1/mobile/widget-items?userId=local-owner&date=2026-06-24&timezone=UTC"
+    });
+    const toggled = await app.inject({
+      method: "POST",
+      url: `/v1/mobile/items/${itemId}/checklist-items/${checklistItemId}/toggle`,
+      payload: {
+        userId: "local-owner",
+        timezone: "UTC",
+        checked: true,
+        toggle: false
+      }
+    });
+    await app.close();
+
+    expect(progress.statusCode).toBe(200);
+    expect(checklist.statusCode).toBe(200);
+    expect(listed.json().items[0]).toMatchObject({
+      id: itemId,
+      progress: {
+        count: 1,
+        latest: expect.objectContaining({
+          body: "emailed tux company"
+        })
+      },
+      checklist: {
+        total: 1,
+        completed: 0
+      }
+    });
+    expect(details.json()).toMatchObject({
+      progressNotes: [
+        expect.objectContaining({
+          body: "emailed tux company"
+        })
+      ],
+      checklistItems: [
+        expect.objectContaining({
+          title: "Confirm groomsman sizes",
+          checked: false
+        })
+      ]
+    });
+    expect(widget.json().items[0]).toMatchObject({
+      id: itemId,
+      progress: {
+        count: 1,
+        latest: [
+          expect.objectContaining({
+            body: "emailed tux company"
+          })
+        ]
+      },
+      checklist: {
+        total: 1,
+        completed: 0,
+        items: [
+          expect.objectContaining({
+            id: checklistItemId,
+            checked: false
+          })
+        ]
+      }
+    });
+    expect(toggled.statusCode).toBe(200);
+    expect(toggled.json().item).toMatchObject({
+      id: itemId,
+      checklist: {
+        total: 1,
+        completed: 1,
+        items: [
+          expect.objectContaining({
+            id: checklistItemId,
+            checked: true
+          })
+        ]
+      }
+    });
+  });
+
   it("sorts starred mobile widget items before higher-priority unstarred items", async () => {
     vi.stubEnv("DATABASE_URL", "");
 

@@ -41,13 +41,14 @@ class RyanOsRepository private constructor(context: Context) {
         recurrenceLeadDaysBeforeDue = settings.recurrenceLeadDaysBeforeDue,
         showTaskDetails = settings.showTaskDetails,
         colorCodeByArea = settings.colorCodeByArea,
-        expandedRecurrenceItemIds = preferences[EXPANDED_RECURRENCE_IDS] ?: emptySet()
+        expandedRecurrenceItemIds = preferences[EXPANDED_RECURRENCE_IDS] ?: emptySet(),
+        expandedDetailItemIds = preferences[EXPANDED_DETAIL_IDS] ?: emptySet()
       )
       WidgetTiming.mark(
         operation = "repository.snapshotFlow",
         stage = "parse",
         startedAt = parseStart,
-        details = "items=${snapshot.items.size} expanded=${snapshot.expandedRecurrenceItemIds.size} payloadChars=${preferences[CACHED_WIDGET_PAYLOAD]?.length ?: 0} error=${snapshot.error != null}"
+        details = "items=${snapshot.items.size} expanded=${snapshot.expandedRecurrenceItemIds.size}/${snapshot.expandedDetailItemIds.size} payloadChars=${preferences[CACHED_WIDGET_PAYLOAD]?.length ?: 0} error=${snapshot.error != null}"
       )
       snapshot
     }
@@ -161,6 +162,31 @@ class RyanOsRepository private constructor(context: Context) {
       stage = "snapshotFlow.first",
       startedAt = snapshotStart,
       details = "items=${snapshot.items.size} expanded=${snapshot.expandedRecurrenceItemIds.size} total=${WidgetTiming.elapsed(operationStart)}ms"
+    )
+    snapshot
+  }
+
+  suspend fun toggleDetailsExpanded(itemId: String): WidgetSnapshot = withContext(Dispatchers.IO) {
+    val operationStart = WidgetTiming.now()
+    WidgetTiming.event(
+      operation = "repository.toggleDetailsExpanded",
+      event = "start",
+      details = "item=${WidgetTiming.shortId(itemId)}"
+    )
+    val editStart = WidgetTiming.now()
+    dataStore.edit { preferences ->
+      val current = preferences[EXPANDED_DETAIL_IDS] ?: emptySet()
+      preferences[EXPANDED_DETAIL_IDS] =
+        if (current.contains(itemId)) current - itemId else current + itemId
+    }
+    WidgetTiming.mark("repository.toggleDetailsExpanded", "dataStore.edit", editStart)
+    val snapshotStart = WidgetTiming.now()
+    val snapshot = snapshotFlow.first()
+    WidgetTiming.mark(
+      operation = "repository.toggleDetailsExpanded",
+      stage = "snapshotFlow.first",
+      startedAt = snapshotStart,
+      details = "items=${snapshot.items.size} expanded=${snapshot.expandedDetailItemIds.size} total=${WidgetTiming.elapsed(operationStart)}ms"
     )
     snapshot
   }
@@ -447,6 +473,74 @@ class RyanOsRepository private constructor(context: Context) {
     snapshot
   }
 
+  suspend fun toggleChecklistItemOptimistically(
+    itemId: String,
+    checklistItemId: String,
+    checked: Boolean
+  ): WidgetSnapshot = withContext(Dispatchers.IO) {
+    val operationStart = WidgetTiming.now()
+    WidgetTiming.event(
+      operation = "repository.toggleChecklistItemOptimistically",
+      event = "start",
+      details = "item=${WidgetTiming.shortId(itemId)} checklist=${WidgetTiming.shortId(checklistItemId)} checked=$checked"
+    )
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext snapshotFlow.first()
+    dataStore.edit { preferences ->
+      val updatedPayload = RyanOsApi.optimisticallyToggleChecklistPayload(
+        rawJson = preferences[CACHED_WIDGET_PAYLOAD],
+        itemId = itemId,
+        checklistItemId = checklistItemId,
+        checked = checked
+      )
+      if (!updatedPayload.isNullOrBlank()) {
+        preferences[CACHED_WIDGET_PAYLOAD] = updatedPayload
+      }
+      preferences[EXPANDED_DETAIL_IDS] = (preferences[EXPANDED_DETAIL_IDS] ?: emptySet()) + itemId
+      preferences.remove(LAST_ERROR)
+    }
+    val snapshot = snapshotFlow.first()
+    WidgetTiming.mark(
+      operation = "repository.toggleChecklistItemOptimistically",
+      stage = "snapshotFlow.first",
+      startedAt = operationStart,
+      details = "items=${snapshot.items.size} total=${WidgetTiming.elapsed(operationStart)}ms"
+    )
+    snapshot
+  }
+
+  suspend fun cachedChecklistState(itemId: String, checklistItemId: String): Boolean? = withContext(Dispatchers.IO) {
+    snapshotFlow.first().items
+      .firstOrNull { it.id == itemId }
+      ?.checklist
+      ?.items
+      ?.firstOrNull { it.id == checklistItemId }
+      ?.checked
+  }
+
+  suspend fun sendToggleChecklistItem(
+    itemId: String,
+    checklistItemId: String,
+    checked: Boolean
+  ): Boolean = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext false
+    runCatching {
+      RyanOsApi.toggleChecklistItem(
+        settings = settings,
+        itemId = itemId,
+        checklistItemId = checklistItemId,
+        checked = checked
+      )
+      true
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[LAST_ERROR] = error.userFacingMessage()
+      }
+      false
+    }
+  }
+
   suspend fun cachedCompletionState(itemId: String, date: String?): Boolean? = withContext(Dispatchers.IO) {
     val snapshot = snapshotFlow.first()
     val item = snapshot.items.firstOrNull { it.id == itemId } ?: return@withContext null
@@ -600,6 +694,7 @@ class RyanOsRepository private constructor(context: Context) {
     private val SHOW_TASK_DETAILS = booleanPreferencesKey("show_task_details")
     private val COLOR_CODE_BY_AREA = booleanPreferencesKey("color_code_by_area")
     private val EXPANDED_RECURRENCE_IDS = stringSetPreferencesKey("expanded_recurrence_ids")
+    private val EXPANDED_DETAIL_IDS = stringSetPreferencesKey("expanded_detail_ids")
     private val CACHED_WIDGET_PAYLOAD = stringPreferencesKey("cached_widget_payload")
     private val LAST_SYNCED_AT = stringPreferencesKey("last_synced_at")
     private val LAST_ERROR = stringPreferencesKey("last_error")

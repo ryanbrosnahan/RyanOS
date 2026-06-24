@@ -199,6 +199,35 @@ export const itemEvents = pgTable("item_events", {
   idempotencyIdx: uniqueIndex("item_events_idempotency_idx").on(table.userId, table.idempotencyKey)
 }));
 
+export const itemProgressNotes = pgTable("item_progress_notes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  itemId: uuid("item_id").notNull().references(() => items.id),
+  body: text("body").notNull(),
+  occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  itemOccurredIdx: index("item_progress_notes_item_occurred_idx").on(table.itemId, table.occurredAt),
+  userItemIdx: index("item_progress_notes_user_item_idx").on(table.userId, table.itemId)
+}));
+
+export const itemChecklistItems = pgTable("item_checklist_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  itemId: uuid("item_id").notNull().references(() => items.id),
+  title: text("title").notNull(),
+  checkedAt: timestamp("checked_at", { withTimezone: true }),
+  sortOrder: integer("sort_order").notNull().default(0),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  itemSortIdx: index("item_checklist_items_item_sort_idx").on(table.itemId, table.sortOrder),
+  userItemIdx: index("item_checklist_items_user_item_idx").on(table.userId, table.itemId)
+}));
+
 export const shoppingLists = pgTable("shopping_lists", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),

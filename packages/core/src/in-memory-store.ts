@@ -8,8 +8,12 @@ import type {
   AreaUpsertData,
   DailyPlanUpsertData,
   ItemCreateData,
+  ItemChecklistItemCreateData,
+  ItemChecklistItemPatch,
   ItemListFilters,
   ItemPatch,
+  ItemProgressNoteCreateData,
+  ItemProgressNotePatch,
   OpportunityCreateData,
   OpportunityPatch,
   OpportunityProposalListFilters,
@@ -38,7 +42,9 @@ import type {
   EmailActionProposal,
   ExternalSource,
   Item,
+  ItemChecklistItem,
   ItemEvent,
+  ItemProgressNote,
   Opportunity,
   OpportunityProposal,
   Policy,
@@ -63,6 +69,8 @@ export class InMemoryRyanStore implements RyanStore {
   readonly areas = new Map<UUID, Area>();
   readonly projects = new Map<UUID, Project>();
   readonly items = new Map<UUID, Item>();
+  readonly itemProgressNotes = new Map<UUID, ItemProgressNote>();
+  readonly itemChecklistItems = new Map<UUID, ItemChecklistItem>();
   readonly itemEvents: ItemEvent[] = [];
   readonly recurrencePolicies = new Map<UUID, RecurrencePolicy>();
   readonly recurrenceEvents: RecurrenceEvent[] = [];
@@ -381,6 +389,126 @@ export class InMemoryRyanStore implements RyanStore {
     return this.itemEvents.find(
       (event) => event.userId === userId && event.idempotencyKey === key
     );
+  }
+
+  async createItemProgressNote(data: ItemProgressNoteCreateData): Promise<ItemProgressNote> {
+    const timestamp = nowIso();
+    const note: ItemProgressNote = {
+      id: createId("item_progress_note"),
+      userId: data.userId,
+      itemId: data.itemId,
+      body: data.body,
+      occurredAt: data.occurredAt ?? timestamp,
+      metadata: data.metadata ?? {},
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.itemProgressNotes.set(note.id, note);
+    return note;
+  }
+
+  async updateItemProgressNote(noteId: UUID, patch: ItemProgressNotePatch): Promise<ItemProgressNote> {
+    const note = this.itemProgressNotes.get(noteId);
+    if (!note) throw new Error(`Item progress note not found: ${noteId}`);
+    const updated: ItemProgressNote = {
+      ...note,
+      updatedAt: nowIso()
+    };
+    if (patch.body !== undefined) updated.body = patch.body;
+    if (patch.occurredAt !== undefined) updated.occurredAt = patch.occurredAt;
+    if (patch.metadata !== undefined) updated.metadata = patch.metadata;
+    if (patch.deletedAt !== undefined) {
+      if (patch.deletedAt === null) delete updated.deletedAt;
+      else updated.deletedAt = patch.deletedAt;
+    }
+    this.itemProgressNotes.set(noteId, updated);
+    return updated;
+  }
+
+  async listItemProgressNotes(filters: {
+    userId: UUID;
+    itemId: UUID;
+    limit?: number;
+  }): Promise<ItemProgressNote[]> {
+    return [...this.itemProgressNotes.values()]
+      .filter((note) => note.userId === filters.userId && note.itemId === filters.itemId && !note.deletedAt)
+      .sort((a, b) => {
+        if (a.occurredAt !== b.occurredAt) return b.occurredAt.localeCompare(a.occurredAt);
+        return b.createdAt.localeCompare(a.createdAt);
+      })
+      .slice(0, Math.min(Math.max(filters.limit ?? 100, 1), 200));
+  }
+
+  async getItemProgressNote(noteId: UUID): Promise<ItemProgressNote | undefined> {
+    return this.itemProgressNotes.get(noteId);
+  }
+
+  async createItemChecklistItem(data: ItemChecklistItemCreateData): Promise<ItemChecklistItem> {
+    const timestamp = nowIso();
+    const sortOrder =
+      data.sortOrder ??
+      Math.max(
+        -1,
+        ...[...this.itemChecklistItems.values()]
+          .filter((item) => item.userId === data.userId && item.itemId === data.itemId && !item.deletedAt)
+          .map((item) => item.sortOrder)
+      ) + 1;
+    const checklistItem: ItemChecklistItem = {
+      id: createId("item_checklist_item"),
+      userId: data.userId,
+      itemId: data.itemId,
+      title: data.title,
+      sortOrder,
+      metadata: data.metadata ?? {},
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    if (data.checkedAt !== undefined) checklistItem.checkedAt = data.checkedAt;
+    this.itemChecklistItems.set(checklistItem.id, checklistItem);
+    return checklistItem;
+  }
+
+  async updateItemChecklistItem(
+    checklistItemId: UUID,
+    patch: ItemChecklistItemPatch
+  ): Promise<ItemChecklistItem> {
+    const checklistItem = this.itemChecklistItems.get(checklistItemId);
+    if (!checklistItem) throw new Error(`Item checklist item not found: ${checklistItemId}`);
+    const updated: ItemChecklistItem = {
+      ...checklistItem,
+      updatedAt: nowIso()
+    };
+    if (patch.title !== undefined) updated.title = patch.title;
+    if (patch.sortOrder !== undefined) updated.sortOrder = patch.sortOrder;
+    if (patch.metadata !== undefined) updated.metadata = patch.metadata;
+    if (patch.checkedAt !== undefined) {
+      if (patch.checkedAt === null) delete updated.checkedAt;
+      else updated.checkedAt = patch.checkedAt;
+    }
+    if (patch.deletedAt !== undefined) {
+      if (patch.deletedAt === null) delete updated.deletedAt;
+      else updated.deletedAt = patch.deletedAt;
+    }
+    this.itemChecklistItems.set(checklistItemId, updated);
+    return updated;
+  }
+
+  async listItemChecklistItems(filters: {
+    userId: UUID;
+    itemId: UUID;
+    limit?: number;
+  }): Promise<ItemChecklistItem[]> {
+    return [...this.itemChecklistItems.values()]
+      .filter((item) => item.userId === filters.userId && item.itemId === filters.itemId && !item.deletedAt)
+      .sort((a, b) => {
+        if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+        return a.createdAt.localeCompare(b.createdAt);
+      })
+      .slice(0, Math.min(Math.max(filters.limit ?? 100, 1), 200));
+  }
+
+  async getItemChecklistItem(checklistItemId: UUID): Promise<ItemChecklistItem | undefined> {
+    return this.itemChecklistItems.get(checklistItemId);
   }
 
   async upsertRecurrencePolicy(

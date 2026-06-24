@@ -54,7 +54,9 @@ class RyanOsWidgetReceiver : AppWidgetProvider() {
       RyanOsWidgetActions.ACTION_ROW -> {
         when (widgetAction) {
           RyanOsWidgetActions.ACTION_TOGGLE_DAYS -> handleToggleDays(context, intent)
+          RyanOsWidgetActions.ACTION_TOGGLE_DETAILS -> handleToggleDetails(context, intent)
           RyanOsWidgetActions.ACTION_TOGGLE_ITEM -> handleToggleItem(context, intent)
+          RyanOsWidgetActions.ACTION_TOGGLE_CHECKLIST_ITEM -> handleToggleChecklistItem(context, intent)
           else -> super.onReceive(context, intent)
         }
       }
@@ -85,6 +87,48 @@ class RyanOsWidgetReceiver : AppWidgetProvider() {
         stage = "renderer.updateAll",
         startedAt = start,
         details = "total=${WidgetTiming.elapsed(start)}ms"
+      )
+    }
+  }
+
+  private fun handleToggleDetails(context: Context, intent: Intent) {
+    val itemId = intent.getStringExtra(RyanOsWidgetActions.EXTRA_ITEM_ID) ?: return
+    goAsync {
+      val start = WidgetTiming.now()
+      val snapshot = RyanOsRepository.getInstance(context).toggleDetailsExpanded(itemId)
+      WidgetTiming.mark(
+        operation = "native-toggle-details-action",
+        stage = "repository.toggleDetailsExpanded",
+        startedAt = start,
+        details = "items=${snapshot.items.size} expanded=${snapshot.expandedDetailItemIds.size}"
+      )
+      RyanOsWidgetRenderer.updateAll(context)
+    }
+  }
+
+  private fun handleToggleChecklistItem(context: Context, intent: Intent) {
+    val itemId = intent.getStringExtra(RyanOsWidgetActions.EXTRA_ITEM_ID) ?: return
+    val checklistItemId = intent.getStringExtra(RyanOsWidgetActions.EXTRA_CHECKLIST_ITEM_ID) ?: return
+    val checked = intent.getBooleanExtra(RyanOsWidgetActions.EXTRA_CHECKED, false)
+    goAsync {
+      val start = WidgetTiming.now()
+      val snapshot = RyanOsRepository.getInstance(context).toggleChecklistItemOptimistically(
+        itemId = itemId,
+        checklistItemId = checklistItemId,
+        checked = checked
+      )
+      WidgetTiming.mark(
+        operation = "native-toggle-checklist-action",
+        stage = "repository.toggleChecklistItemOptimistically",
+        startedAt = start,
+        details = "items=${snapshot.items.size} error=${snapshot.error != null}"
+      )
+      RyanOsWidgetRenderer.updateAll(context)
+      WidgetSyncScheduler.enqueueChecklistToggle(
+        context = context,
+        itemId = itemId,
+        checklistItemId = checklistItemId,
+        checked = checked
       )
     }
   }

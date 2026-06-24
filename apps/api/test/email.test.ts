@@ -563,6 +563,68 @@ describe("email integration API", () => {
     expect(items.json().items).toEqual([]);
   });
 
+  it("creates proposal progress notes and checklist items when accepting concrete email hints", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const account = await store.upsertProviderAccount({
+      userId: "local-owner",
+      provider: "gmail",
+      externalAccountId: "ryan@example.com",
+      email: "ryan@example.com"
+    });
+    const source = await store.upsertExternalSource({
+      userId: "local-owner",
+      provider: "gmail",
+      providerAccountId: account.id,
+      externalId: "msg-progress",
+      title: "Tux rental follow-up"
+    });
+    const proposal = await store.upsertEmailActionProposal({
+      userId: "local-owner",
+      sourceId: source.id,
+      providerAccountId: account.id,
+      idempotencyKey: "gmail:progress",
+      actionType: "task",
+      title: "Get groomsman tuxedos reserved",
+      metadata: {
+        initialProgressNote: "emailed tux company",
+        checklistItems: ["Confirm sizes", "Pay deposit"]
+      }
+    });
+    const app = buildApp({
+      store,
+      ai: proposalAi(),
+      emailClient: fakeGmailClient()
+    });
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/v1/email/proposals/${proposal.id}/accept`,
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    await app.close();
+
+    const itemId = accepted.json().item.id as string;
+    expect(accepted.statusCode).toBe(200);
+    expect(await store.listItemProgressNotes({ userId: "local-owner", itemId })).toEqual([
+      expect.objectContaining({
+        body: "emailed tux company"
+      })
+    ]);
+    expect(await store.listItemChecklistItems({ userId: "local-owner", itemId })).toEqual([
+      expect.objectContaining({
+        title: "Confirm sizes",
+        sortOrder: 0
+      }),
+      expect.objectContaining({
+        title: "Pay deposit",
+        sortOrder: 1
+      })
+    ]);
+  });
+
   it("rejects a proposal when local-owner resolves to the stored owner UUID", async () => {
     vi.stubEnv("DATABASE_URL", "");
     const resolvedUserId = "00000000-0000-4000-8000-000000000001";

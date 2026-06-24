@@ -2,6 +2,7 @@
 
 import { Check, CheckCircle2, ChevronDown, Loader2, RefreshCw, Star, Target } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ItemProgressDetails, ItemProgressSummaryLine } from "./item-progress-details";
 
 type ScopeLabel = {
   id: string;
@@ -35,6 +36,20 @@ type FocusItem = {
   priority: string;
   priorityScore: number;
   prioritySignals: string[];
+  progress?: {
+    count: number;
+    latest?: {
+      id: string;
+      body: string;
+      occurredAt: string;
+      createdAt: string;
+      updatedAt: string;
+    };
+  };
+  checklist?: {
+    total: number;
+    completed: number;
+  };
   dueAt?: string;
   scope?: {
     area?: ScopeLabel;
@@ -135,6 +150,7 @@ export function DailyFocusPanel() {
   const [suggesting, setSuggesting] = useState(false);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expandedDetailItemIds, setExpandedDetailItemIds] = useState<Set<string>>(new Set());
   const suggestionAttemptedRef = useRef(false);
   const timezone = useMemo(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago",
@@ -143,6 +159,22 @@ export function DailyFocusPanel() {
 
   function applyPayload(nextPayload: DailyPlanPayload) {
     setPayload(nextPayload);
+  }
+
+  function mergeItemIntoPayload(updatedItem: FocusItem) {
+    setPayload((current) => {
+      if (!current) return current;
+      const updateItems = (items: FocusItem[]) =>
+        items.map((item) => (item.id === updatedItem.id ? updatedItem : item));
+      return {
+        ...current,
+        starredItems: updateItems(current.starredItems),
+        suggestedItems: updateItems(current.suggestedItems),
+        selectedItems: updateItems(current.selectedItems),
+        dueItems: updateItems(current.dueItems),
+        items: updateItems(current.items)
+      };
+    });
   }
 
   async function loadPlan(options?: { background?: boolean }) {
@@ -364,6 +396,7 @@ export function DailyFocusPanel() {
               const completed = completedForDate(item, payload.date);
               const completeKey = `${item.id}:complete`;
               const starKey = `${item.id}:star`;
+              const detailsExpanded = expandedDetailItemIds.has(item.id);
               return (
                 <article
                   key={item.id}
@@ -383,6 +416,9 @@ export function DailyFocusPanel() {
                       </span>
                       <span className="mt-1 block text-xs leading-5 text-stone-600">
                         {itemMeta(item)}
+                      </span>
+                      <span className="mt-1 block">
+                        <ItemProgressSummaryLine item={item} />
                       </span>
                     </span>
                     <span className="flex shrink-0 items-center gap-1">
@@ -410,8 +446,40 @@ export function DailyFocusPanel() {
                       >
                         <Star className="h-4 w-4 fill-current" aria-hidden="true" />
                       </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedDetailItemIds((current) => {
+                            const next = new Set(current);
+                            if (next.has(item.id)) next.delete(item.id);
+                            else next.add(item.id);
+                            return next;
+                          })
+                        }
+                        className={`inline-flex h-7 w-7 items-center justify-center rounded-md bg-white text-stone-700 ring-1 ring-stone-200 hover:bg-stone-50 ${
+                          detailsExpanded ? "bg-stone-100" : ""
+                        }`}
+                        aria-label={`${detailsExpanded ? "Hide" : "Show"} progress and checklist for ${item.title}`}
+                        aria-expanded={detailsExpanded}
+                        title={detailsExpanded ? "Hide details" : "Details"}
+                      >
+                        <ChevronDown
+                          className={`h-4 w-4 transition ${detailsExpanded ? "rotate-180" : ""}`}
+                          aria-hidden="true"
+                        />
+                      </button>
                     </span>
                   </span>
+                  {detailsExpanded ? (
+                    <ItemProgressDetails
+                      item={item}
+                      timezone={timezone}
+                      onChanged={(updatedItem) => {
+                        mergeItemIntoPayload(updatedItem);
+                        void loadPlan({ background: true });
+                      }}
+                    />
+                  ) : null}
                   <span className="mt-auto pt-3">
                     <span
                       className={`inline-flex rounded-md px-2 py-1 text-xs font-medium ring-1 ${
