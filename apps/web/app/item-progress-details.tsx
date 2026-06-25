@@ -2,6 +2,7 @@
 
 import { Check, Circle, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { apiFetch, apiPath } from "./api-client";
 
 export type ItemProgressSummary = {
   progress?: {
@@ -42,8 +43,6 @@ type DetailsPayload<TItem extends DetailItem> = {
   progressNotes: ProgressNote[];
   checklistItems: ChecklistItem[];
 };
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
 
 function formatTimestamp(value: string, timezone: string): string {
   return new Intl.DateTimeFormat("en-US", {
@@ -103,10 +102,9 @@ export function ItemProgressDetails<TItem extends DetailItem>({
     setError(null);
     try {
       const params = new URLSearchParams({
-        userId: "local-owner",
         timezone
       });
-      const response = await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/details?${params.toString()}`, {
+      const response = await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}/details?${params.toString()}`), {
         cache: "no-store"
       });
       if (!response.ok) throw new Error(`Details returned ${response.status}`);
@@ -135,10 +133,10 @@ export function ItemProgressDetails<TItem extends DetailItem>({
     setPendingKey("note:add");
     setError(null);
     try {
-      await applyPayload(await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/progress-notes`, {
+      await applyPayload(await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}/progress-notes`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: "local-owner", timezone, body })
+        body: JSON.stringify({ timezone, body })
       }));
       setNoteBody("");
     } catch (err) {
@@ -154,10 +152,10 @@ export function ItemProgressDetails<TItem extends DetailItem>({
     setPendingKey(`${noteId}:note:update`);
     setError(null);
     try {
-      await applyPayload(await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/progress-notes/${encodeURIComponent(noteId)}`, {
+      await applyPayload(await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}/progress-notes/${encodeURIComponent(noteId)}`), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: "local-owner", timezone, body })
+        body: JSON.stringify({ timezone, body })
       }));
       setEditingNoteId(null);
       setEditingNoteBody("");
@@ -172,10 +170,10 @@ export function ItemProgressDetails<TItem extends DetailItem>({
     setPendingKey(`${noteId}:note:delete`);
     setError(null);
     try {
-      await applyPayload(await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/progress-notes/${encodeURIComponent(noteId)}`, {
+      await applyPayload(await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}/progress-notes/${encodeURIComponent(noteId)}`), {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: "local-owner", timezone })
+        body: JSON.stringify({ timezone })
       }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -190,10 +188,10 @@ export function ItemProgressDetails<TItem extends DetailItem>({
     setPendingKey("checklist:add");
     setError(null);
     try {
-      await applyPayload(await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/checklist-items`, {
+      await applyPayload(await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}/checklist-items`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: "local-owner", timezone, title })
+        body: JSON.stringify({ timezone, title })
       }));
       setChecklistTitle("");
     } catch (err) {
@@ -207,10 +205,10 @@ export function ItemProgressDetails<TItem extends DetailItem>({
     setPendingKey(`${checklistItemId}:checklist`);
     setError(null);
     try {
-      await applyPayload(await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/checklist-items/${encodeURIComponent(checklistItemId)}`, {
+      await applyPayload(await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}/checklist-items/${encodeURIComponent(checklistItemId)}`), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: "local-owner", timezone, ...patch })
+        body: JSON.stringify({ timezone, ...patch })
       }));
       setEditingChecklistId(null);
       setEditingChecklistTitle("");
@@ -225,10 +223,10 @@ export function ItemProgressDetails<TItem extends DetailItem>({
     setPendingKey(`${checklistItemId}:checklist:delete`);
     setError(null);
     try {
-      await applyPayload(await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/checklist-items/${encodeURIComponent(checklistItemId)}`, {
+      await applyPayload(await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}/checklist-items/${encodeURIComponent(checklistItemId)}`), {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: "local-owner", timezone })
+        body: JSON.stringify({ timezone })
       }));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

@@ -80,6 +80,10 @@ must live outside the public core.
 - Public domain auth is a planned future mode, not required for V1.
 - Browser API access is origin-scoped through `RYANOS_CORS_ORIGINS`; add LAN,
   Tailscale, tunnel, or public dashboard origins explicitly before exposing them.
+- Production access requires app-layer authentication with `RYANOS_AUTH_MODE=required`.
+  The accepted Phase 1 auth implementation uses Better Auth as a self-hosted
+  library inside the API service with RyanOS-owned Postgres tables. It is not a
+  managed auth service dependency.
 
 ### Deployment Targets
 
@@ -99,6 +103,19 @@ must live outside the public core.
 - Use Caddy as the default reverse proxy when public HTTPS is needed.
 - Keep the public-auth boundary independent of Tailscale so the system can move
   from private access to public access without replacing core application auth.
+
+### Auth Boundary
+
+- Local development may run with `RYANOS_AUTH_MODE=dev-local`, which preserves
+  the original trusted local-owner behavior for fast iteration.
+- Server and public deployments must run with `RYANOS_AUTH_MODE=required`.
+- Browser, mobile, and admin API requests must derive `userId` from the
+  authenticated session on the API side. Clients should not be trusted to choose
+  `userId`.
+- Sign-up is invite-code gated while email/password auth is enabled.
+- Gmail OAuth is an integration authorization flow, not the primary RyanOS login
+  system. Google sign-in can be added later as an auth provider if the product
+  needs it, but Gmail access alone must not be treated as app identity.
 
 ## 4. System Components
 
@@ -448,7 +465,8 @@ a sufficient primary secret strategy.
 
 ### Authentication
 
-Use Better Auth for application authentication and session management.
+Use Better Auth for application authentication and session management as a
+self-hosted library inside the RyanOS API service.
 
 Even when the app is reachable only over LAN or Tailscale, it should have a real
 owner account and session model in V1 so public auth is not a later retrofit.
@@ -644,7 +662,7 @@ V1 should prove the core operating loop:
 - Accept chat updates for completion, snooze, and policy changes.
 - Produce a daily plan with success criteria.
 - Send Telegram notifications.
-- Support a single owner account with Better Auth.
+- Support a single owner account with self-hosted Better Auth.
 - Keep an audit log.
 - Run scheduled jobs.
 - Back up and restore a local deployment.

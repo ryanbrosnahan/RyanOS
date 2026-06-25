@@ -2,6 +2,7 @@
 
 import { Check, CheckCircle2, ChevronDown, Loader2, RefreshCw, Star, Target } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { apiFetch, apiPath } from "./api-client";
 import { ItemProgressDetails, ItemProgressSummaryLine } from "./item-progress-details";
 
 type ScopeLabel = {
@@ -78,8 +79,6 @@ type DailyPlanPayload = {
   dueItems: FocusItem[];
   items: FocusItem[];
 };
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
 
 function formatPlanDate(dateKey: string): string {
   return new Intl.DateTimeFormat("en-US", {
@@ -182,10 +181,9 @@ export function DailyFocusPanel() {
     setError(null);
     try {
       const params = new URLSearchParams({
-        userId: "local-owner",
         timezone
       });
-      const response = await fetch(`${apiUrl}/v1/daily-plan?${params.toString()}`, {
+      const response = await apiFetch(apiPath(`/v1/daily-plan?${params.toString()}`), {
         cache: "no-store"
       });
       if (!response.ok) throw new Error(`Daily plan returned ${response.status}`);
@@ -201,13 +199,12 @@ export function DailyFocusPanel() {
     if (!options?.background) setSuggesting(true);
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/v1/daily-plan/suggest`, {
+      const response = await apiFetch(apiPath("/v1/daily-plan/suggest"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          userId: "local-owner",
           timezone
         })
       });
@@ -225,13 +222,12 @@ export function DailyFocusPanel() {
     setPendingKey(key);
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/star`, {
+      const response = await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}/star`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          userId: "local-owner",
           timezone,
           starred: !item.starred
         })
@@ -253,26 +249,24 @@ export function DailyFocusPanel() {
     setError(null);
     try {
       const response = item.recurrence
-        ? await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/recurrence-days/${payload.date}`, {
+        ? await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}/recurrence-days/${payload.date}`), {
             method: "POST",
             headers: {
               "Content-Type": "application/json"
             },
             body: JSON.stringify({
-              userId: "local-owner",
               completed: true,
               allowEarly: isEarlyMinimumRecurrenceDate(item, payload.date, timezone),
               timezone,
               referenceDate: payload.date
             })
           })
-        : await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/complete`, {
+        : await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}/complete`), {
             method: "POST",
             headers: {
               "Content-Type": "application/json"
             },
             body: JSON.stringify({
-              userId: "local-owner",
               completed: true,
               timezone
             })

@@ -59,14 +59,38 @@ pnpm secrets:generate-key
 Edit `/opt/ryanos/.env` and set at least:
 
 - `DB_PASSWORD`
+- `BETTER_AUTH_URL`
+- `BETTER_AUTH_SECRET`
+- `RYANOS_INVITE_CODES`
 - `RYANOS_CODEX_BRIDGE_TOKEN`
 - `RYANOS_CODEX_WORKDIR`
 
-The bootstrap script generates `DB_PASSWORD` and `RYANOS_CODEX_BRIDGE_TOKEN`
-automatically if they still have the `change-me` placeholder values. It also
-sets `RYANOS_CODEX_BRIDGE_HOST` to the Docker bridge IP when available so the
-API container can reach the host-side Codex bridge through
-`host.docker.internal`.
+The bootstrap script generates `DB_PASSWORD`, `BETTER_AUTH_SECRET`,
+`RYANOS_INVITE_CODES`, and `RYANOS_CODEX_BRIDGE_TOKEN` automatically if they
+still have the `change-me` placeholder values. It also sets
+`RYANOS_CODEX_BRIDGE_HOST` to the Docker bridge IP when available so the API
+container can reach the host-side Codex bridge through `host.docker.internal`.
+
+## Auth
+
+The server deployment runs with `RYANOS_AUTH_MODE=required`. RyanOS uses Better
+Auth as a self-hosted library inside the API container, backed by the same
+Postgres database as the rest of the app. It does not require a Better Auth
+hosted account or paid managed service.
+
+Set the public browser origin in `/opt/ryanos/.env`:
+
+```bash
+RYANOS_AUTH_MODE=required
+BETTER_AUTH_URL=https://<your-tailscale-serve-name>
+BETTER_AUTH_SECRET=<long-random-secret>
+RYANOS_INVITE_CODES=<comma-separated-signup-codes>
+RYANOS_AUTH_SECURE_COOKIES=true
+```
+
+Only people with a valid invite code can create accounts while email/password
+sign-up is enabled. After the first trusted accounts exist, rotate or remove
+unused invite codes.
 
 If restoring an existing deployment, restore both the Postgres data and the
 matching `secrets/master-key`. Encrypted integration tokens cannot be decrypted
@@ -193,6 +217,7 @@ If Telegram polling is ready, set this in `/opt/ryanos/.env`:
 
 ```bash
 COMPOSE_PROFILES=telegram
+TELEGRAM_USER_EMAIL_MAP=<telegram-sender-id>:<ryanos-account-email>
 ```
 
 Then start or redeploy:
@@ -214,7 +239,8 @@ If Tailscale says Serve is not enabled, open the URL it prints, enable Serve for
 the tailnet, then rerun the `tailscale serve` command.
 
 Open the reported HTTPS URL from the phone. Do not use Tailscale Funnel for
-RyanOS until real owner authentication is implemented.
+RyanOS unless `RYANOS_AUTH_MODE=required`, secure cookies, invite codes, and the
+public auth URL are configured and reviewed.
 
 ## Deploy after local edits
 

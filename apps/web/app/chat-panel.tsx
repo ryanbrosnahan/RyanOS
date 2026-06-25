@@ -7,6 +7,7 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent
 } from "react";
+import { apiFetch, apiPath } from "./api-client";
 
 type ToolResult = {
   status: string;
@@ -45,7 +46,6 @@ type MessagesResponse = {
   messages: StoredMessage[];
 };
 
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
 const defaultPanelHeight = 440;
 const minPanelHeight = 320;
 const maxPanelHeight = 820;
@@ -92,10 +92,9 @@ export function ChatPanel() {
       const params = new URLSearchParams({
         provider: "web",
         chatId: "dashboard",
-        userId: "local-owner",
         limit: "20"
       });
-      const response = await fetch(`${apiUrl}/v1/messages?${params.toString()}`, {
+      const response = await apiFetch(apiPath(`/v1/messages?${params.toString()}`), {
         cache: "no-store"
       });
       if (!response.ok) throw new Error(`Message history returned ${response.status}`);
@@ -209,7 +208,7 @@ export function ChatPanel() {
     setSending(true);
 
     try {
-      const response = await fetch(`${apiUrl}/v1/messages`, {
+      const response = await apiFetch(apiPath("/v1/messages"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -217,7 +216,6 @@ export function ChatPanel() {
         body: JSON.stringify({
           provider: "web",
           chatId: "dashboard",
-          userId: "local-owner",
           text
         })
       });

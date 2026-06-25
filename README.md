@@ -28,9 +28,12 @@ once the encrypted bot token is imported. The dashboard includes a setup-status 
 that posts natural language through the same message pipeline and reloads recent
 persisted chat history, plus a read-only open-item list. Local secret handling
 now supports an external master key plus encrypted `secret_records` for
-integration credentials. The current typed tool surface includes item search, create,
-update, complete, and snooze; recurrence policy/event recording; notification
-policy persistence; and state explain placeholders.
+integration credentials. Authentication is now wired through self-hosted Better
+Auth tables in the RyanOS database: local development can still use the
+`dev-local` owner flow, while production deployments require a signed-in user.
+The current typed tool surface includes item search, create, update, complete,
+and snooze; recurrence policy/event recording; notification policy persistence;
+and state explain placeholders.
 
 ## Local Dev
 
@@ -57,6 +60,13 @@ Browser access to the API is intentionally origin-scoped. For local development,
 `RYANOS_CORS_ORIGINS` defaults to `http://localhost:3100,http://127.0.0.1:3100`.
 Add the eventual LAN, Tailscale, or public dashboard origin there before using
 that access path.
+
+Local development defaults to `RYANOS_AUTH_MODE=dev-local`, so the dashboard can
+open without sign-in while iterating. To test real auth locally, set
+`RYANOS_AUTH_MODE=required`, `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`, and
+`RYANOS_INVITE_CODES` in `.env`, then create an account from the dashboard.
+Better Auth is used as a self-hosted library in the API process, backed by
+Postgres; no Better Auth hosted service is required.
 
 When RyanOS needs a human setup action, such as Codex login or a Telegram bot
 token, it should expose that through setup status instead of failing silently or
@@ -152,5 +162,5 @@ until a specific version converts to Apache 2.0 under the future-license grant.
 
 ## Next Build Step
 
-Connect the Codex-login bridge to the typed tool runtime, then add scheduled
+Verify the Android build on a machine with JDK 17, then add scheduled
 notification delivery using the encrypted token store.

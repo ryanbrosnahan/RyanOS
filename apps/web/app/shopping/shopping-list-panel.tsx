@@ -2,6 +2,7 @@
 
 import { Check, Plus, RefreshCw, RotateCcw, ShoppingBasket } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { apiFetch, apiPath } from "../api-client";
 
 type ShoppingCategory = "grocery" | "personal care" | "household good" | "health" | "miscellaneous";
 
@@ -30,9 +31,6 @@ type ShoppingResponse = {
   items: ShoppingItem[];
   suggestions: ShoppingSuggestion[];
 };
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
-const userId = "local-owner";
 
 const fallbackCategories: ShoppingCategory[] = [
   "grocery",
@@ -92,7 +90,7 @@ export function ShoppingListPanel() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`${apiUrl}/v1/shopping/list?userId=${encodeURIComponent(userId)}`);
+      const response = await apiFetch(apiPath("/v1/shopping/list"));
       if (!response.ok) throw new Error(`Shopping API ${response.status}`);
       setData(await response.json());
     } catch (err) {
@@ -113,11 +111,10 @@ export function ShoppingListPanel() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`${apiUrl}/v1/shopping/items`, {
+      const response = await apiFetch(apiPath("/v1/shopping/items"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId,
           name,
           ...(quantity.trim() ? { quantity: quantity.trim() } : {}),
           ...(category ? { category } : {})
@@ -138,11 +135,10 @@ export function ShoppingListPanel() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`${apiUrl}/v1/shopping/items`, {
+      const response = await apiFetch(apiPath("/v1/shopping/items"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId,
           name: suggestion.name,
           category: suggestion.category
         })
@@ -173,10 +169,10 @@ export function ShoppingListPanel() {
       });
     }
     try {
-      const response = await fetch(`${apiUrl}/v1/shopping/items/${item.id}/check`, {
+      const response = await apiFetch(apiPath(`/v1/shopping/items/${item.id}/check`), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, checked })
+        body: JSON.stringify({ checked })
       });
       if (!response.ok) throw new Error(`Shopping API ${response.status}`);
       setData(await response.json());

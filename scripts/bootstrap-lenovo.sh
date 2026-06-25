@@ -103,6 +103,12 @@ prepare_env() {
   if grep -q '^RYANOS_CODEX_BRIDGE_TOKEN=change-me$' .env; then
     sed -i "s/^RYANOS_CODEX_BRIDGE_TOKEN=.*/RYANOS_CODEX_BRIDGE_TOKEN=$(openssl rand -hex 32)/" .env
   fi
+  if grep -q '^BETTER_AUTH_SECRET=change-me$' .env; then
+    sed -i "s/^BETTER_AUTH_SECRET=.*/BETTER_AUTH_SECRET=$(openssl rand -hex 32)/" .env
+  fi
+  if grep -q '^RYANOS_INVITE_CODES=change-me$' .env; then
+    sed -i "s/^RYANOS_INVITE_CODES=.*/RYANOS_INVITE_CODES=$(openssl rand -hex 8)/" .env
+  fi
   if grep -q '^RYANOS_CODEX_WORKDIR=$' .env; then
     sed -i "s|^RYANOS_CODEX_WORKDIR=.*|RYANOS_CODEX_WORKDIR=$HOME/.local/share/ryanos/codex-workdir|" .env
   fi

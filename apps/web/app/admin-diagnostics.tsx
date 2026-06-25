@@ -8,6 +8,7 @@ import {
   RefreshCw
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { apiFetch, apiPath } from "./api-client";
 
 type AiSmokeResponse = {
   ok: boolean;
@@ -47,8 +48,6 @@ type ItemsResponse = {
   timezone: string;
   items: DebugItem[];
 };
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
 
 function formatShortDate(value: string | undefined): string | undefined {
   if (!value) return undefined;
@@ -111,12 +110,12 @@ export function AiDiagnosticsPanel() {
     setLoadingSmoke(true);
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/v1/ai/smoke`, {
+      const response = await apiFetch(apiPath("/v1/ai/smoke"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ userId: "local-owner" })
+        body: JSON.stringify({})
       });
       const payload = (await response.json()) as AiSmokeResponse;
       setSmoke(payload);
@@ -188,14 +187,13 @@ export function AttentionDebugPanel() {
     setError(null);
     try {
       const params = new URLSearchParams({
-        userId: "local-owner",
         status: "open,active,waiting",
         includeDoneToday: "true",
         includeHidden: "true",
         timezone,
         limit: "100"
       });
-      const response = await fetch(`${apiUrl}/v1/items?${params.toString()}`, {
+      const response = await apiFetch(apiPath(`/v1/items?${params.toString()}`), {
         cache: "no-store"
       });
       if (!response.ok) throw new Error(`Attention debug returned ${response.status}`);

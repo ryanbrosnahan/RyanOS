@@ -2,6 +2,7 @@
 
 import { Mail, Play, RefreshCw, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
+import { apiFetch, apiPath } from "../api-client";
 
 type SetupAction = {
   id: string;
@@ -70,8 +71,6 @@ type ScanResponse = {
   };
 };
 
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
-
 function statusTone(setup: SetupEntry): string {
   if (setup.ready) return "bg-emerald-50 text-emerald-800";
   if (setup.setupRequired) return "bg-amber-50 text-amber-800";
@@ -107,7 +106,7 @@ export function EmailIntegrationPanel() {
       setError(null);
     }
     try {
-      const response = await fetch(`${apiUrl}/v1/email/accounts?userId=local-owner`, {
+      const response = await apiFetch(apiPath("/v1/email/accounts"), {
         cache: "no-store"
       });
       if (!response.ok) throw new Error(`Gmail accounts returned ${response.status}`);
@@ -123,14 +122,12 @@ export function EmailIntegrationPanel() {
     setBusy("sync");
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/v1/email/accounts/sync`, {
+      const response = await apiFetch(apiPath("/v1/email/accounts/sync"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-          userId: "local-owner"
-        })
+        body: JSON.stringify({})
       });
       if (!response.ok) throw new Error(`Gmail sync returned ${response.status}`);
       await loadAccounts({ background: true });
@@ -145,13 +142,12 @@ export function EmailIntegrationPanel() {
     setBusy("scan");
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/v1/email/scan`, {
+      const response = await apiFetch(apiPath("/v1/email/scan"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          userId: "local-owner",
           syncAccounts: true
         })
       });
@@ -170,13 +166,12 @@ export function EmailIntegrationPanel() {
     setBusy(account.id);
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/v1/email/accounts/${encodeURIComponent(account.id)}/settings`, {
+      const response = await apiFetch(apiPath(`/v1/email/accounts/${encodeURIComponent(account.id)}/settings`), {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          userId: "local-owner",
           enabled: !account.settings.enabled
         })
       });

@@ -1,14 +1,15 @@
 # RyanOS Android Widget
 
-Native Android companion for the RyanOS to-do list. It includes a small setup app and the `RyanOS To-Do` home-screen widget.
+Native Android companion for RyanOS. It includes a Material 3 app for Today, Shopping, Vocabulary, Chat, and Settings, plus RyanOS home-screen widgets.
 
 ## What It Includes
 
+- A native Material 3 cockpit app with bottom navigation for Today, Shopping, Vocabulary, Chat, and Settings.
 - A Jetpack Glance app widget with responsive 2x2, 4x1, and 4x2-style layouts.
 - Direct widget actions for marking normal tasks complete and recording recurrence-day completions.
 - DataStore-backed settings and cached widget payloads so the widget can render from local state.
 - WorkManager refresh every 30 minutes, plus immediate refresh after widget and in-app actions.
-- A small Compose app for API connection settings, manual refresh, and quick-add.
+- Quick-add capture for tasks, shopping items, vocabulary entries, and chat commands.
 
 ## Requirements
 
@@ -55,6 +56,10 @@ The widget uses these endpoints:
 ## Prepare RyanOS
 
 For a deployed home server, follow [docs/HOME_SERVER_DEPLOY.md](../../docs/HOME_SERVER_DEPLOY.md). The important part for the phone is that you can open the HTTPS URL from the phone browser and the API health endpoint responds.
+Production RyanOS deployments require sign-in. Create the account from the web
+dashboard first, then use the same email and password in the Android Settings
+screen. The app stores the returned RyanOS session cookie and sends it with API
+requests; it does not ask for or trust a manually entered RyanOS user ID.
 
 For local development, start RyanOS first:
 
@@ -92,9 +97,10 @@ If you are using Android Studio only, missing command-line `adb` may be acceptab
 9. Select the `app` run configuration.
 10. Click Run.
 11. Open the RyanOS app on the phone.
-12. Enter the API base URL, user ID, and timezone.
-13. Tap `Save`, then `Refresh`.
-14. Long-press the home screen, choose Widgets, find `RyanOS To-Do`, and place it.
+12. Enter the API base URL and timezone.
+13. Tap `Save`, then sign in if the API is running with `RYANOS_AUTH_MODE=required`.
+14. Tap `Refresh`.
+15. Long-press the home screen, choose Widgets, find `RyanOS To-Do`, and place it.
 
 ## Install From The Command Line
 
@@ -133,10 +139,18 @@ apps/android/app/build/outputs/apk/debug/app-debug.apk
 Open RyanOS and set:
 
 - API base URL: HTTPS URL described above.
-- User ID: usually `local-owner`.
 - Timezone: usually your Android timezone, for example `America/Chicago`.
+- Email/password: required for a production API; optional for `dev-local`.
 
-Tap `Save`. The app immediately refreshes the widget cache. Use `Quick Add` to create a task from the phone, or add the home-screen widget and use the `Do` / `Done` buttons there.
+Tap `Save`. The app immediately refreshes Today, Shopping, Vocabulary, Chat, and widget caches.
+
+The app opens to `Today`. Use the bottom navigation for:
+
+- `Today`: daily focus, due/recurring tasks, check/undo, star/unstar, and recurrence day chips.
+- `Shopping`: fast add, category grouping, staple suggestions, and one-day checked-item undo.
+- `Words`: vocabulary quick-add, search, filters, details, and lightweight editing.
+- `Chat`: send RyanOS commands through the same message endpoint as the web dashboard.
+- `Settings`: connection, widget display, sync diagnostics, and widget pin actions.
 
 ## Add The Widget
 

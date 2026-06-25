@@ -2,6 +2,7 @@
 
 import { Check, ExternalLink, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { apiFetch, apiPath } from "./api-client";
 
 type OpportunityProposal = {
   id: string;
@@ -30,8 +31,6 @@ type OpportunityProposal = {
 type OpportunityProposalsResponse = {
   proposals: OpportunityProposal[];
 };
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
 
 function formatDate(value: string | undefined): string | undefined {
   if (!value) return undefined;
@@ -94,11 +93,10 @@ export function OpportunityProposalsPanel() {
     }
     try {
       const params = new URLSearchParams({
-        userId: "local-owner",
         status: "proposed",
         limit: "20"
       });
-      const response = await fetch(`${apiUrl}/v1/opportunity-proposals?${params.toString()}`, {
+      const response = await apiFetch(apiPath(`/v1/opportunity-proposals?${params.toString()}`), {
         cache: "no-store"
       });
       if (!response.ok) throw new Error(`Opportunity proposals returned ${response.status}`);
@@ -116,16 +114,14 @@ export function OpportunityProposalsPanel() {
     setPendingId(proposal.id);
     setError(null);
     try {
-      const response = await fetch(
-        `${apiUrl}/v1/opportunity-proposals/${encodeURIComponent(proposal.id)}/${action}`,
+      const response = await apiFetch(
+        apiPath(`/v1/opportunity-proposals/${encodeURIComponent(proposal.id)}/${action}`),
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({
-            userId: "local-owner"
-          })
+          body: JSON.stringify({})
         }
       );
       if (!response.ok) throw new Error(`Opportunity proposal ${action} returned ${response.status}`);

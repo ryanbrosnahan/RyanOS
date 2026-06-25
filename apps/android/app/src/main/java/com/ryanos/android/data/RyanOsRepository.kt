@@ -1,6 +1,9 @@
 package com.ryanos.android.data
 
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
 import android.content.Context
+import android.os.Build
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -10,7 +13,11 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.ryanos.android.util.WidgetTiming
+import com.ryanos.android.widget.RyanOsShoppingWidgetReceiver
+import com.ryanos.android.widget.RyanOsVocabularyWidgetReceiver
+import com.ryanos.android.widget.RyanOsWidgetReceiver
 import java.time.Instant
+import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -102,10 +109,51 @@ class RyanOsRepository private constructor(context: Context) {
       )
     }
 
+  val dailyPlanSnapshotFlow: Flow<DailyPlanSnapshot> = dataStore.data
+    .map { preferences ->
+      val settings = preferences.toSettings()
+      RyanOsApi.parseDailyPlanSnapshot(
+        rawJson = preferences[CACHED_DAILY_PLAN_PAYLOAD],
+        lastSyncedAt = preferences[DAILY_PLAN_LAST_SYNCED_AT],
+        configured = settings.isConfigured,
+        error = preferences[DAILY_PLAN_LAST_ERROR]
+      )
+    }
+    .catch {
+      emit(
+        DailyPlanSnapshot(
+          configured = false,
+          readOnly = true,
+          error = it.message ?: "Could not read daily plan settings."
+        )
+      )
+    }
+
+  val messageSnapshotFlow: Flow<MessageSnapshot> = dataStore.data
+    .map { preferences ->
+      val settings = preferences.toSettings()
+      RyanOsApi.parseMessageSnapshot(
+        rawJson = preferences[CACHED_MESSAGES_PAYLOAD],
+        lastSyncedAt = preferences[MESSAGES_LAST_SYNCED_AT],
+        configured = settings.isConfigured,
+        error = preferences[MESSAGES_LAST_ERROR]
+      )
+    }
+    .catch {
+      emit(
+        MessageSnapshot(
+          configured = false,
+          readOnly = true,
+          error = it.message ?: "Could not read chat settings."
+        )
+      )
+    }
+
   suspend fun saveSettings(settings: RyanOsSettings) {
     dataStore.edit { preferences ->
       preferences[API_BASE_URL] = settings.apiBaseUrl.trim()
       preferences[USER_ID] = settings.userId.trim().ifBlank { "local-owner" }
+      preferences[SESSION_COOKIE] = settings.sessionCookie.trim()
       preferences[TIMEZONE] = settings.timezone.trim().ifBlank { defaultTimezone() }
       preferences[RECURRENCE_LEAD_DAYS] = clampRecurrenceLeadDays(settings.recurrenceLeadDaysBeforeDue)
       preferences[SHOW_TASK_DETAILS] = settings.showTaskDetails
@@ -113,7 +161,29 @@ class RyanOsRepository private constructor(context: Context) {
       preferences.remove(LAST_ERROR)
       preferences.remove(SHOPPING_LAST_ERROR)
       preferences.remove(VOCABULARY_LAST_ERROR)
+      preferences.remove(DAILY_PLAN_LAST_ERROR)
+      preferences.remove(MESSAGES_LAST_ERROR)
     }
+  }
+
+  suspend fun signIn(apiBaseUrl: String, email: String, password: String): RyanOsSettings = withContext(Dispatchers.IO) {
+    val current = settingsFlow.first()
+    val baseUrl = apiBaseUrl.trim()
+    val cookie = RyanOsApi.signIn(
+      settings = current.copy(apiBaseUrl = baseUrl),
+      email = email.trim(),
+      password = password
+    )
+    val next = current.copy(apiBaseUrl = baseUrl, sessionCookie = cookie)
+    saveSettings(next)
+    next
+  }
+
+  suspend fun signOut(): RyanOsSettings = withContext(Dispatchers.IO) {
+    val current = settingsFlow.first()
+    val next = current.copy(sessionCookie = "")
+    saveSettings(next)
+    next
   }
 
   suspend fun toggleRecurrenceExpanded(itemId: String): WidgetSnapshot = withContext(Dispatchers.IO) {
@@ -323,6 +393,79 @@ class RyanOsRepository private constructor(context: Context) {
     }
   }
 
+  suspend fun refreshDailyPlan(): DailyPlanSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) {
+      dataStore.edit { preferences ->
+        preferences.remove(CACHED_DAILY_PLAN_PAYLOAD)
+        preferences.remove(DAILY_PLAN_LAST_SYNCED_AT)
+        preferences[DAILY_PLAN_LAST_ERROR] = "Connect RyanOS to load today."
+      }
+      return@withContext dailyPlanSnapshotFlow.first()
+    }
+
+    runCatching {
+      val result = RyanOsApi.fetchDailyPlanPayload(settings)
+      dataStore.edit { preferences ->
+        preferences[CACHED_DAILY_PLAN_PAYLOAD] = result.rawJson
+        preferences[DAILY_PLAN_LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()
+        preferences.remove(DAILY_PLAN_LAST_ERROR)
+      }
+      dailyPlanSnapshotFlow.first()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[DAILY_PLAN_LAST_ERROR] = error.userFacingMessage()
+      }
+      dailyPlanSnapshotFlow.first()
+    }
+  }
+
+  suspend fun suggestDailyPlan(): DailyPlanSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext refreshDailyPlan()
+    runCatching {
+      val result = RyanOsApi.suggestDailyPlanPayload(settings)
+      dataStore.edit { preferences ->
+        preferences[CACHED_DAILY_PLAN_PAYLOAD] = result.rawJson
+        preferences[DAILY_PLAN_LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()
+        preferences.remove(DAILY_PLAN_LAST_ERROR)
+      }
+      dailyPlanSnapshotFlow.first()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[DAILY_PLAN_LAST_ERROR] = error.userFacingMessage()
+      }
+      dailyPlanSnapshotFlow.first()
+    }
+  }
+
+  suspend fun refreshMessages(): MessageSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) {
+      dataStore.edit { preferences ->
+        preferences.remove(CACHED_MESSAGES_PAYLOAD)
+        preferences.remove(MESSAGES_LAST_SYNCED_AT)
+        preferences[MESSAGES_LAST_ERROR] = "Connect RyanOS to load chat."
+      }
+      return@withContext messageSnapshotFlow.first()
+    }
+
+    runCatching {
+      val result = RyanOsApi.fetchMessagesPayload(settings)
+      dataStore.edit { preferences ->
+        preferences[CACHED_MESSAGES_PAYLOAD] = result.rawJson
+        preferences[MESSAGES_LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()
+        preferences.remove(MESSAGES_LAST_ERROR)
+      }
+      messageSnapshotFlow.first()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[MESSAGES_LAST_ERROR] = error.userFacingMessage()
+      }
+      messageSnapshotFlow.first()
+    }
+  }
+
   suspend fun createItem(title: String): WidgetSnapshot = withContext(Dispatchers.IO) {
     val settings = settingsFlow.first()
     if (!settings.isConfigured) return@withContext refresh()
@@ -334,6 +477,21 @@ class RyanOsRepository private constructor(context: Context) {
         preferences[LAST_ERROR] = error.userFacingMessage()
       }
       snapshotFlow.first()
+    }
+  }
+
+  suspend fun createItemAndRefreshToday(title: String): DailyPlanSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext refreshDailyPlan()
+    runCatching {
+      RyanOsApi.createItem(settings, title.trim())
+      refresh()
+      refreshDailyPlan()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[DAILY_PLAN_LAST_ERROR] = error.userFacingMessage()
+      }
+      dailyPlanSnapshotFlow.first()
     }
   }
 
@@ -357,6 +515,25 @@ class RyanOsRepository private constructor(context: Context) {
       }
     }
 
+  suspend fun patchShoppingItem(itemId: String, patch: ShoppingItemPatch): ShoppingSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext refreshShopping()
+    runCatching {
+      val result = RyanOsApi.patchShoppingItem(settings, itemId, patch)
+      dataStore.edit { preferences ->
+        preferences[CACHED_SHOPPING_PAYLOAD] = result.rawJson
+        preferences[SHOPPING_LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()
+        preferences.remove(SHOPPING_LAST_ERROR)
+      }
+      shoppingSnapshotFlow.first()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[SHOPPING_LAST_ERROR] = error.userFacingMessage()
+      }
+      shoppingSnapshotFlow.first()
+    }
+  }
+
   suspend fun createVocabularyEntry(
     term: String,
     languageCode: String?,
@@ -379,6 +556,47 @@ class RyanOsRepository private constructor(context: Context) {
         preferences[VOCABULARY_LAST_ERROR] = error.userFacingMessage()
       }
       vocabularySnapshotFlow.first()
+    }
+  }
+
+  suspend fun patchVocabularyEntry(entryId: String, patch: VocabularyEntryPatch): VocabularySnapshot =
+    withContext(Dispatchers.IO) {
+      val settings = settingsFlow.first()
+      if (!settings.isConfigured) return@withContext refreshVocabulary()
+      runCatching {
+        val result = RyanOsApi.patchVocabularyEntry(settings, entryId, patch)
+        dataStore.edit { preferences ->
+          preferences[CACHED_VOCABULARY_PAYLOAD] = result.rawJson
+          preferences[VOCABULARY_LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()
+          preferences.remove(VOCABULARY_LAST_ERROR)
+        }
+        vocabularySnapshotFlow.first()
+      }.getOrElse { error ->
+        dataStore.edit { preferences ->
+          preferences[VOCABULARY_LAST_ERROR] = error.userFacingMessage()
+        }
+        vocabularySnapshotFlow.first()
+      }
+    }
+
+  suspend fun sendChatMessage(text: String): MessageSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext refreshMessages()
+    dataStore.edit { preferences ->
+      preferences[CACHED_MESSAGES_PAYLOAD] = RyanOsApi.optimisticallyAppendMessagePayload(
+        rawJson = preferences[CACHED_MESSAGES_PAYLOAD],
+        text = text.trim()
+      )
+      preferences.remove(MESSAGES_LAST_ERROR)
+    }
+    runCatching {
+      RyanOsApi.sendMessage(settings, text.trim())
+      refreshMessages()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[MESSAGES_LAST_ERROR] = error.userFacingMessage()
+      }
+      messageSnapshotFlow.first()
     }
   }
 
@@ -416,6 +634,104 @@ class RyanOsRepository private constructor(context: Context) {
       }
       false
     }
+  }
+
+  suspend fun toggleDailyItemOptimistically(item: FocusItem, completed: Boolean, date: String? = null): DailyPlanSnapshot =
+    withContext(Dispatchers.IO) {
+      val settings = settingsFlow.first()
+      if (!settings.isConfigured) return@withContext dailyPlanSnapshotFlow.first()
+      val actionDate = date ?: dailyPlanSnapshotFlow.first().date.takeIf { it.isNotBlank() }
+      dataStore.edit { preferences ->
+        val updatedPayload = RyanOsApi.optimisticallyToggleDailyPlanPayload(
+          rawJson = preferences[CACHED_DAILY_PLAN_PAYLOAD],
+          itemId = item.id,
+          completed = completed,
+          date = actionDate,
+          timezone = settings.timezone
+        )
+        if (!updatedPayload.isNullOrBlank()) preferences[CACHED_DAILY_PLAN_PAYLOAD] = updatedPayload
+        preferences.remove(DAILY_PLAN_LAST_ERROR)
+      }
+      dailyPlanSnapshotFlow.first()
+    }
+
+  suspend fun sendToggleDailyItem(item: FocusItem, completed: Boolean, date: String? = null): Boolean =
+    withContext(Dispatchers.IO) {
+      val settings = settingsFlow.first()
+      if (!settings.isConfigured) return@withContext false
+      val actionDate = date ?: dailyPlanSnapshotFlow.first().date.takeIf { it.isNotBlank() }
+      val allowEarly = item.recurrence?.let { recurrence ->
+        val nextEligibleDate = recurrence.state?.nextEligibleAt?.let {
+          dateKeyInTimezone(value = it, timezone = settings.timezone)
+        }
+        recurrence.policy.minimumIntervalDays != null &&
+          actionDate != null &&
+          nextEligibleDate != null &&
+          actionDate < nextEligibleDate
+      } ?: false
+      runCatching {
+        RyanOsApi.toggleItem(
+          settings = settings,
+          itemId = item.id,
+          completed = completed,
+          date = actionDate,
+          allowEarly = allowEarly,
+          toggleExisting = false
+        )
+        true
+      }.getOrElse { error ->
+        dataStore.edit { preferences ->
+          preferences[DAILY_PLAN_LAST_ERROR] = error.userFacingMessage()
+        }
+        false
+      }
+    }
+
+  suspend fun toggleStarOptimistically(itemId: String, starred: Boolean): DailyPlanSnapshot =
+    withContext(Dispatchers.IO) {
+      val settings = settingsFlow.first()
+      if (!settings.isConfigured) return@withContext dailyPlanSnapshotFlow.first()
+      dataStore.edit { preferences ->
+        val updatedPayload = RyanOsApi.optimisticallyStarDailyPlanPayload(
+          rawJson = preferences[CACHED_DAILY_PLAN_PAYLOAD],
+          itemId = itemId,
+          starred = starred
+        )
+        if (!updatedPayload.isNullOrBlank()) preferences[CACHED_DAILY_PLAN_PAYLOAD] = updatedPayload
+        preferences.remove(DAILY_PLAN_LAST_ERROR)
+      }
+      dailyPlanSnapshotFlow.first()
+    }
+
+  suspend fun sendToggleStar(itemId: String, starred: Boolean): Boolean = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext false
+    runCatching {
+      RyanOsApi.toggleStar(settings, itemId, starred)
+      true
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[DAILY_PLAN_LAST_ERROR] = error.userFacingMessage()
+      }
+      false
+    }
+  }
+
+  fun canRequestPinWidgets(): Boolean =
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+      AppWidgetManager.getInstance(appContext).isRequestPinAppWidgetSupported
+
+  fun requestPinWidget(kind: RyanOsWidgetKind): String {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return "Widget pinning needs Android 8.0 or newer."
+    val manager = AppWidgetManager.getInstance(appContext)
+    if (!manager.isRequestPinAppWidgetSupported) return "This launcher does not support widget pin requests."
+    val receiver = when (kind) {
+      RyanOsWidgetKind.TODO -> RyanOsWidgetReceiver::class.java
+      RyanOsWidgetKind.SHOPPING -> RyanOsShoppingWidgetReceiver::class.java
+      RyanOsWidgetKind.VOCABULARY -> RyanOsVocabularyWidgetReceiver::class.java
+    }
+    manager.requestPinAppWidget(ComponentName(appContext, receiver), null, null)
+    return "Widget pin request sent."
   }
 
   suspend fun toggleItemOptimistically(
@@ -675,6 +991,7 @@ class RyanOsRepository private constructor(context: Context) {
     RyanOsSettings(
       apiBaseUrl = this[API_BASE_URL].orEmpty(),
       userId = this[USER_ID] ?: "local-owner",
+      sessionCookie = this[SESSION_COOKIE].orEmpty(),
       timezone = this[TIMEZONE] ?: defaultTimezone(),
       recurrenceLeadDaysBeforeDue = clampRecurrenceLeadDays(
         this[RECURRENCE_LEAD_DAYS] ?: DEFAULT_RECURRENCE_LEAD_DAYS
@@ -686,9 +1003,15 @@ class RyanOsRepository private constructor(context: Context) {
   private fun Throwable.userFacingMessage(): String =
     message?.take(240)?.ifBlank { null } ?: "RyanOS sync failed."
 
+  private fun dateKeyInTimezone(value: String, timezone: String): String =
+    runCatching {
+      Instant.parse(value).atZone(ZoneId.of(timezone)).toLocalDate().toString()
+    }.getOrDefault(value.take(10))
+
   companion object {
     private val API_BASE_URL = stringPreferencesKey("api_base_url")
     private val USER_ID = stringPreferencesKey("user_id")
+    private val SESSION_COOKIE = stringPreferencesKey("session_cookie")
     private val TIMEZONE = stringPreferencesKey("timezone")
     private val RECURRENCE_LEAD_DAYS = intPreferencesKey("recurrence_lead_days")
     private val SHOW_TASK_DETAILS = booleanPreferencesKey("show_task_details")
@@ -704,6 +1027,12 @@ class RyanOsRepository private constructor(context: Context) {
     private val CACHED_VOCABULARY_PAYLOAD = stringPreferencesKey("cached_vocabulary_payload")
     private val VOCABULARY_LAST_SYNCED_AT = stringPreferencesKey("vocabulary_last_synced_at")
     private val VOCABULARY_LAST_ERROR = stringPreferencesKey("vocabulary_last_error")
+    private val CACHED_DAILY_PLAN_PAYLOAD = stringPreferencesKey("cached_daily_plan_payload")
+    private val DAILY_PLAN_LAST_SYNCED_AT = stringPreferencesKey("daily_plan_last_synced_at")
+    private val DAILY_PLAN_LAST_ERROR = stringPreferencesKey("daily_plan_last_error")
+    private val CACHED_MESSAGES_PAYLOAD = stringPreferencesKey("cached_messages_payload")
+    private val MESSAGES_LAST_SYNCED_AT = stringPreferencesKey("messages_last_synced_at")
+    private val MESSAGES_LAST_ERROR = stringPreferencesKey("messages_last_error")
 
     @Volatile
     private var instance: RyanOsRepository? = null
@@ -713,4 +1042,10 @@ class RyanOsRepository private constructor(context: Context) {
         instance ?: RyanOsRepository(context).also { instance = it }
       }
   }
+}
+
+enum class RyanOsWidgetKind {
+  TODO,
+  SHOPPING,
+  VOCABULARY
 }

@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { apiFetch, apiPath } from "./api-client";
 import { ItemProgressDetails, ItemProgressSummaryLine } from "./item-progress-details";
 
 type RecurrenceDay = {
@@ -135,8 +136,6 @@ type ToolResultResponse = {
   clarificationPrompt?: string;
   confirmationPrompt?: string;
 };
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
 
 const scopeIcons: Record<string, LucideIcon> = {
   "book-open": BookOpen,
@@ -435,16 +434,14 @@ export function ItemsPanel() {
     }
     try {
       const params = new URLSearchParams({
-        userId: "local-owner",
         status: "open,active,waiting",
         includeDoneToday: "true",
         timezone,
         limit: "100"
       });
-      const taxonomyParams = new URLSearchParams({ userId: "local-owner" });
       const [itemsResponse, taxonomyResponse] = await Promise.all([
-        fetch(`${apiUrl}/v1/items?${params.toString()}`, { cache: "no-store" }),
-        fetch(`${apiUrl}/v1/taxonomy?${taxonomyParams.toString()}`, { cache: "no-store" })
+        apiFetch(apiPath(`/v1/items?${params.toString()}`), { cache: "no-store" }),
+        apiFetch(apiPath("/v1/taxonomy"), { cache: "no-store" })
       ]);
       if (!itemsResponse.ok) throw new Error(`Items returned ${itemsResponse.status}`);
       if (!taxonomyResponse.ok) throw new Error(`Taxonomy returned ${taxonomyResponse.status}`);
@@ -469,13 +466,12 @@ export function ItemsPanel() {
     setPendingKey(key);
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/complete`, {
+      const response = await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}/complete`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          userId: "local-owner",
           completed: nextCompleted,
           timezone
         })
@@ -500,15 +496,14 @@ export function ItemsPanel() {
     setPendingKey(key);
     setError(null);
     try {
-      const response = await fetch(
-        `${apiUrl}/v1/items/${encodeURIComponent(item.id)}/recurrence-days/${day.date}`,
+      const response = await apiFetch(
+        apiPath(`/v1/items/${encodeURIComponent(item.id)}/recurrence-days/${day.date}`),
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            userId: "local-owner",
             completed: day.status !== "completed",
             allowEarly:
               item.recurrence !== undefined &&
@@ -555,14 +550,13 @@ export function ItemsPanel() {
     setPendingKey(key);
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/v1/tools/item.classify/invoke`, {
+      const response = await apiFetch(apiPath("/v1/tools/item.classify/invoke"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
           input: {
-            userId: "local-owner",
             itemRef: item.id,
             createMissing: false,
             areaRef: projectArea?.name ?? area?.name,
@@ -588,13 +582,12 @@ export function ItemsPanel() {
     setPendingKey(key);
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/v1/items/${encodeURIComponent(item.id)}/star`, {
+      const response = await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}/star`), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          userId: "local-owner",
           starred: !item.starred,
           timezone
         })
@@ -620,14 +613,13 @@ export function ItemsPanel() {
     setPendingKey(key);
     setError(null);
     try {
-      const response = await fetch(`${apiUrl}/v1/tools/item.update/invoke`, {
+      const response = await apiFetch(apiPath("/v1/tools/item.update/invoke"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
           input: {
-            userId: "local-owner",
             itemRef: item.id,
             patch: {
               dueAt: dateInputToIso(dueDate)

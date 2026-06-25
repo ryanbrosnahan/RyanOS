@@ -2,6 +2,7 @@
 
 import { Check, Mail, RefreshCw, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { apiFetch, apiPath } from "./api-client";
 
 type EmailProposal = {
   id: string;
@@ -35,8 +36,6 @@ type EmailProposal = {
 type ProposalsResponse = {
   proposals: EmailProposal[];
 };
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
 
 function formatDate(value: string | undefined): string | undefined {
   if (!value) return undefined;
@@ -83,11 +82,10 @@ export function EmailProposalsPanel() {
     }
     try {
       const params = new URLSearchParams({
-        userId: "local-owner",
         status: "proposed",
         limit: "20"
       });
-      const response = await fetch(`${apiUrl}/v1/email/proposals?${params.toString()}`, {
+      const response = await apiFetch(apiPath(`/v1/email/proposals?${params.toString()}`), {
         cache: "no-store"
       });
       if (!response.ok) throw new Error(`Email proposals returned ${response.status}`);
@@ -105,16 +103,14 @@ export function EmailProposalsPanel() {
     setPendingId(proposal.id);
     setError(null);
     try {
-      const response = await fetch(
-        `${apiUrl}/v1/email/proposals/${encodeURIComponent(proposal.id)}/${action}`,
+      const response = await apiFetch(
+        apiPath(`/v1/email/proposals/${encodeURIComponent(proposal.id)}/${action}`),
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
           },
-          body: JSON.stringify({
-            userId: "local-owner"
-          })
+          body: JSON.stringify({})
         }
       );
       if (!response.ok) throw new Error(`Email proposal ${action} returned ${response.status}`);

@@ -35,6 +35,9 @@ fi
 
 pnpm test
 pnpm typecheck
+BETTER_AUTH_URL="${BETTER_AUTH_URL:-https://ryanos.localhost.invalid}" \
+BETTER_AUTH_SECRET="${BETTER_AUTH_SECRET:-local-compose-config-placeholder-secret}" \
+RYANOS_INVITE_CODES="${RYANOS_INVITE_CODES:-local-compose-config-placeholder}" \
 docker compose -f "$COMPOSE_FILE" config >/dev/null
 
 ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail

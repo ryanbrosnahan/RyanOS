@@ -30,12 +30,16 @@ import {
   PostgresMessageStore,
   PostgresRyanStore,
   PostgresSecretStore,
+  resolveAuthenticatedUserId,
+  resolveUserIdByEmail,
   type RyanDb,
   type StoredMessage
 } from "@ryanos/db";
 import { nowIso, type JsonObject } from "@ryanos/shared";
+import { fromNodeHeaders } from "better-auth/node";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
+import { authModeFromEnv, createRyanOsAuth, type RyanOsAuthMode } from "./auth.js";
 import {
   acceptEmailProposal,
   DEFAULT_EMAIL_SCAN_QUERY,
@@ -669,6 +673,42 @@ function metadataString(metadata: Record<string, unknown>, key: string): string 
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+function envKeyValueMap(value: string | undefined): Map<string, string> {
+  const trimmed = value?.trim();
+  if (!trimmed) return new Map();
+  if (trimmed.startsWith("{")) {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch (err) {
+      throw new Error(
+        `Invalid JSON map configuration: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    const entries: Array<[string, string]> = Object.entries(parsed)
+      .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0)
+      .map(([key, mapValue]) => [key.trim(), mapValue.trim()]);
+    return new Map(entries.filter(([key]) => key.length > 0));
+  }
+  return new Map(
+    trimmed
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const separator = entry.indexOf(":");
+        return separator === -1
+          ? undefined
+          : [entry.slice(0, separator).trim(), entry.slice(separator + 1).trim()] as const;
+      })
+      .filter((entry): entry is readonly [string, string] => Boolean(entry?.[0] && entry[1]))
+  );
+}
+
+function telegramUserEmailMap(): Map<string, string> {
+  return envKeyValueMap(process.env.TELEGRAM_USER_EMAIL_MAP);
+}
+
 function areaForDashboard(area: Area) {
   return {
     id: area.id,
@@ -734,17 +774,19 @@ function telegramAuthorization(message: IncomingMessage): {
   configured: boolean;
   senderId?: string;
 } {
-  const allowedIds = (process.env.TELEGRAM_ALLOWED_USER_IDS ?? "")
+  const configuredAllowedIds = (process.env.TELEGRAM_ALLOWED_USER_IDS ?? "")
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+  const mappedIds = [...telegramUserEmailMap().keys()];
+  const allowedIds = new Set([...configuredAllowedIds, ...mappedIds]);
   const senderId = getTelegramSenderId(message);
-  if (allowedIds.length === 0) {
+  if (allowedIds.size === 0) {
     return senderId === undefined
       ? { allowed: true, configured: false }
       : { allowed: true, configured: false, senderId };
   }
-  if (senderId !== undefined && allowedIds.includes(senderId)) {
+  if (senderId !== undefined && allowedIds.has(senderId)) {
     return { allowed: true, configured: true, senderId };
   }
   return senderId === undefined
@@ -1051,7 +1093,31 @@ async function gmailAccountView(store: RyanStore, account: ProviderAccount) {
   };
 }
 
-export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailClient?: GmailClientLike } = {}) {
+type RyanOsRequestAuth = {
+  authUserId: string;
+  userId: string;
+  email: string;
+  displayName?: string;
+};
+
+type RyanOsRequest = FastifyRequest & {
+  ryanAuth?: RyanOsRequestAuth;
+};
+
+type AuthSessionPayload = {
+  user?: {
+    id?: string;
+    email?: string;
+    name?: string | null;
+  };
+};
+
+export function buildApp(options: {
+  ai?: AiProvider;
+  store?: RyanStore;
+  emailClient?: GmailClientLike;
+  authMode?: RyanOsAuthMode;
+} = {}) {
   const app = Fastify({
     logger: true
   });
@@ -1064,6 +1130,8 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
   const tools = createCoreToolRegistry(store);
   const ai = options.ai ?? createAiProviderFromEnv();
   const emailClient = options.emailClient ?? new GogGmailClient();
+  const authMode = options.authMode ?? authModeFromEnv();
+  const auth = database ? createRyanOsAuth(database.pool) : undefined;
 
   async function runAiSmoke(input: { userId: string; text: string }) {
     const status = await ai.getStatus();
@@ -1120,17 +1188,152 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     if (typeof origin === "string" && corsOrigins.has(origin)) {
       reply.header("Access-Control-Allow-Origin", origin);
       reply.header("Vary", "Origin");
+      reply.header("Access-Control-Allow-Credentials", "true");
       reply.header("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
       reply.header(
         "Access-Control-Allow-Headers",
         typeof request.headers["access-control-request-headers"] === "string"
           ? request.headers["access-control-request-headers"]
-          : "content-type, authorization"
+          : "content-type, authorization, x-ryanos-invite-code"
       );
     }
     if (request.method === "OPTIONS") {
-      reply.code(204).send();
+      return reply.code(204).send();
     }
+  });
+
+  function requestPath(request: FastifyRequest): string {
+    return request.url.split("?")[0] ?? request.url;
+  }
+
+  function isPublicPath(path: string): boolean {
+    return (
+      path === "/" ||
+      path === "/health" ||
+      path === "/v1/setup/status" ||
+      path === "/v1/ai/status" ||
+      path === "/v1/tools" ||
+      path.startsWith("/auth/") ||
+      path === "/v1/webhooks/telegram" ||
+      path === "/v1/inbound/telegram"
+    );
+  }
+
+  function asMutableRecord(value: unknown): Record<string, unknown> | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    return value as Record<string, unknown>;
+  }
+
+  function forceRequestUserId(request: FastifyRequest, userId: string): void {
+    const query = asMutableRecord(request.query);
+    if (query) query.userId = userId;
+
+    const body = asMutableRecord(request.body);
+    if (!body) return;
+    body.userId = userId;
+
+    const input = asMutableRecord(body.input);
+    if (input) input.userId = userId;
+
+    const toolCall = asMutableRecord(body.toolCall);
+    const toolInput = asMutableRecord(toolCall?.input);
+    if (toolInput) toolInput.userId = userId;
+  }
+
+  async function authenticatedSessionForRequest(request: FastifyRequest): Promise<AuthSessionPayload | undefined> {
+    if (!auth) return undefined;
+    const session = await auth.api.getSession({
+      headers: fromNodeHeaders(request.headers)
+    });
+    return (session ?? undefined) as AuthSessionPayload | undefined;
+  }
+
+  function requestOrigin(request: FastifyRequest): string {
+    const forwardedProto = request.headers["x-forwarded-proto"];
+    const proto =
+      typeof forwardedProto === "string" && forwardedProto.length > 0
+        ? forwardedProto.split(",")[0]?.trim() || "http"
+        : "http";
+    return `${proto}://${request.headers.host ?? "localhost"}`;
+  }
+
+  async function sendAuthResponse(response: Response, reply: FastifyReply) {
+    reply.status(response.status);
+
+    const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+    const setCookies = headers.getSetCookie?.() ?? [];
+    response.headers.forEach((value, key) => {
+      if (key.toLowerCase() !== "set-cookie") {
+        reply.header(key, value);
+      }
+    });
+    if (setCookies.length > 0) {
+      reply.header("set-cookie", setCookies);
+    } else {
+      const setCookie = response.headers.get("set-cookie");
+      if (setCookie) reply.header("set-cookie", setCookie);
+    }
+
+    return reply.send(response.body ? await response.text() : null);
+  }
+
+  app.route({
+    method: ["GET", "POST"],
+    url: "/auth/*",
+    async handler(request, reply) {
+      if (!auth) {
+        reply.code(503);
+        return { error: "Authentication requires DATABASE_URL." };
+      }
+      try {
+        const url = new URL(request.url, requestOrigin(request));
+        const headers = fromNodeHeaders(request.headers);
+        const init: RequestInit = {
+          method: request.method,
+          headers
+        };
+        if (request.method !== "GET" && request.method !== "HEAD" && request.body !== undefined) {
+          init.body = typeof request.body === "string" ? request.body : JSON.stringify(request.body);
+        }
+        const response = await auth.handler(new Request(url.toString(), init));
+        return sendAuthResponse(response, reply);
+      } catch (error) {
+        request.log.error({ error }, "Authentication request failed");
+        reply.code(500);
+        return { error: "Internal authentication error" };
+      }
+    }
+  });
+
+  app.addHook("preHandler", async (request: RyanOsRequest, reply) => {
+    const path = requestPath(request);
+    if (isPublicPath(path) || authMode === "dev-local") return;
+    if (!database || !auth) {
+      reply.code(503);
+      return reply.send({ error: "Authentication is required but not configured." });
+    }
+
+    const session = await authenticatedSessionForRequest(request);
+    const authUserId = session?.user?.id;
+    const email = session?.user?.email;
+    if (!authUserId || !email) {
+      reply.code(401);
+      return reply.send({ error: "Unauthorized" });
+    }
+
+    const identity = {
+      authUserId,
+      email,
+      ...(session.user?.name !== undefined ? { displayName: session.user.name } : {})
+    };
+    const userId = await resolveAuthenticatedUserId(database.db, identity);
+    request.ryanAuth = {
+      authUserId,
+      userId,
+      email,
+      ...(session.user?.name ? { displayName: session.user.name } : {})
+    };
+    forceRequestUserId(request, userId);
   });
 
   app.get("/", async () => ({
@@ -1150,6 +1353,31 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
   }));
 
   app.get("/v1/ai/status", async () => ai.getStatus());
+
+  app.get("/v1/me", async (request: RyanOsRequest, reply) => {
+    if (authMode === "dev-local") {
+      return {
+        authMode,
+        user: {
+          id: "local-owner",
+          email: "local-owner@ryanos.local",
+          displayName: "Local Owner"
+        }
+      };
+    }
+    if (!request.ryanAuth) {
+      reply.code(401);
+      return { error: "Unauthorized" };
+    }
+    return {
+      authMode,
+      user: {
+        id: request.ryanAuth.userId,
+        email: request.ryanAuth.email,
+        displayName: request.ryanAuth.displayName ?? request.ryanAuth.email
+      }
+    };
+  });
 
   app.post("/v1/ai/smoke", async (request, reply) => {
     const body = aiSmokeBodySchema.parse(request.body ?? {});
@@ -3521,6 +3749,31 @@ export function buildApp(options: { ai?: AiProvider; store?: RyanStore; emailCli
     const warnings = authorization.configured
       ? []
       : ["TELEGRAM_ALLOWED_USER_IDS is not configured; accepting Telegram messages in local dev mode."];
+    if (authMode !== "dev-local") {
+      if (!database) {
+        reply.code(503);
+        return {
+          status: "rejected",
+          reason: "database_required_for_telegram_user_mapping"
+        };
+      }
+      const senderId = authorization.senderId;
+      const email = senderId ? telegramUserEmailMap().get(senderId) : undefined;
+      if (!senderId || !email) {
+        reply.code(403);
+        return {
+          status: "rejected",
+          reason: "telegram_sender_not_mapped",
+          senderId
+        };
+      }
+      const userId = await resolveUserIdByEmail(database.db, {
+        email,
+        ...(normalized.message.displayName ? { displayName: normalized.message.displayName } : {})
+      });
+      return processIncomingMessage({ ...normalized.message, userId }, warnings);
+    }
+
     return processIncomingMessage(normalized.message, warnings);
   }
 

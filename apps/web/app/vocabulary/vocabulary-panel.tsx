@@ -11,6 +11,7 @@ import {
   X
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { apiFetch, apiPath } from "../api-client";
 
 type VocabularyCategory =
   | "general"
@@ -66,9 +67,6 @@ type EditState = {
   notes: string;
   tags: string;
 };
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
-const userId = "local-owner";
 
 const fallbackCategories: VocabularyCategory[] = [
   "general",
@@ -169,7 +167,6 @@ export function VocabularyPanel() {
     setError("");
     try {
       const params = new URLSearchParams({
-        userId,
         limit: "100"
       });
       const nextQuery = overrides.query ?? query;
@@ -180,7 +177,7 @@ export function VocabularyPanel() {
       if (nextCategory) params.set("category", nextCategory);
       if (nextLanguage.trim()) params.set("languageCode", nextLanguage.trim());
       if (nextTag.trim()) params.set("tag", nextTag.trim());
-      const response = await fetch(`${apiUrl}/v1/vocabulary/entries?${params.toString()}`, {
+      const response = await apiFetch(apiPath(`/v1/vocabulary/entries?${params.toString()}`), {
         cache: "no-store"
       });
       if (!response.ok) throw new Error(`Vocabulary API ${response.status}`);
@@ -203,11 +200,10 @@ export function VocabularyPanel() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`${apiUrl}/v1/vocabulary/entries`, {
+      const response = await apiFetch(apiPath("/v1/vocabulary/entries"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId,
           term: cleanTerm,
           languageCode: languageCode.trim() || "en",
           ...(category ? { category } : {}),
@@ -246,11 +242,10 @@ export function VocabularyPanel() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`${apiUrl}/v1/vocabulary/entries/${entry.id}`, {
+      const response = await apiFetch(apiPath(`/v1/vocabulary/entries/${entry.id}`), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId,
           term: editState.term,
           languageCode: editState.languageCode,
           category: editState.category,
@@ -277,11 +272,10 @@ export function VocabularyPanel() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(`${apiUrl}/v1/vocabulary/entries/${entry.id}`, {
+      const response = await apiFetch(apiPath(`/v1/vocabulary/entries/${entry.id}`), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId,
           deleted: true
         })
       });

@@ -5,6 +5,7 @@ import java.time.ZoneId
 data class RyanOsSettings(
   val apiBaseUrl: String = "",
   val userId: String = "local-owner",
+  val sessionCookie: String = "",
   val timezone: String = defaultTimezone(),
   val recurrenceLeadDaysBeforeDue: Int = DEFAULT_RECURRENCE_LEAD_DAYS,
   val showTaskDetails: Boolean = true,
@@ -12,6 +13,9 @@ data class RyanOsSettings(
 ) {
   val isConfigured: Boolean
     get() = apiBaseUrl.isNotBlank()
+
+  val hasSession: Boolean
+    get() = sessionCookie.isNotBlank()
 
   val normalizedBaseUrl: String
     get() = apiBaseUrl.trim().trimEnd('/')
@@ -118,6 +122,106 @@ data class WidgetScopeLabel(
   val color: String?
 )
 
+data class DailyPlanPayloadResult(
+  val rawJson: String,
+  val snapshot: DailyPlanSnapshot
+)
+
+data class DailyPlanSnapshot(
+  val date: String = "",
+  val timezone: String = defaultTimezone(),
+  val lastSyncedAt: String? = null,
+  val configured: Boolean = false,
+  val readOnly: Boolean = false,
+  val error: String? = null,
+  val plan: DailyPlanSummary = DailyPlanSummary(),
+  val starredItems: List<FocusItem> = emptyList(),
+  val suggestedItems: List<FocusItem> = emptyList(),
+  val selectedItems: List<FocusItem> = emptyList(),
+  val dueItems: List<FocusItem> = emptyList(),
+  val items: List<FocusItem> = emptyList()
+)
+
+data class DailyPlanSummary(
+  val id: String? = null,
+  val selectedItemIds: List<String> = emptyList(),
+  val suggestedItemIds: List<String> = emptyList(),
+  val suggestionSource: String = "heuristic",
+  val status: String = "",
+  val updatedAt: String? = null
+)
+
+data class FocusItem(
+  val id: String,
+  val title: String,
+  val kind: String,
+  val status: String,
+  val starred: Boolean,
+  val starredAt: String?,
+  val priority: String,
+  val priorityScore: Int,
+  val prioritySignals: List<String>,
+  val hiddenUntil: String?,
+  val dueAt: String?,
+  val completedAt: String?,
+  val completion: FocusCompletion,
+  val progress: WidgetProgress,
+  val checklist: WidgetChecklist,
+  val recurrence: FocusRecurrence?,
+  val scope: WidgetScope?
+) {
+  fun checkedFor(dateKey: String): Boolean =
+    completion.completedToday ||
+      recurrence?.week?.days?.any { it.date == dateKey && it.status == "completed" } == true ||
+      status == "done"
+}
+
+data class FocusCompletion(
+  val completedToday: Boolean = false,
+  val completedAt: String? = null
+)
+
+data class FocusRecurrence(
+  val policy: FocusRecurrencePolicy,
+  val week: FocusRecurrenceWeek,
+  val state: FocusRecurrenceState? = null
+)
+
+data class FocusRecurrencePolicy(
+  val id: String = "",
+  val type: String = "",
+  val intervalDays: Int? = null,
+  val minimumIntervalDays: Int? = null,
+  val cron: String? = null,
+  val targetCount: Int? = null,
+  val targetWindowDays: Int? = null,
+  val preferredDays: List<String> = emptyList()
+)
+
+data class FocusRecurrenceWeek(
+  val startDate: String = "",
+  val endDate: String = "",
+  val days: List<FocusRecurrenceDay> = emptyList(),
+  val completedCount: Int = 0,
+  val targetCount: Int? = null,
+  val targetWindowDays: Int = 7
+)
+
+data class FocusRecurrenceDay(
+  val date: String,
+  val weekday: String,
+  val status: String,
+  val eventId: String? = null,
+  val occurredAt: String? = null
+)
+
+data class FocusRecurrenceState(
+  val lastCompletedAt: String? = null,
+  val nextEligibleAt: String? = null,
+  val nextDueAt: String? = null,
+  val stalenessScore: Int = 0
+)
+
 data class ShoppingPayloadResult(
   val rawJson: String,
   val snapshot: ShoppingSnapshot
@@ -202,6 +306,46 @@ data class VocabularyEncounter(
   val context: String?,
   val occurredAt: String,
   val createdAt: String
+)
+
+data class MessagePayloadResult(
+  val rawJson: String,
+  val snapshot: MessageSnapshot
+)
+
+data class MessageSnapshot(
+  val lastSyncedAt: String? = null,
+  val configured: Boolean = false,
+  val readOnly: Boolean = false,
+  val error: String? = null,
+  val messages: List<MessageTurn> = emptyList()
+)
+
+data class MessageTurn(
+  val id: String,
+  val role: String,
+  val text: String,
+  val occurredAt: String,
+  val pending: Boolean = false
+)
+
+data class ShoppingItemPatch(
+  val name: String? = null,
+  val category: String? = null,
+  val quantity: String? = null,
+  val note: String? = null
+)
+
+data class VocabularyEntryPatch(
+  val term: String? = null,
+  val languageCode: String? = null,
+  val category: String? = null,
+  val definition: String? = null,
+  val partOfSpeech: String? = null,
+  val pronunciation: String? = null,
+  val translation: String? = null,
+  val notes: String? = null,
+  val tags: List<String>? = null
 )
 
 const val DEFAULT_RECURRENCE_LEAD_DAYS = 1

@@ -116,10 +116,10 @@ if [[ -n "${API_BASE_URL}" ]]; then
     else
       warn "No response from ${NORMALIZED_URL}/health. If this is a web proxy, try a base URL ending in /api."
     fi
-    if curl -fsS "${NORMALIZED_URL}/v1/mobile/widget-items?userId=local-owner&limit=1" >/dev/null 2>&1; then
+    if curl -fsS "${NORMALIZED_URL}/v1/mobile/widget-items?limit=1" >/dev/null 2>&1; then
       ok "Widget endpoint responded at ${NORMALIZED_URL}/v1/mobile/widget-items"
     else
-      warn "No response from ${NORMALIZED_URL}/v1/mobile/widget-items."
+      warn "No unauthenticated response from ${NORMALIZED_URL}/v1/mobile/widget-items. Required-auth deployments need Android sign-in."
     fi
   fi
 else

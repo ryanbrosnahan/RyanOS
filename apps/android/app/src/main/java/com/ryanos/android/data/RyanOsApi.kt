@@ -19,6 +19,11 @@ data class WidgetPayloadResult(
   val snapshot: WidgetSnapshot
 )
 
+private data class ApiResponse(
+  val body: String,
+  val headers: Map<String, List<String>>
+)
+
 object RyanOsApi {
   private const val WIDGET_ITEM_LIMIT = 100
   private const val SHOPPING_SUGGESTION_LIMIT = 12
@@ -32,16 +37,32 @@ object RyanOsApi {
   }
 
   @Throws(IOException::class)
+  fun signIn(settings: RyanOsSettings, email: String, password: String): String {
+    if (settings.normalizedBaseUrl.isBlank()) {
+      throw IOException("Enter the RyanOS API base URL before signing in.")
+    }
+    val response = requestWithHeaders(
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/auth/sign-in/email",
+      body = JSONObject()
+        .put("email", email)
+        .put("password", password)
+    )
+    return response.sessionCookie()
+      ?: throw IOException("RyanOS sign-in succeeded but no session cookie was returned.")
+  }
+
+  @Throws(IOException::class)
   fun fetchWidgetPayload(settings: RyanOsSettings, limit: Int = WIDGET_ITEM_LIMIT): WidgetPayloadResult {
     val date = todayDateKey(settings.timezone)
     val query = mapOf(
-      "userId" to settings.userId,
       "timezone" to settings.timezone,
       "date" to date,
       "limit" to limit.toString(),
       "recurrenceLeadDays" to clampRecurrenceLeadDays(settings.recurrenceLeadDaysBeforeDue).toString()
     ).toQueryString()
     val rawJson = request(
+      settings = settings,
       method = "GET",
       url = "${settings.normalizedBaseUrl}/v1/mobile/widget-items?$query"
     )
@@ -59,11 +80,11 @@ object RyanOsApi {
   @Throws(IOException::class)
   fun fetchShoppingPayload(settings: RyanOsSettings, suggestions: Int = SHOPPING_SUGGESTION_LIMIT): ShoppingPayloadResult {
     val query = mapOf(
-      "userId" to settings.userId,
       "lingerHours" to "24",
       "suggestions" to suggestions.toString()
     ).toQueryString()
     val rawJson = request(
+      settings = settings,
       method = "GET",
       url = "${settings.normalizedBaseUrl}/v1/mobile/shopping/list?$query"
     )
@@ -81,10 +102,10 @@ object RyanOsApi {
   @Throws(IOException::class)
   fun fetchVocabularyPayload(settings: RyanOsSettings, limit: Int = VOCABULARY_ENTRY_LIMIT): VocabularyPayloadResult {
     val query = mapOf(
-      "userId" to settings.userId,
       "limit" to limit.toString()
     ).toQueryString()
     val rawJson = request(
+      settings = settings,
       method = "GET",
       url = "${settings.normalizedBaseUrl}/v1/mobile/vocabulary/entries?$query"
     )
@@ -100,17 +121,110 @@ object RyanOsApi {
   }
 
   @Throws(IOException::class)
+  fun fetchDailyPlanPayload(settings: RyanOsSettings): DailyPlanPayloadResult {
+    val query = mapOf(
+      "timezone" to settings.timezone
+    ).toQueryString()
+    val rawJson = request(
+      settings = settings,
+      method = "GET",
+      url = "${settings.normalizedBaseUrl}/v1/daily-plan?$query"
+    )
+    val syncedAt = Instant.now().toString()
+    return DailyPlanPayloadResult(
+      rawJson = rawJson,
+      snapshot = parseDailyPlanSnapshot(
+        rawJson = rawJson,
+        lastSyncedAt = syncedAt,
+        configured = true
+      )
+    )
+  }
+
+  @Throws(IOException::class)
+  fun suggestDailyPlanPayload(settings: RyanOsSettings): DailyPlanPayloadResult {
+    val body = JSONObject()
+      .put("timezone", settings.timezone)
+    val rawJson = request(
+      settings = settings,
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/daily-plan/suggest",
+      body = body
+    )
+    val syncedAt = Instant.now().toString()
+    return DailyPlanPayloadResult(
+      rawJson = rawJson,
+      snapshot = parseDailyPlanSnapshot(
+        rawJson = rawJson,
+        lastSyncedAt = syncedAt,
+        configured = true
+      )
+    )
+  }
+
+  @Throws(IOException::class)
+  fun fetchMessagesPayload(settings: RyanOsSettings, limit: Int = 30): MessagePayloadResult {
+    val query = mapOf(
+      "provider" to "web",
+      "chatId" to "dashboard",
+      "limit" to limit.toString()
+    ).toQueryString()
+    val rawJson = request(
+      settings = settings,
+      method = "GET",
+      url = "${settings.normalizedBaseUrl}/v1/messages?$query"
+    )
+    val syncedAt = Instant.now().toString()
+    return MessagePayloadResult(
+      rawJson = rawJson,
+      snapshot = parseMessageSnapshot(
+        rawJson = rawJson,
+        lastSyncedAt = syncedAt,
+        configured = true
+      )
+    )
+  }
+
+  @Throws(IOException::class)
   fun createItem(settings: RyanOsSettings, title: String) {
     val body = JSONObject()
-      .put("userId", settings.userId)
       .put("timezone", settings.timezone)
       .put("date", todayDateKey(settings.timezone))
       .put("title", title)
       .put("kind", "task")
       .put("priority", "normal")
     request(
+      settings = settings,
       method = "POST",
       url = "${settings.normalizedBaseUrl}/v1/mobile/items",
+      body = body
+    )
+  }
+
+  @Throws(IOException::class)
+  fun sendMessage(settings: RyanOsSettings, text: String) {
+    val body = JSONObject()
+      .put("provider", "web")
+      .put("chatId", "dashboard")
+      .put("text", text)
+      .put("metadata", JSONObject().put("source", "android"))
+    request(
+      settings = settings,
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/messages",
+      body = body
+    )
+  }
+
+  @Throws(IOException::class)
+  fun toggleStar(settings: RyanOsSettings, itemId: String, starred: Boolean) {
+    val body = JSONObject()
+      .put("timezone", settings.timezone)
+      .put("starred", starred)
+    request(
+      settings = settings,
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/items/${itemId.urlEncode()}/star",
       body = body
     )
   }
@@ -123,15 +237,39 @@ object RyanOsApi {
     quantity: String?
   ) {
     val body = JSONObject()
-      .put("userId", settings.userId)
       .put("name", name)
       .put("source", "android")
     if (!category.isNullOrBlank()) body.put("category", category)
     if (!quantity.isNullOrBlank()) body.put("quantity", quantity)
     request(
+      settings = settings,
       method = "POST",
       url = "${settings.normalizedBaseUrl}/v1/mobile/shopping/items",
       body = body
+    )
+  }
+
+  @Throws(IOException::class)
+  fun patchShoppingItem(settings: RyanOsSettings, itemId: String, patch: ShoppingItemPatch): ShoppingPayloadResult {
+    val body = JSONObject()
+    patch.name?.let { body.put("name", it) }
+    patch.category?.let { body.put("category", it) }
+    if (patch.quantity != null) body.put("quantity", patch.quantity)
+    if (patch.note != null) body.put("note", patch.note)
+    val rawJson = request(
+      settings = settings,
+      method = "PATCH",
+      url = "${settings.normalizedBaseUrl}/v1/shopping/items/${itemId.urlEncode()}",
+      body = body
+    )
+    val syncedAt = Instant.now().toString()
+    return ShoppingPayloadResult(
+      rawJson = rawJson,
+      snapshot = parseShoppingSnapshot(
+        rawJson = rawJson,
+        lastSyncedAt = syncedAt,
+        configured = true
+      )
     )
   }
 
@@ -144,12 +282,12 @@ object RyanOsApi {
     context: String?
   ) {
     val body = JSONObject()
-      .put("userId", settings.userId)
       .put("term", term)
     if (!languageCode.isNullOrBlank()) body.put("languageCode", languageCode)
     if (!category.isNullOrBlank()) body.put("category", category)
     if (!context.isNullOrBlank()) body.put("context", context)
     request(
+      settings = settings,
       method = "POST",
       url = "${settings.normalizedBaseUrl}/v1/mobile/vocabulary/entries",
       body = body
@@ -157,11 +295,42 @@ object RyanOsApi {
   }
 
   @Throws(IOException::class)
+  fun patchVocabularyEntry(settings: RyanOsSettings, entryId: String, patch: VocabularyEntryPatch): VocabularyPayloadResult {
+    val body = JSONObject()
+    patch.term?.let { body.put("term", it) }
+    patch.languageCode?.let { body.put("languageCode", it) }
+    patch.category?.let { body.put("category", it) }
+    if (patch.definition != null) body.put("definition", patch.definition)
+    if (patch.partOfSpeech != null) body.put("partOfSpeech", patch.partOfSpeech)
+    if (patch.pronunciation != null) body.put("pronunciation", patch.pronunciation)
+    if (patch.translation != null) body.put("translation", patch.translation)
+    if (patch.notes != null) body.put("notes", patch.notes)
+    patch.tags?.let { tags ->
+      body.put("tags", JSONArray().apply { tags.forEach { put(it) } })
+    }
+    val rawJson = request(
+      settings = settings,
+      method = "PATCH",
+      url = "${settings.normalizedBaseUrl}/v1/vocabulary/entries/${entryId.urlEncode()}",
+      body = body
+    )
+    val syncedAt = Instant.now().toString()
+    return VocabularyPayloadResult(
+      rawJson = rawJson,
+      snapshot = parseVocabularySnapshot(
+        rawJson = rawJson,
+        lastSyncedAt = syncedAt,
+        configured = true
+      )
+    )
+  }
+
+  @Throws(IOException::class)
   fun toggleShoppingItem(settings: RyanOsSettings, itemId: String, checked: Boolean) {
     val body = JSONObject()
-      .put("userId", settings.userId)
       .put("checked", checked)
     request(
+      settings = settings,
       method = "POST",
       url = "${settings.normalizedBaseUrl}/v1/mobile/shopping/items/${itemId.urlEncode()}/check",
       body = body
@@ -178,13 +347,13 @@ object RyanOsApi {
     toggleExisting: Boolean = false
   ) {
     val body = JSONObject()
-      .put("userId", settings.userId)
       .put("completed", completed)
       .put("timezone", settings.timezone)
       .put("date", date ?: todayDateKey(settings.timezone))
       .put("allowEarly", allowEarly)
       .put("toggle", toggleExisting)
     request(
+      settings = settings,
       method = "POST",
       url = "${settings.normalizedBaseUrl}/v1/mobile/items/${itemId.urlEncode()}/toggle",
       body = body
@@ -199,12 +368,12 @@ object RyanOsApi {
     checked: Boolean
   ) {
     val body = JSONObject()
-      .put("userId", settings.userId)
       .put("checked", checked)
       .put("timezone", settings.timezone)
       .put("date", todayDateKey(settings.timezone))
       .put("toggle", false)
     request(
+      settings = settings,
       method = "POST",
       url = "${settings.normalizedBaseUrl}/v1/mobile/items/${itemId.urlEncode()}/checklist-items/${checklistItemId.urlEncode()}/toggle",
       body = body
@@ -294,6 +463,71 @@ object RyanOsApi {
       }
       root.toString()
     }.getOrElse { rawJson }
+  }
+
+  fun optimisticallyToggleDailyPlanPayload(
+    rawJson: String?,
+    itemId: String,
+    completed: Boolean,
+    date: String?,
+    timezone: String
+  ): String? {
+    if (rawJson.isNullOrBlank()) return rawJson
+    return runCatching {
+      val root = JSONObject(rawJson)
+      val dateKey = date ?: root.optStringOrNull("date") ?: todayDateKey(timezone)
+      root.updateDailyItem(itemId) { item ->
+        val recurrence = item.optJSONObject("recurrence")
+        if (completed) {
+          item.put("starred", false)
+          item.remove("starredAt")
+        }
+        if (recurrence == null) {
+          item.put("status", if (completed) "done" else "open")
+          val completion = item.optJSONObject("completion") ?: JSONObject().also { item.put("completion", it) }
+          completion.put("completedToday", completed)
+          if (completed) {
+            completion.put("completedAt", Instant.now().toString())
+            item.put("completedAt", completion.optString("completedAt"))
+          } else {
+            completion.remove("completedAt")
+            item.remove("completedAt")
+          }
+        } else {
+          item.put("status", "open")
+          recurrence.optJSONObject("week")?.updateWeekDayStatus(dateKey, completed)
+          val completion = item.optJSONObject("completion") ?: JSONObject().also { item.put("completion", it) }
+          if (dateKey == root.optStringOrNull("date")) completion.put("completedToday", completed)
+        }
+      }
+      root.toString()
+    }.getOrElse { rawJson }
+  }
+
+  fun optimisticallyStarDailyPlanPayload(rawJson: String?, itemId: String, starred: Boolean): String? {
+    if (rawJson.isNullOrBlank()) return rawJson
+    return runCatching {
+      val root = JSONObject(rawJson)
+      root.updateDailyItem(itemId) { item ->
+        item.put("starred", starred)
+        if (starred) item.put("starredAt", Instant.now().toString()) else item.remove("starredAt")
+      }
+      root.toString()
+    }.getOrElse { rawJson }
+  }
+
+  fun optimisticallyAppendMessagePayload(rawJson: String?, text: String, now: Instant = Instant.now()): String {
+    val root = if (rawJson.isNullOrBlank()) JSONObject() else runCatching { JSONObject(rawJson) }.getOrElse { JSONObject() }
+    val messages = root.optJSONArray("messages") ?: JSONArray().also { root.put("messages", it) }
+    messages.put(
+      JSONObject()
+        .put("id", "local-${now.toEpochMilli()}")
+        .put("direction", "inbound")
+        .put("text", text)
+        .put("occurredAt", now.toString())
+        .put("pending", true)
+    )
+    return root.toString()
   }
 
   fun parseSnapshot(
@@ -455,6 +689,54 @@ object RyanOsApi {
     }
   }
 
+  fun parseDailyPlanSnapshot(
+    rawJson: String?,
+    lastSyncedAt: String? = null,
+    configured: Boolean = true,
+    error: String? = null
+  ): DailyPlanSnapshot {
+    if (!configured) {
+      return DailyPlanSnapshot(
+        configured = false,
+        readOnly = true,
+        error = error
+      )
+    }
+    if (rawJson.isNullOrBlank()) {
+      return DailyPlanSnapshot(
+        configured = true,
+        readOnly = error != null,
+        lastSyncedAt = lastSyncedAt,
+        error = error
+      )
+    }
+
+    return runCatching {
+      val root = JSONObject(rawJson)
+      DailyPlanSnapshot(
+        date = root.optStringOrNull("date") ?: "",
+        timezone = root.optStringOrNull("timezone") ?: defaultTimezone(),
+        lastSyncedAt = lastSyncedAt,
+        configured = true,
+        readOnly = error != null,
+        error = error,
+        plan = parseDailyPlanSummary(root.optJSONObject("plan")),
+        starredItems = parseFocusItems(root.optJSONArray("starredItems")),
+        suggestedItems = parseFocusItems(root.optJSONArray("suggestedItems")),
+        selectedItems = parseFocusItems(root.optJSONArray("selectedItems")),
+        dueItems = parseFocusItems(root.optJSONArray("dueItems")),
+        items = parseFocusItems(root.optJSONArray("items"))
+      )
+    }.getOrElse { parseError ->
+      DailyPlanSnapshot(
+        configured = true,
+        readOnly = true,
+        lastSyncedAt = lastSyncedAt,
+        error = error ?: "Could not read daily plan: ${parseError.message ?: parseError.javaClass.simpleName}"
+      )
+    }
+  }
+
   fun parseVocabularySnapshot(
     rawJson: String?,
     lastSyncedAt: String? = null,
@@ -498,6 +780,184 @@ object RyanOsApi {
         error = error ?: "Could not read vocabulary data: ${parseError.message ?: parseError.javaClass.simpleName}"
       )
     }
+  }
+
+  fun parseMessageSnapshot(
+    rawJson: String?,
+    lastSyncedAt: String? = null,
+    configured: Boolean = true,
+    error: String? = null
+  ): MessageSnapshot {
+    if (!configured) {
+      return MessageSnapshot(
+        configured = false,
+        readOnly = true,
+        error = error
+      )
+    }
+    if (rawJson.isNullOrBlank()) {
+      return MessageSnapshot(
+        configured = true,
+        readOnly = error != null,
+        lastSyncedAt = lastSyncedAt,
+        error = error
+      )
+    }
+    return runCatching {
+      val root = JSONObject(rawJson)
+      val messages = root.optJSONArray("messages")
+      MessageSnapshot(
+        configured = true,
+        readOnly = error != null,
+        error = error,
+        lastSyncedAt = lastSyncedAt,
+        messages = buildList {
+          if (messages != null) {
+            for (index in 0 until messages.length()) {
+              val message = messages.optJSONObject(index) ?: continue
+              val id = message.optString("id")
+              val text = message.optString("text")
+              if (id.isBlank() || text.isBlank()) continue
+              val direction = message.optStringOrNull("direction") ?: "inbound"
+              add(
+                MessageTurn(
+                  id = id,
+                  role = if (direction == "outbound") "assistant" else "user",
+                  text = text,
+                  occurredAt = message.optStringOrNull("occurredAt") ?: "",
+                  pending = message.optBoolean("pending", false)
+                )
+              )
+            }
+          }
+        }
+      )
+    }.getOrElse { parseError ->
+      MessageSnapshot(
+        configured = true,
+        readOnly = true,
+        lastSyncedAt = lastSyncedAt,
+        error = error ?: "Could not read messages: ${parseError.message ?: parseError.javaClass.simpleName}"
+      )
+    }
+  }
+
+  private fun parseDailyPlanSummary(plan: JSONObject?): DailyPlanSummary {
+    if (plan == null) return DailyPlanSummary()
+    return DailyPlanSummary(
+      id = plan.optStringOrNull("id"),
+      selectedItemIds = parseStringArray(plan.optJSONArray("selectedItemIds")),
+      suggestedItemIds = parseStringArray(plan.optJSONArray("suggestedItemIds")),
+      suggestionSource = plan.optStringOrNull("suggestionSource") ?: "heuristic",
+      status = plan.optStringOrNull("status") ?: "",
+      updatedAt = plan.optStringOrNull("updatedAt")
+    )
+  }
+
+  private fun parseFocusItems(items: JSONArray?): List<FocusItem> =
+    buildList {
+      if (items == null) return@buildList
+      for (index in 0 until items.length()) {
+        val item = items.optJSONObject(index) ?: continue
+        val id = item.optString("id")
+        val title = item.optString("title")
+        if (id.isBlank() || title.isBlank()) continue
+        val signals = item.optJSONArray("prioritySignals")
+        add(
+          FocusItem(
+            id = id,
+            title = title,
+            kind = item.optString("kind", "task"),
+            status = item.optString("status", "open"),
+            starred = item.optBoolean("starred", false),
+            starredAt = item.optStringOrNull("starredAt"),
+            priority = item.optString("priority", "normal"),
+            priorityScore = item.optInt("priorityScore", 0),
+            prioritySignals = buildList {
+              if (signals != null) {
+                for (signalIndex in 0 until signals.length()) {
+                  val signal = signals.optString(signalIndex)
+                  if (signal.isNotBlank()) add(signal)
+                }
+              }
+            },
+            hiddenUntil = item.optStringOrNull("hiddenUntil"),
+            dueAt = item.optStringOrNull("dueAt"),
+            completedAt = item.optStringOrNull("completedAt"),
+            completion = parseFocusCompletion(item.optJSONObject("completion")),
+            progress = parseProgress(item.optJSONObject("progress")),
+            checklist = parseChecklist(item.optJSONObject("checklist")),
+            recurrence = parseFocusRecurrence(item.optJSONObject("recurrence")),
+            scope = parseScope(item.optJSONObject("scope"))
+          )
+        )
+      }
+    }
+
+  private fun parseFocusCompletion(completion: JSONObject?): FocusCompletion =
+    FocusCompletion(
+      completedToday = completion?.optBoolean("completedToday", false) ?: false,
+      completedAt = completion?.optStringOrNull("completedAt")
+    )
+
+  private fun parseFocusRecurrence(recurrence: JSONObject?): FocusRecurrence? {
+    if (recurrence == null) return null
+    return FocusRecurrence(
+      policy = parseFocusRecurrencePolicy(recurrence.optJSONObject("policy")),
+      week = parseFocusRecurrenceWeek(recurrence.optJSONObject("week")),
+      state = parseFocusRecurrenceState(recurrence.optJSONObject("state"))
+    )
+  }
+
+  private fun parseFocusRecurrencePolicy(policy: JSONObject?): FocusRecurrencePolicy =
+    FocusRecurrencePolicy(
+      id = policy?.optStringOrNull("id") ?: "",
+      type = policy?.optStringOrNull("type") ?: "",
+      intervalDays = policy?.optNullableInt("intervalDays"),
+      minimumIntervalDays = policy?.optNullableInt("minimumIntervalDays"),
+      cron = policy?.optStringOrNull("cron"),
+      targetCount = policy?.optNullableInt("targetCount"),
+      targetWindowDays = policy?.optNullableInt("targetWindowDays"),
+      preferredDays = parseStringArray(policy?.optJSONArray("preferredDays"))
+    )
+
+  private fun parseFocusRecurrenceWeek(week: JSONObject?): FocusRecurrenceWeek {
+    val days = week?.optJSONArray("days")
+    return FocusRecurrenceWeek(
+      startDate = week?.optStringOrNull("startDate") ?: "",
+      endDate = week?.optStringOrNull("endDate") ?: "",
+      days = buildList {
+        if (days != null) {
+          for (index in 0 until days.length()) {
+            val day = days.optJSONObject(index) ?: continue
+            val date = day.optString("date")
+            if (date.isBlank()) continue
+            add(
+              FocusRecurrenceDay(
+                date = date,
+                weekday = day.optStringOrNull("weekday") ?: "",
+                status = day.optStringOrNull("status") ?: "none",
+                eventId = day.optStringOrNull("eventId"),
+                occurredAt = day.optStringOrNull("occurredAt")
+              )
+            )
+          }
+        }
+      },
+      completedCount = week?.optInt("completedCount", 0) ?: 0,
+      targetCount = week?.optNullableInt("targetCount"),
+      targetWindowDays = week?.optInt("targetWindowDays", 7) ?: 7
+    )
+  }
+
+  private fun parseFocusRecurrenceState(state: JSONObject?): FocusRecurrenceState? {
+    if (state == null) return null
+    return FocusRecurrenceState(
+      lastCompletedAt = state.optStringOrNull("lastCompletedAt"),
+      nextEligibleAt = state.optStringOrNull("nextEligibleAt"),
+      nextDueAt = state.optStringOrNull("nextDueAt"),
+      stalenessScore = state.optInt("stalenessScore", 0)
+    )
   }
 
   private fun parseShoppingItems(items: JSONArray?, now: Instant): List<ShoppingItem> =
@@ -740,12 +1200,23 @@ object RyanOsApi {
     )
   }
 
-  private fun request(method: String, url: String, body: JSONObject? = null): String {
+  private fun request(settings: RyanOsSettings, method: String, url: String, body: JSONObject? = null): String =
+    request(method = method, url = url, body = body, sessionCookie = settings.sessionCookie)
+
+  private fun request(method: String, url: String, body: JSONObject? = null, sessionCookie: String = ""): String =
+    requestWithHeaders(method = method, url = url, body = body, sessionCookie = sessionCookie).body
+
+  private fun requestWithHeaders(
+    method: String,
+    url: String,
+    body: JSONObject? = null,
+    sessionCookie: String = ""
+  ): ApiResponse {
     val parsedUrl = URL(url)
     var lastError: IOException? = null
     repeat(2) { attempt ->
       try {
-        return requestOnce(method = method, url = parsedUrl, body = body)
+        return requestOnce(method = method, url = parsedUrl, body = body, sessionCookie = sessionCookie)
       } catch (error: IOException) {
         lastError = error
         if (!error.isRetryableNetworkError() || attempt == 1) {
@@ -757,12 +1228,15 @@ object RyanOsApi {
     throw (lastError ?: IOException("RyanOS sync failed.")).toUserFacingNetworkError(parsedUrl)
   }
 
-  private fun requestOnce(method: String, url: URL, body: JSONObject? = null): String {
+  private fun requestOnce(method: String, url: URL, body: JSONObject? = null, sessionCookie: String = ""): ApiResponse {
     val connection = (url.openConnection() as HttpURLConnection).apply {
       requestMethod = method
       connectTimeout = 8_000
       readTimeout = 12_000
       setRequestProperty("Accept", "application/json")
+      if (sessionCookie.isNotBlank()) {
+        setRequestProperty("Cookie", sessionCookie)
+      }
       if (body != null) {
         doOutput = true
         setRequestProperty("Content-Type", "application/json; charset=utf-8")
@@ -781,10 +1255,28 @@ object RyanOsApi {
       if (statusCode !in 200..299) {
         throw IOException("RyanOS API $statusCode: ${responseText.take(240)}")
       }
-      return responseText
+      return ApiResponse(
+        body = responseText,
+        headers = connection.headerFields
+          .filterKeys { it != null }
+          .mapKeys { it.key.orEmpty() }
+          .mapValues { it.value.orEmpty() }
+      )
     } finally {
       connection.disconnect()
     }
+  }
+
+  private fun ApiResponse.sessionCookie(): String? {
+    val setCookieValues = headers.entries
+      .firstOrNull { (key, _) -> key.equals("Set-Cookie", ignoreCase = true) }
+      ?.value
+      .orEmpty()
+    return setCookieValues
+      .map { it.substringBefore(";").trim() }
+      .filter { it.contains("=") }
+      .joinToString("; ")
+      .ifBlank { null }
   }
 
   private fun IOException.isRetryableNetworkError(): Boolean =
@@ -850,6 +1342,37 @@ object RyanOsApi {
       if (days.optJSONObject(index)?.optString("status") == "completed") completedCount += 1
     }
     put("summary", "$completedCount/${match.groupValues[1]}")
+  }
+
+  private fun JSONObject.updateDailyItem(itemId: String, update: (JSONObject) -> Unit) {
+    listOf("items", "starredItems", "suggestedItems", "selectedItems", "dueItems").forEach { key ->
+      val items = optJSONArray(key) ?: return@forEach
+      for (index in 0 until items.length()) {
+        val item = items.optJSONObject(index) ?: continue
+        if (item.optString("id") == itemId) update(item)
+      }
+    }
+  }
+
+  private fun JSONObject.updateWeekDayStatus(dateKey: String, completed: Boolean) {
+    val days = optJSONArray("days") ?: return
+    for (index in 0 until days.length()) {
+      val day = days.optJSONObject(index) ?: continue
+      if (day.optString("date") == dateKey) {
+        day.put("status", if (completed) "completed" else "uncompleted")
+        if (completed) day.put("occurredAt", Instant.now().toString()) else day.remove("occurredAt")
+      }
+    }
+    var completedCount = 0
+    for (index in 0 until days.length()) {
+      if (days.optJSONObject(index)?.optString("status") == "completed") completedCount += 1
+    }
+    put("completedCount", completedCount)
+  }
+
+  private fun JSONObject?.optNullableInt(name: String): Int? {
+    if (this == null || isNull(name)) return null
+    return optInt(name)
   }
 
   private fun JSONObject?.optStringOrNull(name: String): String? {

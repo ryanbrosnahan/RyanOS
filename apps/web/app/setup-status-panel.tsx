@@ -2,6 +2,7 @@
 
 import { AlertTriangle, CheckCircle2, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
+import { apiFetch, apiPath } from "./api-client";
 
 type SetupAction = {
   id: string;
@@ -26,8 +27,6 @@ type SetupStatus = {
   ai: SetupEntry;
   integrations: SetupEntry[];
 };
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4100";
 
 function statusLabel(entry: SetupEntry): string {
   if (!entry.configured && !entry.setupRequired) return "Disabled";
@@ -54,7 +53,7 @@ export function SetupStatusPanel() {
       setError(null);
     }
     try {
-      const response = await fetch(`${apiUrl}/v1/setup/status`, {
+      const response = await apiFetch(apiPath("/v1/setup/status"), {
         cache: "no-store"
       });
       if (!response.ok) throw new Error(`Setup status returned ${response.status}`);

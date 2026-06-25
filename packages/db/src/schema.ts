@@ -80,13 +80,71 @@ export const objectStatusEnum = pgEnum("object_status", [
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
+  authUserId: text("auth_user_id"),
   email: text("email").notNull(),
   displayName: text("display_name").notNull(),
   timezone: text("timezone").notNull().default("America/Chicago"),
   locale: text("locale").notNull().default("en-US"),
   ...timestamps
 }, (table) => ({
-  emailIdx: uniqueIndex("users_email_idx").on(table.email)
+  emailIdx: uniqueIndex("users_email_idx").on(table.email),
+  authUserIdx: uniqueIndex("users_auth_user_id_idx").on(table.authUserId)
+}));
+
+export const authUsers = pgTable("user", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  emailVerified: boolean("emailVerified").notNull().default(false),
+  image: text("image"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow()
+}, (table) => ({
+  emailIdx: uniqueIndex("auth_user_email_idx").on(table.email)
+}));
+
+export const authSessions = pgTable("session", {
+  id: text("id").primaryKey(),
+  expiresAt: timestamp("expiresAt", { withTimezone: true }).notNull(),
+  token: text("token").notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow(),
+  ipAddress: text("ipAddress"),
+  userAgent: text("userAgent"),
+  userId: text("userId").notNull().references(() => authUsers.id, { onDelete: "cascade" })
+}, (table) => ({
+  tokenIdx: uniqueIndex("auth_session_token_idx").on(table.token),
+  userIdx: index("auth_session_user_idx").on(table.userId)
+}));
+
+export const authAccounts = pgTable("account", {
+  id: text("id").primaryKey(),
+  accountId: text("accountId").notNull(),
+  providerId: text("providerId").notNull(),
+  userId: text("userId").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
+  accessToken: text("accessToken"),
+  refreshToken: text("refreshToken"),
+  idToken: text("idToken"),
+  accessTokenExpiresAt: timestamp("accessTokenExpiresAt", { withTimezone: true }),
+  refreshTokenExpiresAt: timestamp("refreshTokenExpiresAt", { withTimezone: true }),
+  scope: text("scope"),
+  password: text("password"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow()
+}, (table) => ({
+  providerAccountIdx: uniqueIndex("auth_account_provider_account_idx").on(table.providerId, table.accountId),
+  userIdx: index("auth_account_user_idx").on(table.userId)
+}));
+
+export const authVerifications = pgTable("verification", {
+  id: text("id").primaryKey(),
+  identifier: text("identifier").notNull(),
+  value: text("value").notNull(),
+  expiresAt: timestamp("expiresAt", { withTimezone: true }).notNull(),
+  createdAt: timestamp("createdAt", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull().defaultNow()
+}, (table) => ({
+  identifierIdx: index("auth_verification_identifier_idx").on(table.identifier)
 }));
 
 export const sessions = pgTable("sessions", {
@@ -101,6 +159,7 @@ export const sessions = pgTable("sessions", {
   ...timestamps
 }, (table) => ({
   providerChatIdx: uniqueIndex("sessions_provider_chat_idx").on(
+    table.userId,
     table.provider,
     table.providerChatId
   )

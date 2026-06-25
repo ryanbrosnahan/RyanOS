@@ -599,4 +599,168 @@ class RyanOsApiTest {
     assertTrue(snapshot.entries[0].tags.isEmpty())
     assertTrue(snapshot.encountersByEntryId.isEmpty())
   }
+
+  @Test
+  fun parsesDailyPlanPayloadAndOptimisticTaskToggle() {
+    val rawJson = """
+      {
+        "date": "2026-06-24",
+        "timezone": "America/Chicago",
+        "plan": {
+          "selectedItemIds": ["item-1"],
+          "suggestedItemIds": ["item-2"],
+          "suggestionSource": "heuristic",
+          "status": "active"
+        },
+        "selectedItems": [
+          {
+            "id": "item-1",
+            "title": "Write update",
+            "kind": "task",
+            "status": "open",
+            "starred": true,
+            "priority": "high",
+            "priorityScore": 70,
+            "prioritySignals": ["high priority"],
+            "completion": { "completedToday": false },
+            "scope": {
+              "area": { "id": "area-1", "name": "Work", "icon": "briefcase-business", "color": "sky" }
+            }
+          }
+        ],
+        "items": [
+          {
+            "id": "item-1",
+            "title": "Write update",
+            "kind": "task",
+            "status": "open",
+            "starred": true,
+            "priority": "high",
+            "priorityScore": 70,
+            "prioritySignals": ["high priority"],
+            "completion": { "completedToday": false },
+            "scope": {
+              "area": { "id": "area-1", "name": "Work", "icon": "briefcase-business", "color": "sky" }
+            }
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val snapshot = RyanOsApi.parseDailyPlanSnapshot(rawJson = rawJson, lastSyncedAt = "sync")
+    assertTrue(snapshot.configured)
+    assertEquals("2026-06-24", snapshot.date)
+    assertEquals(listOf("item-1"), snapshot.plan.selectedItemIds)
+    assertEquals("Write update", snapshot.selectedItems[0].title)
+    assertEquals("Work", snapshot.selectedItems[0].scope?.area?.name)
+    assertFalse(snapshot.selectedItems[0].checkedFor(snapshot.date))
+
+    val updatedPayload = RyanOsApi.optimisticallyToggleDailyPlanPayload(
+      rawJson = rawJson,
+      itemId = "item-1",
+      completed = true,
+      date = "2026-06-24",
+      timezone = "America/Chicago"
+    )
+    val updated = RyanOsApi.parseDailyPlanSnapshot(updatedPayload)
+    assertTrue(updated.selectedItems[0].checkedFor(updated.date))
+    assertFalse(updated.selectedItems[0].starred)
+    assertEquals("done", updated.items[0].status)
+  }
+
+  @Test
+  fun parsesDailyPlanRecurringWeekAndOptimisticDayToggle() {
+    val rawJson = """
+      {
+        "date": "2026-06-24",
+        "timezone": "America/Chicago",
+        "items": [
+          {
+            "id": "habit-1",
+            "title": "Go to gym",
+            "kind": "habit",
+            "status": "open",
+            "starred": false,
+            "priority": "normal",
+            "priorityScore": 20,
+            "prioritySignals": [],
+            "completion": { "completedToday": false },
+            "recurrence": {
+              "policy": {
+                "id": "policy-1",
+                "type": "target_frequency",
+                "targetCount": 3,
+                "targetWindowDays": 7,
+                "preferredDays": []
+              },
+              "week": {
+                "startDate": "2026-06-18",
+                "endDate": "2026-06-24",
+                "completedCount": 0,
+                "targetWindowDays": 7,
+                "days": [
+                  { "date": "2026-06-23", "weekday": "Tue", "status": "none" },
+                  { "date": "2026-06-24", "weekday": "Wed", "status": "uncompleted" }
+                ]
+              },
+              "state": { "stalenessScore": 4 }
+            }
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val snapshot = RyanOsApi.parseDailyPlanSnapshot(rawJson)
+    assertEquals(2, snapshot.items[0].recurrence?.week?.days?.size)
+    assertEquals("target_frequency", snapshot.items[0].recurrence?.policy?.type)
+
+    val updatedPayload = RyanOsApi.optimisticallyToggleDailyPlanPayload(
+      rawJson = rawJson,
+      itemId = "habit-1",
+      completed = true,
+      date = "2026-06-24",
+      timezone = "America/Chicago"
+    )
+    val updated = RyanOsApi.parseDailyPlanSnapshot(updatedPayload)
+    assertEquals("completed", updated.items[0].recurrence?.week?.days?.get(1)?.status)
+    assertEquals(1, updated.items[0].recurrence?.week?.completedCount)
+    assertTrue(updated.items[0].checkedFor(updated.date))
+  }
+
+  @Test
+  fun parsesMessagePayloadAndOptimisticAppend() {
+    val rawJson = """
+      {
+        "messages": [
+          {
+            "id": "message-1",
+            "direction": "inbound",
+            "text": "add toothpaste to shopping",
+            "occurredAt": "2026-06-24T12:00:00.000Z"
+          },
+          {
+            "id": "message-2",
+            "direction": "outbound",
+            "text": "Added toothpaste.",
+            "occurredAt": "2026-06-24T12:00:02.000Z"
+          }
+        ]
+      }
+    """.trimIndent()
+
+    val snapshot = RyanOsApi.parseMessageSnapshot(rawJson, lastSyncedAt = "sync")
+    assertTrue(snapshot.configured)
+    assertEquals("user", snapshot.messages[0].role)
+    assertEquals("assistant", snapshot.messages[1].role)
+
+    val appended = RyanOsApi.optimisticallyAppendMessagePayload(
+      rawJson = rawJson,
+      text = "plan today",
+      now = Instant.parse("2026-06-24T12:01:00.000Z")
+    )
+    val updated = RyanOsApi.parseMessageSnapshot(appended)
+    assertEquals(3, updated.messages.size)
+    assertTrue(updated.messages[2].pending)
+    assertEquals("plan today", updated.messages[2].text)
+  }
 }
