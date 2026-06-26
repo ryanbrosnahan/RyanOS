@@ -1918,7 +1918,8 @@ export function buildApp(options: {
         userId: account.userId,
         report: body.report
       });
-      const metadata = codexRfpMetadata(account);
+      const latestAccount = await store.getProviderAccount(account.id);
+      const metadata = codexRfpMetadata(latestAccount ?? account);
       const automationIds = [
         body.report.automationId,
         ...(Array.isArray(metadata.lastAutomationIds)
