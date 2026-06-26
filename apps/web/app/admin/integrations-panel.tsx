@@ -5,10 +5,14 @@ import {
   Brain,
   CheckCircle2,
   ChevronDown,
+  Copy,
   Download,
+  KeyRound,
   Mail,
   Play,
   RefreshCw,
+  RotateCcw,
+  Search,
   Settings,
   ShieldCheck,
   Smartphone
@@ -51,7 +55,7 @@ type LinkedTelegramAccount = {
 };
 
 type Integration = {
-  id: "ai" | "telegram" | "gmail";
+  id: "ai" | "telegram" | "gmail" | "codex_rfp";
   name: string;
   configured: boolean;
   ready: boolean;
@@ -66,6 +70,24 @@ type Integration = {
     proposed: number;
     accepted: number;
     rejected: number;
+    total?: number;
+  };
+  endpointPath?: string;
+  account?: {
+    id: string;
+    status: string;
+    tokenPreview?: string;
+    createdAt: string;
+    updatedAt: string;
+    lastIngestAt?: string;
+    lastReportRunAt?: string;
+    lastAutomationIds: string[];
+    lastProjectSlugs: string[];
+    lastResult?: {
+      candidatesSeen?: number;
+      proposalsCreatedOrUpdated?: number;
+      proposalsSkippedByThreshold?: number;
+    };
   };
   config?: {
     query: string;
@@ -112,7 +134,8 @@ type LinkCodeResponse = {
 const iconByIntegration = {
   ai: Brain,
   telegram: Bot,
-  gmail: Mail
+  gmail: Mail,
+  codex_rfp: Search
 } satisfies Record<Integration["id"], typeof Brain>;
 
 async function readResponseMessage(response: Response): Promise<string> {
@@ -149,6 +172,12 @@ function formatDate(value: string | undefined): string {
     hour: "numeric",
     minute: "2-digit"
   });
+}
+
+function absoluteEndpoint(path: string | undefined): string {
+  if (!path) return "";
+  if (typeof window === "undefined") return path;
+  return new URL(path, window.location.origin).toString();
 }
 
 function Toggle({
@@ -238,6 +267,8 @@ export function AdminOperationsPanel() {
   const [gmailRedirectUrl, setGmailRedirectUrl] = useState("");
   const [telegramToken, setTelegramToken] = useState("");
   const [telegramLink, setTelegramLink] = useState<LinkCodeResponse | null>(null);
+  const [codexToken, setCodexToken] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
 
   async function load(options?: { background?: boolean }) {
     if (!options?.background) {
@@ -428,6 +459,34 @@ export function AdminOperationsPanel() {
     }
   }
 
+  async function rotateCodexToken() {
+    setBusy("codex_rfp:token");
+    setError(null);
+    try {
+      const response = await apiFetch(apiPath("/v1/integrations/codex-rfp/token"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      if (!response.ok) throw new Error(await readResponseMessage(response));
+      const result = (await response.json()) as IntegrationsResponse["integrations"][number] & {
+        token: string;
+      };
+      setCodexToken(result.token);
+      await load({ background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function copyText(key: string, text: string) {
+    await navigator.clipboard.writeText(text);
+    setCopied(key);
+    window.setTimeout(() => setCopied(null), 1800);
+  }
+
   const summaryCards = [
     {
       label: "AI provider",
@@ -445,6 +504,11 @@ export function AdminOperationsPanel() {
       icon: Mail
     },
     {
+      label: "Codex RFP",
+      value: integrationById.get("codex_rfp") ? statusLabel(integrationById.get("codex_rfp")!) : "Loading",
+      icon: Search
+    },
+    {
       label: "Android app",
       value: androidManifest?.versionName ? `v${androidManifest.versionName}` : "APK",
       icon: Smartphone
@@ -458,7 +522,7 @@ export function AdminOperationsPanel() {
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
         {summaryCards.map((item) => {
           const Icon = item.icon;
           return (
@@ -531,6 +595,16 @@ export function AdminOperationsPanel() {
           {integrations.map((integration) => {
             const Icon = iconByIntegration[integration.id];
             const open = expanded === integration.id;
+            const codexEndpoint = integration.id === "codex_rfp" ? absoluteEndpoint(integration.endpointPath) : "";
+            const codexSnippet = [
+              `RYANOS_RFP_INGEST_URL="${codexEndpoint}"`,
+              `RYANOS_RFP_INGEST_TOKEN="${codexToken ?? "<rotate-token-in-ryanos-admin>"}"`,
+              "curl -fsS \\",
+              "  -H \"content-type: application/json\" \\",
+              "  -H \"authorization: Bearer $RYANOS_RFP_INGEST_TOKEN\" \\",
+              "  --data-binary @docs/rfp-auto-search.ryanos.json \\",
+              "  \"$RYANOS_RFP_INGEST_URL\""
+            ].join("\n");
             return (
               <div key={integration.id} className="py-4 first:pt-0 last:pb-0">
                 <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
@@ -543,7 +617,9 @@ export function AdminOperationsPanel() {
                           ? `${integration.accounts?.length ?? 0} accounts`
                           : integration.id === "telegram"
                             ? `${integration.linkedAccounts?.length ?? 0} linked`
-                            : "Assistant bridge"}
+                            : integration.id === "codex_rfp"
+                              ? `${integration.counts?.proposed ?? 0} proposed leads`
+                              : "Assistant bridge"}
                       </p>
                     </div>
                   </div>
@@ -674,6 +750,100 @@ export function AdminOperationsPanel() {
                             ))}
                           </div>
                         ) : null}
+                      </div>
+                    ) : null}
+
+                    {integration.id === "codex_rfp" ? (
+                      <div className="mt-4 space-y-4">
+                        <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                          <div className="rounded-md bg-stone-50 px-3 py-2">
+                            <p className="text-xs font-medium uppercase text-stone-500">Last ingest</p>
+                            <p className="mt-1 font-medium text-stone-950">
+                              {formatDate(integration.account?.lastIngestAt)}
+                            </p>
+                          </div>
+                          <div className="rounded-md bg-stone-50 px-3 py-2">
+                            <p className="text-xs font-medium uppercase text-stone-500">Last report</p>
+                            <p className="mt-1 font-medium text-stone-950">
+                              {formatDate(integration.account?.lastReportRunAt)}
+                            </p>
+                          </div>
+                          <div className="rounded-md bg-stone-50 px-3 py-2">
+                            <p className="text-xs font-medium uppercase text-stone-500">Proposed leads</p>
+                            <p className="mt-1 font-medium text-stone-950">{integration.counts?.proposed ?? 0}</p>
+                          </div>
+                          <div className="rounded-md bg-stone-50 px-3 py-2">
+                            <p className="text-xs font-medium uppercase text-stone-500">Token</p>
+                            <p className="mt-1 break-all font-medium text-stone-950">
+                              {integration.account?.tokenPreview ?? "none"}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void rotateCodexToken()}
+                            disabled={busy !== null}
+                            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-stone-950 px-3 text-sm font-medium text-white hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {integration.configured ? (
+                              <RotateCcw className={`h-4 w-4 ${busy === "codex_rfp:token" ? "animate-spin" : ""}`} aria-hidden="true" />
+                            ) : (
+                              <KeyRound className="h-4 w-4" aria-hidden="true" />
+                            )}
+                            {integration.configured ? "Rotate token" : "Generate token"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void copyText("codex-endpoint", codexEndpoint)}
+                            disabled={!codexEndpoint}
+                            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-stone-300 px-3 text-sm font-medium text-stone-700 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <Copy className="h-4 w-4" aria-hidden="true" />
+                            {copied === "codex-endpoint" ? "Copied" : "Copy endpoint"}
+                          </button>
+                        </div>
+
+                        {codexToken ? (
+                          <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-900">
+                            This token is shown once. Rotate it if you lose it.
+                          </p>
+                        ) : null}
+
+                        <div className="rounded-md border border-stone-200 bg-stone-50">
+                          <div className="flex items-center justify-between gap-3 border-b border-stone-200 px-3 py-2">
+                            <p className="text-sm font-semibold text-stone-950">Automation upload snippet</p>
+                            <button
+                              type="button"
+                              onClick={() => void copyText("codex-snippet", codexSnippet)}
+                              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2 text-sm font-medium text-stone-700 hover:bg-stone-100"
+                            >
+                              <Copy className="h-4 w-4" aria-hidden="true" />
+                              {copied === "codex-snippet" ? "Copied" : "Copy"}
+                            </button>
+                          </div>
+                          <pre className="overflow-x-auto p-3 text-xs leading-5 text-stone-900">{codexSnippet}</pre>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2 text-xs text-stone-600">
+                          {(integration.account?.lastAutomationIds ?? []).map((automationId) => (
+                            <span key={automationId} className="rounded-md bg-stone-100 px-2 py-1">
+                              {automationId}
+                            </span>
+                          ))}
+                          {(integration.account?.lastProjectSlugs ?? []).map((projectSlug) => (
+                            <span key={projectSlug} className="rounded-md bg-sky-50 px-2 py-1 text-sky-800">
+                              {projectSlug}
+                            </span>
+                          ))}
+                          {integration.account?.lastResult ? (
+                            <span className="rounded-md bg-stone-100 px-2 py-1">
+                              {integration.account.lastResult.candidatesSeen ?? 0} seen,{" "}
+                              {integration.account.lastResult.proposalsCreatedOrUpdated ?? 0} updated
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
                     ) : null}
 

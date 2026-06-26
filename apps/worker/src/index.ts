@@ -3,6 +3,7 @@ import { nowIso } from "@ryanos/shared";
 import { readFile } from "node:fs/promises";
 
 const apiUrl = process.env.RYANOS_API_URL?.trim() || "http://api:4000";
+const rfpIngestToken = process.env.RYANOS_RFP_INGEST_TOKEN?.trim();
 const emailScanEnabled = process.env.EMAIL_TRIAGE_ENABLED !== "false";
 const emailScanIntervalMinutes = Math.min(
   Math.max(Number(process.env.EMAIL_SCAN_INTERVAL_MINUTES ?? "60") || 60, 5),
@@ -131,13 +132,22 @@ async function requestEmailScan(body: Record<string, unknown>): Promise<unknown>
 }
 
 async function requestOpportunityReportIngest(body: Record<string, unknown>): Promise<unknown> {
-  const response = await fetch(`${apiUrl}/v1/opportunity-proposals/ingest`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
+  const headers: Record<string, string> = {
+    "content-type": "application/json"
+  };
+  if (rfpIngestToken) {
+    headers.authorization = `Bearer ${rfpIngestToken}`;
+  }
+  const response = await fetch(
+    rfpIngestToken
+      ? `${apiUrl}/v1/automation/rfp-reports/ingest`
+      : `${apiUrl}/v1/opportunity-proposals/ingest`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body)
+    }
+  );
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(`Opportunity report ingest returned HTTP ${response.status}: ${JSON.stringify(result)}`);

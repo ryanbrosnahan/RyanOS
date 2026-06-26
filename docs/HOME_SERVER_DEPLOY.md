@@ -146,10 +146,17 @@ label messages, create Gmail drafts, or send mail.
 
 ## RFP and grant reports
 
-RyanOS can ingest machine-readable sidecar files from Codex RFP/grant search
-automations. The project automation should keep writing its human notes to
-`docs/rfp-auto-search.md` and also write a JSON sidecar such as
-`docs/rfp-auto-search.ryanos.json`:
+RyanOS can ingest machine-readable reports from user-owned Codex RFP/grant
+search automations. The preferred setup is DB-backed: open RyanOS Admin,
+generate a Codex RFP ingest token, then add the generated upload snippet to each
+local Codex automation. RyanOS stores only a token hash in Postgres; the
+plaintext token is shown once and stays in the user's local Codex automation
+setup.
+
+The project automation should keep writing its human notes to
+`docs/rfp-auto-search.md`, write a JSON sidecar such as
+`docs/rfp-auto-search.ryanos.json`, and POST that JSON to the Admin-generated
+endpoint:
 
 ```json
 {
@@ -172,10 +179,13 @@ automations. The project automation should keep writing its human notes to
 }
 ```
 
-Configure the worker with local paths visible from the RyanOS runtime:
+The older worker-side file polling path remains available for local/dev
+fallbacks, but it requires paths visible inside the worker runtime and an
+explicit ingest token:
 
 ```bash
 RYANOS_RFP_REPORT_SOURCES='["/Users/ryan/Projects/active/NoxJury/docs/rfp-auto-search.ryanos.json","/Users/ryan/Projects/active/filemytro/docs/rfp-auto-search.ryanos.json"]'
+RYANOS_RFP_INGEST_TOKEN='<Admin-generated Codex RFP ingest token>'
 RFP_REPORT_INGEST_INTERVAL_MINUTES=60
 ```
 

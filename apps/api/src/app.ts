@@ -1,3 +1,4 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   createAiProviderFromEnv,
   type AiProvider,
@@ -312,7 +313,7 @@ const emailAccountsQuerySchema = z.object({
   userId: z.string().default("local-owner")
 });
 
-const integrationIdSchema = z.enum(["ai", "telegram", "gmail"]);
+const integrationIdSchema = z.enum(["ai", "telegram", "gmail", "codex_rfp"]);
 
 const integrationParamsSchema = z.object({
   id: integrationIdSchema
@@ -986,8 +987,67 @@ type IntegrationId = z.infer<typeof integrationIdSchema>;
 const integrationNames: Record<IntegrationId, string> = {
   ai: "AI provider",
   telegram: "Telegram",
-  gmail: "Gmail"
+  gmail: "Gmail",
+  codex_rfp: "Codex RFP automations"
 };
+
+const codexRfpProvider = "codex_rfp_ingest";
+const codexRfpTokenPrefix = "ryanos_rfp";
+const codexRfpEndpointPath = "/api/v1/automation/rfp-reports/ingest";
+
+function codexRfpMetadata(account: ProviderAccount | undefined): Record<string, unknown> {
+  return asRecord(account?.metadata) ?? {};
+}
+
+function createCodexRfpToken(): {
+  token: string;
+  tokenId: string;
+  secret: string;
+  secretHash: string;
+  tokenPreview: string;
+} {
+  const tokenId = randomBytes(8).toString("hex");
+  const secret = randomBytes(24).toString("base64url");
+  const token = `${codexRfpTokenPrefix}_${tokenId}_${secret}`;
+  return {
+    token,
+    tokenId,
+    secret,
+    secretHash: hashCodexRfpSecret(tokenId, secret),
+    tokenPreview: `${codexRfpTokenPrefix}_${tokenId}_...${secret.slice(-4)}`
+  };
+}
+
+function parseCodexRfpToken(raw: string | undefined): { tokenId: string; secret: string } | undefined {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  const match = value.match(/^ryanos_rfp_([a-f0-9]{16})_(.+)$/);
+  if (!match) return undefined;
+  return {
+    tokenId: match[1]!,
+    secret: match[2]!
+  };
+}
+
+function hashCodexRfpSecret(tokenId: string, secret: string): string {
+  return createHash("sha256").update(`${tokenId}:${secret}`).digest("base64url");
+}
+
+function secureStringEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function codexRfpTokenFromRequest(request: FastifyRequest): string | undefined {
+  const authorization = request.headers.authorization;
+  if (typeof authorization === "string") {
+    const match = authorization.match(/^Bearer\s+(.+)$/i);
+    if (match) return match[1]?.trim();
+  }
+  const header = request.headers["x-ryanos-ingest-token"];
+  return Array.isArray(header) ? header[0] : header;
+}
 
 function validateTelegramBotToken(token: string): string {
   const trimmed = token.trim();
@@ -1231,6 +1291,194 @@ export function buildApp(options: {
     };
   }
 
+  async function codexRfpAccountForUser(userId: UUID): Promise<ProviderAccount | undefined> {
+    const accounts = await store.listProviderAccounts({
+      userId,
+      provider: codexRfpProvider,
+      limit: 20
+    });
+    return accounts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  }
+
+  async function codexRfpProposalCounts(userId: UUID) {
+    const [proposed, accepted, rejected] = await Promise.all([
+      store.listOpportunityProposals({ userId, status: "proposed", limit: 200 }),
+      store.listOpportunityProposals({ userId, status: "accepted", limit: 200 }),
+      store.listOpportunityProposals({ userId, status: "rejected", limit: 200 })
+    ]);
+    return {
+      proposed: proposed.length,
+      accepted: accepted.length,
+      rejected: rejected.length,
+      total: proposed.length + accepted.length + rejected.length
+    };
+  }
+
+  async function codexRfpSetupStatus(userId: UUID): Promise<SetupStatus> {
+    const account = await codexRfpAccountForUser(userId);
+    const enabled = await integrationEnabled(userId, "codex_rfp");
+    const metadata = codexRfpMetadata(account);
+    const hasTokenHash = typeof metadata.secretHash === "string" && metadata.secretHash.length > 0;
+    const configured = Boolean(account && hasTokenHash);
+    const ready = configured && account?.status === "active" && enabled;
+    const setupActions: SetupStatus["setupActions"] = [];
+    const warnings: string[] = [];
+
+    if (!configured) {
+      setupActions.push({
+        id: "codex-rfp-token",
+        title: "Create Codex RFP ingest token",
+        blocking: true,
+        instructions: [
+          "Open RyanOS Admin and generate a Codex RFP token.",
+          "Add the generated endpoint and token to each local Codex RFP automation."
+        ]
+      });
+    }
+    if (configured && account?.status !== "active") {
+      setupActions.push({
+        id: "codex-rfp-token-disabled",
+        title: "Enable or rotate Codex RFP token",
+        blocking: true,
+        instructions: [
+          "The stored Codex RFP ingest token is disabled.",
+          "Enable the integration or rotate the token from RyanOS Admin."
+        ]
+      });
+    }
+    if (configured && !enabled) {
+      warnings.push("Codex RFP automation ingest is disabled for this user.");
+    }
+
+    return {
+      id: "codex_rfp",
+      name: integrationNames.codex_rfp,
+      configured,
+      ready,
+      setupRequired: setupActions.length > 0,
+      setupActions,
+      warnings
+    };
+  }
+
+  async function codexRfpStatusPayload(userId: UUID) {
+    const [account, setting, counts] = await Promise.all([
+      codexRfpAccountForUser(userId),
+      store.getUserIntegrationSetting(userId, "codex_rfp"),
+      codexRfpProposalCounts(userId)
+    ]);
+    const setup = await codexRfpSetupStatus(userId);
+    const metadata = codexRfpMetadata(account);
+    return {
+      setup,
+      endpointPath: codexRfpEndpointPath,
+      enabled: setting?.enabled ?? true,
+      counts,
+      account: account
+        ? {
+            id: account.id,
+            status: account.status,
+            displayName: account.displayName,
+            tokenId: account.externalAccountId,
+            tokenPreview: metadata.tokenPreview,
+            createdAt: account.createdAt,
+            updatedAt: account.updatedAt,
+            lastIngestAt: metadata.lastIngestAt,
+            lastReportRunAt: metadata.lastReportRunAt,
+            lastAutomationIds: Array.isArray(metadata.lastAutomationIds)
+              ? metadata.lastAutomationIds.filter((value): value is string => typeof value === "string")
+              : [],
+            lastProjectSlugs: Array.isArray(metadata.lastProjectSlugs)
+              ? metadata.lastProjectSlugs.filter((value): value is string => typeof value === "string")
+              : [],
+            lastResult: asRecord(metadata.lastResult) ?? undefined
+          }
+        : undefined
+    };
+  }
+
+  async function rotateCodexRfpToken(userId: UUID): Promise<{ token: string; status: "created" | "rotated" }> {
+    const existing = await codexRfpAccountForUser(userId);
+    const next = createCodexRfpToken();
+    const metadata = asJsonObject({
+      ...codexRfpMetadata(existing),
+      credentialStorage: "hashed-db",
+      tokenKind: "rfp_report_ingest",
+      secretHash: next.secretHash,
+      tokenPreview: next.tokenPreview,
+      rotatedAt: nowIso()
+    });
+    if (!existing) {
+      await store.upsertProviderAccount({
+        userId,
+        provider: codexRfpProvider,
+        externalAccountId: next.tokenId,
+        displayName: "Codex RFP ingest token",
+        status: "active",
+        scopes: ["rfp_report:ingest"],
+        metadata
+      });
+      await store.upsertUserIntegrationSetting({
+        userId,
+        integrationId: "codex_rfp",
+        enabled: true
+      });
+      return {
+        token: next.token,
+        status: "created"
+      };
+    }
+
+    await store.updateProviderAccount(existing.id, {
+      externalAccountId: next.tokenId,
+      displayName: existing.displayName ?? "Codex RFP ingest token",
+      status: "active",
+      scopes: existing.scopes.length > 0 ? existing.scopes : ["rfp_report:ingest"],
+      metadata
+    });
+    await store.upsertUserIntegrationSetting({
+      userId,
+      integrationId: "codex_rfp",
+      enabled: true
+    });
+    return {
+      token: next.token,
+      status: "rotated"
+    };
+  }
+
+  async function authenticateCodexRfpIngestToken(
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<ProviderAccount | undefined> {
+    const parsed = parseCodexRfpToken(codexRfpTokenFromRequest(request));
+    if (!parsed) {
+      reply.code(401);
+      void reply.send({ error: "Missing or invalid Codex RFP ingest token." });
+      return undefined;
+    }
+    const account = await store.findProviderAccountByExternalId(codexRfpProvider, parsed.tokenId);
+    const metadata = codexRfpMetadata(account);
+    const expectedHash = typeof metadata.secretHash === "string" ? metadata.secretHash : undefined;
+    const actualHash = hashCodexRfpSecret(parsed.tokenId, parsed.secret);
+    if (!account || !expectedHash || !secureStringEqual(expectedHash, actualHash)) {
+      reply.code(401);
+      void reply.send({ error: "Missing or invalid Codex RFP ingest token." });
+      return undefined;
+    }
+    if (account.status !== "active") {
+      reply.code(403);
+      void reply.send({ error: "Codex RFP ingest token is disabled." });
+      return undefined;
+    }
+    if (!(await integrationEnabled(account.userId, "codex_rfp"))) {
+      reply.code(403);
+      void reply.send({ error: "Codex RFP automation ingest is disabled for this user." });
+      return undefined;
+    }
+    return account;
+  }
+
   async function gmailAuthClient(reply: FastifyReply): Promise<
     Pick<GogGmailClient, "startRemoteAuth" | "completeRemoteAuth"> | undefined
   > {
@@ -1321,7 +1569,7 @@ export function buildApp(options: {
         "Access-Control-Allow-Headers",
         typeof request.headers["access-control-request-headers"] === "string"
           ? request.headers["access-control-request-headers"]
-          : "content-type, authorization, x-ryanos-invite-code"
+          : "content-type, authorization, x-ryanos-invite-code, x-ryanos-ingest-token"
       );
     }
     if (request.method === "OPTIONS") {
@@ -1341,7 +1589,8 @@ export function buildApp(options: {
       path === "/v1/tools" ||
       path.startsWith("/auth/") ||
       path === "/v1/webhooks/telegram" ||
-      path === "/v1/inbound/telegram"
+      path === "/v1/inbound/telegram" ||
+      path === "/v1/automation/rfp-reports/ingest"
     );
   }
 
@@ -1519,11 +1768,13 @@ export function buildApp(options: {
   app.get("/v1/setup/status", async (request: RyanOsRequest, reply) => {
     if (!requireSuperadmin(request, reply)) return;
     const aiStatus = await ai.getStatus();
+    const userId = currentUserId(request) as UUID;
     return {
       ai: aiSetupStatus(aiStatus),
       integrations: [
         await telegramSetupStatus(database?.db),
-        await gmailSetupStatus(emailClient)
+        await gmailSetupStatus(emailClient),
+        await codexRfpSetupStatus(userId)
       ]
     };
   });
@@ -1535,6 +1786,8 @@ export function buildApp(options: {
       aiStatus,
       telegramSetup,
       gmailSetup,
+      codexRfpSetup,
+      codexRfpStatus,
       settings,
       gmailAccounts,
       gmailCounts,
@@ -1545,6 +1798,8 @@ export function buildApp(options: {
       ai.getStatus(),
       telegramSetupStatus(database?.db),
       gmailSetupStatus(emailClient),
+      codexRfpSetupStatus(userId as UUID),
+      codexRfpStatusPayload(userId as UUID),
       store.listUserIntegrationSettings(userId as UUID),
       store.listProviderAccounts({
         userId: userId as UUID,
@@ -1616,6 +1871,11 @@ export function buildApp(options: {
           counts: gmailCounts,
           accounts: await Promise.all(gmailAccounts.map((account) => gmailAccountView(store, account))),
           canManageDeployment: role === "superadmin"
+        }),
+        integrationView("codex_rfp", codexRfpSetup, {
+          endpointPath: codexRfpStatus.endpointPath,
+          counts: codexRfpStatus.counts,
+          account: codexRfpStatus.account
         })
       ]
     };
@@ -1632,6 +1892,64 @@ export function buildApp(options: {
     return {
       setting
     };
+  });
+
+  app.get("/v1/integrations/codex-rfp", async (request: RyanOsRequest) => {
+    return codexRfpStatusPayload(currentUserId(request) as UUID);
+  });
+
+  app.post("/v1/integrations/codex-rfp/token", async (request: RyanOsRequest) => {
+    const userId = currentUserId(request) as UUID;
+    const result = await rotateCodexRfpToken(userId);
+    return {
+      status: result.status,
+      token: result.token,
+      ...(await codexRfpStatusPayload(userId))
+    };
+  });
+
+  app.post("/v1/automation/rfp-reports/ingest", async (request, reply) => {
+    const account = await authenticateCodexRfpIngestToken(request, reply);
+    if (!account) return;
+    try {
+      const body = parseOpportunityReportIngestBody(request.body ?? {});
+      const result = await ingestOpportunityReport({
+        store,
+        userId: account.userId,
+        report: body.report
+      });
+      const metadata = codexRfpMetadata(account);
+      const automationIds = [
+        body.report.automationId,
+        ...(Array.isArray(metadata.lastAutomationIds)
+          ? metadata.lastAutomationIds.filter((value): value is string => typeof value === "string")
+          : [])
+      ].filter((value, index, all) => all.indexOf(value) === index).slice(0, 10);
+      const projectSlugs = [
+        body.report.projectSlug,
+        ...(Array.isArray(metadata.lastProjectSlugs)
+          ? metadata.lastProjectSlugs.filter((value): value is string => typeof value === "string")
+          : [])
+      ].filter((value, index, all) => all.indexOf(value) === index).slice(0, 10);
+      await store.updateProviderAccount(account.id, {
+        metadata: asJsonObject({
+          ...metadata,
+          lastIngestAt: nowIso(),
+          lastReportRunAt: body.report.runAt,
+          lastAutomationIds: automationIds,
+          lastProjectSlugs: projectSlugs,
+          lastResult: result
+        })
+      });
+      return {
+        result
+      };
+    } catch (err) {
+      reply.code(400);
+      return {
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
   });
 
   app.post("/v1/admin/integrations/telegram/bot-token", async (request: RyanOsRequest, reply) => {

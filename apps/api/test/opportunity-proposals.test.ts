@@ -73,6 +73,151 @@ describe("opportunity proposal API", () => {
     });
   });
 
+  it("ingests automation reports through a per-user Codex RFP token and ignores body userId", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const app = buildApp({ store });
+
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/codex-rfp/token",
+      payload: {
+        userId: "user-a"
+      }
+    });
+    const token = tokenResponse.json().token as string;
+    const ingest = await app.inject({
+      method: "POST",
+      url: "/v1/automation/rfp-reports/ingest",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: {
+        userId: "user-b",
+        report: sidecar()
+      }
+    });
+    const ownerProposals = await app.inject({
+      method: "GET",
+      url: "/v1/opportunity-proposals?userId=local-owner&status=proposed"
+    });
+    const otherProposals = await app.inject({
+      method: "GET",
+      url: "/v1/opportunity-proposals?userId=user-b&status=proposed"
+    });
+    await app.close();
+
+    expect(tokenResponse.statusCode).toBe(200);
+    expect(token).toMatch(/^ryanos_rfp_[a-f0-9]{16}_.+/);
+    expect(ingest.statusCode).toBe(200);
+    expect(ingest.json().result).toMatchObject({
+      proposalsCreatedOrUpdated: 1
+    });
+    expect(ownerProposals.json().proposals).toHaveLength(1);
+    expect(otherProposals.json().proposals).toHaveLength(0);
+  });
+
+  it("rejects missing or invalid Codex RFP ingest tokens", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const app = buildApp({ store });
+
+    const missing = await app.inject({
+      method: "POST",
+      url: "/v1/automation/rfp-reports/ingest",
+      payload: sidecar()
+    });
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/v1/automation/rfp-reports/ingest",
+      headers: {
+        authorization: "Bearer ryanos_rfp_0011223344556677_wrong"
+      },
+      payload: sidecar()
+    });
+    await app.close();
+
+    expect(missing.statusCode).toBe(401);
+    expect(invalid.statusCode).toBe(401);
+  });
+
+  it("returns 403 for disabled Codex RFP ingest tokens", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const app = buildApp({ store });
+
+    const tokenResponse = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/codex-rfp/token",
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    const token = tokenResponse.json().token as string;
+    await app.inject({
+      method: "PATCH",
+      url: "/v1/integrations/codex_rfp/settings",
+      payload: {
+        enabled: false
+      }
+    });
+    const ingest = await app.inject({
+      method: "POST",
+      url: "/v1/automation/rfp-reports/ingest",
+      headers: {
+        "x-ryanos-ingest-token": token
+      },
+      payload: sidecar()
+    });
+    await app.close();
+
+    expect(ingest.statusCode).toBe(403);
+  });
+
+  it("rotation invalidates the old Codex RFP token", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const app = buildApp({ store });
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/codex-rfp/token",
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    const firstToken = first.json().token as string;
+    const second = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/codex-rfp/token",
+      payload: {
+        userId: "local-owner"
+      }
+    });
+    const secondToken = second.json().token as string;
+    const oldTokenIngest = await app.inject({
+      method: "POST",
+      url: "/v1/automation/rfp-reports/ingest",
+      headers: {
+        authorization: `Bearer ${firstToken}`
+      },
+      payload: sidecar()
+    });
+    const newTokenIngest = await app.inject({
+      method: "POST",
+      url: "/v1/automation/rfp-reports/ingest",
+      headers: {
+        authorization: `Bearer ${secondToken}`
+      },
+      payload: sidecar()
+    });
+    await app.close();
+
+    expect(firstToken).not.toBe(secondToken);
+    expect(oldTokenIngest.statusCode).toBe(401);
+    expect(newTokenIngest.statusCode).toBe(200);
+  });
+
   it("dedupes repeated ingests by automation and candidate source", async () => {
     vi.stubEnv("DATABASE_URL", "");
     const store = new InMemoryRyanStore();

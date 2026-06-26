@@ -117,6 +117,10 @@ services:
     environment:
       <<: *app-env
       RYANOS_API_URL: http://api:4000
+      RYANOS_RFP_REPORT_SOURCES: ${RYANOS_RFP_REPORT_SOURCES:-}
+      RYANOS_RFP_INGEST_TOKEN: ${RYANOS_RFP_INGEST_TOKEN:-}
+      RFP_REPORT_INGEST_ENABLED: ${RFP_REPORT_INGEST_ENABLED:-true}
+      RFP_REPORT_INGEST_INTERVAL_MINUTES: ${RFP_REPORT_INGEST_INTERVAL_MINUTES:-60}
     volumes:
       - ./secrets:/app/secrets:ro
       - gogcli-state:/app/.gogcli

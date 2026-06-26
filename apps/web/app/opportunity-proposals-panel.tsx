@@ -32,6 +32,26 @@ type OpportunityProposalsResponse = {
   proposals: OpportunityProposal[];
 };
 
+type CodexRfpStatus = {
+  setup: {
+    configured: boolean;
+    ready: boolean;
+    setupRequired: boolean;
+    warnings: string[];
+  };
+  enabled: boolean;
+  counts: {
+    proposed: number;
+    accepted: number;
+    rejected: number;
+    total: number;
+  };
+  account?: {
+    lastIngestAt?: string;
+    lastReportRunAt?: string;
+  };
+};
+
 function formatDate(value: string | undefined): string | undefined {
   if (!value) return undefined;
   return new Intl.DateTimeFormat("en-US", {
@@ -79,6 +99,7 @@ function uniqueLinks(proposal: OpportunityProposal): string[] {
 
 export function OpportunityProposalsPanel() {
   const [proposals, setProposals] = useState<OpportunityProposal[]>([]);
+  const [codexStatus, setCodexStatus] = useState<CodexRfpStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,12 +117,20 @@ export function OpportunityProposalsPanel() {
         status: "proposed",
         limit: "20"
       });
-      const response = await apiFetch(apiPath(`/v1/opportunity-proposals?${params.toString()}`), {
-        cache: "no-store"
-      });
+      const [response, statusResponse] = await Promise.all([
+        apiFetch(apiPath(`/v1/opportunity-proposals?${params.toString()}`), {
+          cache: "no-store"
+        }),
+        apiFetch(apiPath("/v1/integrations/codex-rfp"), {
+          cache: "no-store"
+        })
+      ]);
       if (!response.ok) throw new Error(`Opportunity proposals returned ${response.status}`);
       const payload = (await response.json()) as OpportunityProposalsResponse;
       setProposals(payload.proposals);
+      if (statusResponse.ok) {
+        setCodexStatus((await statusResponse.json()) as CodexRfpStatus);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -166,12 +195,42 @@ export function OpportunityProposalsPanel() {
 
       {error ? <p className="mt-3 text-sm leading-6 text-rose-700">{error}</p> : null}
 
+      {codexStatus ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+          <span
+            className={`rounded-md px-2 py-1 font-medium ${
+              codexStatus.enabled && codexStatus.setup.ready
+                ? "bg-emerald-50 text-emerald-800"
+                : "bg-amber-50 text-amber-900"
+            }`}
+          >
+            {codexStatus.enabled && codexStatus.setup.ready
+              ? "Codex RFP ready"
+              : codexStatus.setup.configured
+                ? "Codex RFP needs attention"
+                : "Codex RFP not set up"}
+          </span>
+          <span className="rounded-md bg-stone-100 px-2 py-1 font-medium text-stone-700">
+            Last ingest {formatDate(codexStatus.account?.lastIngestAt) ?? "never"}
+          </span>
+          <span className="rounded-md bg-stone-100 px-2 py-1 font-medium text-stone-700">
+            {codexStatus.counts.proposed} proposed
+          </span>
+        </div>
+      ) : null}
+
       {!error && loading && proposals.length === 0 ? (
         <p className="mt-3 text-sm leading-6 text-stone-600">Loading opportunity proposals...</p>
       ) : null}
 
       {!error && !loading && proposals.length === 0 ? (
-        <p className="mt-3 text-sm leading-6 text-stone-600">No proposed opportunity leads.</p>
+        <p className="mt-3 text-sm leading-6 text-stone-600">
+          {codexStatus && !codexStatus.setup.configured
+            ? "No proposed opportunity leads because Codex RFP automation ingest is not set up yet."
+            : codexStatus && !codexStatus.setup.ready
+              ? "No proposed opportunity leads; Codex RFP automation ingest needs attention in Admin."
+              : "No proposed opportunity leads."}
+        </p>
       ) : null}
 
       {proposals.length > 0 ? (
