@@ -6,6 +6,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ryanos.android.BuildConfig
+import com.ryanos.android.data.AndroidUpdateStatus
 import com.ryanos.android.data.FocusItem
 import com.ryanos.android.data.RyanOsRepository
 import com.ryanos.android.data.RyanOsSettings
@@ -32,6 +34,8 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
   var busyLabel by mutableStateOf<String?>(null)
     private set
   var statusText by mutableStateOf("")
+    private set
+  var androidUpdateStatus by mutableStateOf<AndroidUpdateStatus?>(null)
     private set
 
   val busy: Boolean
@@ -237,6 +241,23 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
     launchWork("Signing out") {
       repository.signOut()
       statusText = "Signed out"
+    }
+  }
+
+  fun checkAndroidUpdate() {
+    launchWork("Checking app update") {
+      val latest = repository.checkAndroidUpdate()
+      androidUpdateStatus = AndroidUpdateStatus(
+        currentVersionCode = BuildConfig.VERSION_CODE,
+        currentVersionName = BuildConfig.VERSION_NAME,
+        latest = latest,
+        checkedAt = java.time.Instant.now().toString()
+      )
+      statusText = if (latest.versionCode > BuildConfig.VERSION_CODE) {
+        "Android update ${latest.versionName} is available"
+      } else {
+        "Android app is up to date"
+      }
     }
   }
 

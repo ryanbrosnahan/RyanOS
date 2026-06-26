@@ -104,6 +104,8 @@ services:
       RYANOS_INTERNAL_API_URL: ${RYANOS_INTERNAL_API_URL:-http://api:4000}
     ports:
       - "127.0.0.1:${WEB_PORT:-3100}:3000"
+    volumes:
+      - ./releases/android:/app/apps/web/.next/standalone/apps/web/public/downloads/android:ro
     depends_on:
       api:
         condition: service_started

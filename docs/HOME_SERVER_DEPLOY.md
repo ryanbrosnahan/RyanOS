@@ -256,3 +256,11 @@ scripts/deploy-lenovo.sh
 The deploy script refuses to run with uncommitted changes, verifies local tests
 and Compose config, pulls `origin/main` on `lenovo`, rebuilds, restarts, and
 checks `/api/health` through the web service.
+
+By default the deploy script also builds the Android debug APK locally, uploads
+it to `/opt/ryanos/releases/android/ryanos-latest.apk`, and writes
+`/opt/ryanos/releases/android/manifest.json`. The web container serves those
+files at `/downloads/android/ryanos-latest.apk` and
+`/downloads/android/manifest.json`, and the Android app uses the manifest for
+its in-app update check. Set `RYANOS_DEPLOY_ANDROID_APK=0` to skip APK
+publishing for a server-only deploy.

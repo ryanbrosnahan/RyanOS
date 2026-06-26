@@ -134,6 +134,25 @@ The APK is written to:
 apps/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
+## Self-Hosted Updates
+
+The Lenovo deploy script publishes the latest debug APK to the RyanOS web
+service:
+
+```text
+https://your-machine.your-tailnet.ts.net/downloads/android/ryanos-latest.apk
+```
+
+It also publishes a manifest at:
+
+```text
+https://your-machine.your-tailnet.ts.net/downloads/android/manifest.json
+```
+
+The Android Settings screen checks that manifest and opens the APK download when
+a higher `versionCode` is available. Android still requires the user to approve
+installing the downloaded APK.
+
 ## Configure The App On The Phone
 
 Open RyanOS and set:

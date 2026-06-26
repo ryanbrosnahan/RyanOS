@@ -21,6 +21,25 @@ data class RyanOsSettings(
     get() = apiBaseUrl.trim().trimEnd('/')
 }
 
+data class AndroidReleaseManifest(
+  val versionCode: Int,
+  val versionName: String,
+  val apkUrl: String,
+  val apkSha256: String?,
+  val apkSizeBytes: Long?,
+  val publishedAt: String?
+)
+
+data class AndroidUpdateStatus(
+  val currentVersionCode: Int,
+  val currentVersionName: String,
+  val latest: AndroidReleaseManifest,
+  val checkedAt: String
+) {
+  val updateAvailable: Boolean
+    get() = latest.versionCode > currentVersionCode
+}
+
 data class WidgetSnapshot(
   val date: String = "",
   val timezone: String = defaultTimezone(),

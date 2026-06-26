@@ -186,6 +186,11 @@ class RyanOsRepository private constructor(context: Context) {
     next
   }
 
+  suspend fun checkAndroidUpdate(): AndroidReleaseManifest = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    RyanOsApi.fetchAndroidReleaseManifest(settings)
+  }
+
   suspend fun toggleRecurrenceExpanded(itemId: String): WidgetSnapshot = withContext(Dispatchers.IO) {
     val operationStart = WidgetTiming.now()
     WidgetTiming.event(

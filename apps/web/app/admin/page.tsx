@@ -10,6 +10,7 @@ import {
 import Link from "next/link";
 import { SetupStatusPanel } from "../setup-status-panel";
 import { AiDiagnosticsPanel, AttentionDebugPanel } from "../admin-diagnostics";
+import { AndroidDownloadPanel } from "../android-download-panel";
 import { AuthGate } from "../auth-gate";
 import { EmailIntegrationPanel } from "./email-integration-panel";
 
@@ -102,7 +103,10 @@ export default function AdminPage() {
           </div>
 
           <aside>
-            <SetupStatusPanel />
+            <div className="space-y-6">
+              <AndroidDownloadPanel />
+              <SetupStatusPanel />
+            </div>
           </aside>
         </section>
       </main>

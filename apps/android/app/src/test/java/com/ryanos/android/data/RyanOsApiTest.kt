@@ -9,6 +9,44 @@ import org.junit.Test
 
 class RyanOsApiTest {
   @Test
+  fun derivesAndroidReleaseManifestUrlFromApiBaseUrl() {
+    assertEquals(
+      "https://ryan-lenovo-desktop.taile89fa5.ts.net/downloads/android/manifest.json",
+      RyanOsApi.androidReleaseManifestUrl(
+        "https://ryan-lenovo-desktop.taile89fa5.ts.net/api"
+      )
+    )
+    assertEquals(
+      "https://example.com/ryanos/downloads/android/manifest.json",
+      RyanOsApi.androidReleaseManifestUrl("https://example.com/ryanos/api/")
+    )
+  }
+
+  @Test
+  fun parsesAndroidReleaseManifest() {
+    val manifest = RyanOsApi.parseAndroidReleaseManifest(
+      rawJson = """
+        {
+          "versionCode": 2,
+          "versionName": "0.1.1",
+          "apkUrl": "/downloads/android/ryanos-latest.apk",
+          "apkSha256": "abc123",
+          "apkSizeBytes": 12345,
+          "publishedAt": "2026-06-26T12:00:00Z"
+        }
+      """.trimIndent(),
+      manifestUrl = "https://example.com/downloads/android/manifest.json"
+    )
+
+    assertEquals(2, manifest.versionCode)
+    assertEquals("0.1.1", manifest.versionName)
+    assertEquals("https://example.com/downloads/android/ryanos-latest.apk", manifest.apkUrl)
+    assertEquals("abc123", manifest.apkSha256)
+    assertEquals(12345L, manifest.apkSizeBytes)
+    assertEquals("2026-06-26T12:00:00Z", manifest.publishedAt)
+  }
+
+  @Test
   fun parsesWidgetPayload() {
     val snapshot = RyanOsApi.parseSnapshot(
       rawJson = """

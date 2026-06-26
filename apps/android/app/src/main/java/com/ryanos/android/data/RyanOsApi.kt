@@ -3,6 +3,7 @@ package com.ryanos.android.data
 import java.io.IOException
 import java.time.Duration
 import java.net.HttpURLConnection
+import java.net.URI
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.URLEncoder
@@ -50,6 +51,13 @@ object RyanOsApi {
     )
     return response.sessionCookie()
       ?: throw IOException("RyanOS sign-in succeeded but no session cookie was returned.")
+  }
+
+  @Throws(IOException::class)
+  fun fetchAndroidReleaseManifest(settings: RyanOsSettings): AndroidReleaseManifest {
+    val manifestUrl = androidReleaseManifestUrl(settings.normalizedBaseUrl)
+    val rawJson = request(method = "GET", url = manifestUrl)
+    return parseAndroidReleaseManifest(rawJson, manifestUrl)
   }
 
   @Throws(IOException::class)
@@ -1303,6 +1311,35 @@ object RyanOsApi {
 
   private fun String.urlEncode(): String =
     URLEncoder.encode(this, StandardCharsets.UTF_8.name())
+
+  internal fun androidReleaseManifestUrl(apiBaseUrl: String): String {
+    val trimmed = apiBaseUrl.trim().trimEnd('/')
+    if (trimmed.isBlank()) throw IOException("Enter the RyanOS API base URL before checking updates.")
+    val uri = URI(trimmed)
+    val scheme = uri.scheme ?: throw IOException("RyanOS API base URL must include https://")
+    val authority = uri.rawAuthority ?: throw IOException("RyanOS API base URL must include a host.")
+    val apiPath = uri.rawPath.orEmpty().trimEnd('/')
+    val webPath = apiPath.removeSuffix("/api").trimEnd('/')
+    return "$scheme://$authority$webPath/downloads/android/manifest.json"
+  }
+
+  internal fun parseAndroidReleaseManifest(rawJson: String, manifestUrl: String): AndroidReleaseManifest {
+    val json = JSONObject(rawJson)
+    val versionCode = json.optInt("versionCode", 0)
+    val versionName = json.optString("versionName").ifBlank { "unknown" }
+    val apkUrl = json.optString("apkUrl").ifBlank {
+      throw IOException("Android update manifest is missing apkUrl.")
+    }
+    if (versionCode <= 0) throw IOException("Android update manifest is missing versionCode.")
+    return AndroidReleaseManifest(
+      versionCode = versionCode,
+      versionName = versionName,
+      apkUrl = URI(manifestUrl).resolve(apkUrl).toString(),
+      apkSha256 = json.optStringOrNull("apkSha256"),
+      apkSizeBytes = if (json.has("apkSizeBytes")) json.optLong("apkSizeBytes") else null,
+      publishedAt = json.optStringOrNull("publishedAt")
+    )
+  }
 
   private fun JSONArray.findItem(itemId: String): JSONObject? {
     for (index in 0 until length()) {

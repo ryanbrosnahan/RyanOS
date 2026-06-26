@@ -72,6 +72,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -83,7 +84,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.ryanos.android.BuildConfig
 import com.ryanos.android.MainActivity
+import com.ryanos.android.data.AndroidUpdateStatus
 import com.ryanos.android.data.DailyPlanSnapshot
 import com.ryanos.android.data.FocusItem
 import com.ryanos.android.data.FocusRecurrenceDay
@@ -311,12 +314,14 @@ fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
           composable(Destination.SETTINGS.route) {
             SettingsScreen(
               settings = settings,
+              androidUpdateStatus = viewModel.androidUpdateStatus,
               busy = viewModel.busy,
               statusText = viewModel.statusText,
               canPinWidgets = viewModel.repository.canRequestPinWidgets(),
               onSave = viewModel::saveSettings,
               onSignIn = viewModel::signIn,
               onSignOut = viewModel::signOut,
+              onCheckAndroidUpdate = viewModel::checkAndroidUpdate,
               onRefreshWidgets = viewModel::refreshWidgetCaches,
               onPinWidget = viewModel::requestPinWidget
             )
@@ -1126,15 +1131,18 @@ private fun ChatScreen(
 @Composable
 private fun SettingsScreen(
   settings: RyanOsSettings,
+  androidUpdateStatus: AndroidUpdateStatus?,
   busy: Boolean,
   statusText: String,
   canPinWidgets: Boolean,
   onSave: (RyanOsSettings) -> Unit,
   onSignIn: (String, String, String) -> Unit,
   onSignOut: () -> Unit,
+  onCheckAndroidUpdate: () -> Unit,
   onRefreshWidgets: () -> Unit,
   onPinWidget: (RyanOsWidgetKind) -> Unit
 ) {
+  val uriHandler = LocalUriHandler.current
   var apiBaseUrl by remember { mutableStateOf(settings.apiBaseUrl) }
   var email by remember { mutableStateOf("") }
   var password by remember { mutableStateOf("") }
@@ -1236,6 +1244,45 @@ private fun SettingsScreen(
             onClick = onSignOut
           ) {
             Text("Clear session")
+          }
+        }
+      }
+    }
+    item {
+      SettingsCard(title = "App updates", icon = Icons.Filled.Refresh) {
+        Text(
+          text = "Installed ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (androidUpdateStatus != null) {
+          Text(
+            text = if (androidUpdateStatus.updateAvailable) {
+              "Available ${androidUpdateStatus.latest.versionName} (${androidUpdateStatus.latest.versionCode})"
+            } else {
+              "Latest ${androidUpdateStatus.latest.versionName} (${androidUpdateStatus.latest.versionCode})"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+        }
+        val availableUpdate = androidUpdateStatus?.takeIf { it.updateAvailable }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          OutlinedButton(
+            enabled = !busy && settings.apiBaseUrl.isNotBlank(),
+            onClick = onCheckAndroidUpdate
+          ) {
+            Icon(Icons.Filled.Refresh, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Check")
+          }
+          if (availableUpdate != null) {
+            Button(
+              enabled = !busy,
+              onClick = { uriHandler.openUri(availableUpdate.latest.apkUrl) }
+            ) {
+              Text("Download")
+            }
           }
         }
       }
