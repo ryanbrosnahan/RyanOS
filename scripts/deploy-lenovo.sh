@@ -134,5 +134,16 @@ if [ -n "$ANDROID_APK_PATH" ]; then
   ssh "${SSH_OPTS[@]}" "$REMOTE" "mkdir -p '$REMOTE_DIR/releases/android'"
   scp "${SSH_OPTS[@]}" "$ANDROID_APK_PATH" "$REMOTE:$REMOTE_DIR/releases/android/ryanos-latest.apk"
   scp "${SSH_OPTS[@]}" "$ANDROID_MANIFEST_PATH" "$REMOTE:$REMOTE_DIR/releases/android/manifest.json"
-  ssh "${SSH_OPTS[@]}" "$REMOTE" "ls -lh '$REMOTE_DIR/releases/android/ryanos-latest.apk' '$REMOTE_DIR/releases/android/manifest.json'"
+  ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
+    cd '$REMOTE_DIR'
+    ls -lh releases/android/ryanos-latest.apk releases/android/manifest.json
+    docker compose -f '$COMPOSE_FILE' restart web
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+      if curl -fsS http://127.0.0.1:\${WEB_PORT:-3100}/downloads/android/manifest.json >/dev/null; then
+        exit 0
+      fi
+      sleep 1
+    done
+    curl -fsS http://127.0.0.1:\${WEB_PORT:-3100}/downloads/android/manifest.json >/dev/null
+  "
 fi
