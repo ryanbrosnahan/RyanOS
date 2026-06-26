@@ -46,6 +46,15 @@ export type GogDoctorStatus = {
   stderr?: string;
 };
 
+export type GogRemoteAuthStart = {
+  authUrl: string;
+  raw?: unknown;
+};
+
+export type GogRemoteAuthComplete = {
+  raw?: unknown;
+};
+
 export type GogGmailClientOptions = {
   command?: string;
   runner?: GogRunner;
@@ -150,6 +159,31 @@ function arrayPayload(payload: unknown, keys: string[]): unknown[] {
     if (Array.isArray(value)) return value;
   }
   return [];
+}
+
+function findUrlInPayload(payload: unknown): string | undefined {
+  if (typeof payload === "string") {
+    const match = payload.match(/https:\/\/[^\s"'<>]+/);
+    return match?.[0];
+  }
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const found = findUrlInPayload(item);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  const record = asRecord(payload);
+  if (!record) return undefined;
+  for (const key of ["authUrl", "auth_url", "url", "authorizationUrl", "authorization_url"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.startsWith("https://")) return value;
+  }
+  for (const value of Object.values(record)) {
+    const found = findUrlInPayload(value);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 function headerValue(raw: unknown, name: string): string | undefined {
@@ -344,6 +378,53 @@ export class GogGmailClient {
     return arrayPayload(payload, ["accounts", "items", "results"])
       .map(accountFromUnknown)
       .filter((account): account is GogAccount => account !== undefined);
+  }
+
+  async startRemoteAuth(input: { email: string }): Promise<GogRemoteAuthStart> {
+    const args = [
+      "auth",
+      "add",
+      input.email,
+      "--services",
+      "gmail",
+      "--readonly",
+      "--gmail-no-send",
+      "--remote",
+      "--step",
+      "1",
+      "--json"
+    ];
+    const result = await this.run(args, 30000);
+    ensureSuccess(result, args.join(" "));
+    const raw = parseJson(result.stdout, args.join(" "));
+    const authUrl = findUrlInPayload(raw) ?? findUrlInPayload(result.stdout);
+    if (!authUrl) {
+      throw new Error("gog remote auth did not return an authorization URL.");
+    }
+    return { authUrl, raw };
+  }
+
+  async completeRemoteAuth(input: { email: string; redirectUrl: string }): Promise<GogRemoteAuthComplete> {
+    const args = [
+      "auth",
+      "add",
+      input.email,
+      "--services",
+      "gmail",
+      "--readonly",
+      "--gmail-no-send",
+      "--remote",
+      "--step",
+      "2",
+      "--auth-url",
+      input.redirectUrl,
+      "--json"
+    ];
+    const result = await this.run(args, 60000);
+    ensureSuccess(result, args.join(" "));
+    return {
+      raw: parseJson(result.stdout, args.join(" "))
+    };
   }
 
   async searchMessages(input: {

@@ -25,6 +25,7 @@ import type {
   Policy,
   ProviderAccount,
   ProviderAccountPatch,
+  ProviderAccountSummary,
   ProviderAccountUpsertData,
   Project,
   RecurrenceEvent,
@@ -52,6 +53,9 @@ import type {
   SearchMatch,
   SourceLink,
   SourceLinkCreateData,
+  UserIntegrationSetting,
+  UserIntegrationSettingSummary,
+  UserIntegrationSettingUpsertData,
   VocabularyEncounter,
   VocabularyEncounterCreateData,
   VocabularyEntry,
@@ -451,6 +455,17 @@ function providerAccountFromRow(row: typeof schema.providerAccounts.$inferSelect
   const deletedAt = toIso(row.deletedAt);
   if (deletedAt !== undefined) account.deletedAt = deletedAt;
   return account;
+}
+
+function userIntegrationSettingFromRow(row: typeof schema.userIntegrationSettings.$inferSelect): UserIntegrationSetting {
+  return {
+    userId: row.userId,
+    integrationId: row.integrationId,
+    enabled: row.enabled,
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
 }
 
 function externalSourceFromRow(row: typeof schema.externalSources.$inferSelect): ExternalSource {
@@ -1443,6 +1458,17 @@ export class PostgresRyanStore implements RyanStore {
     return row ? providerAccountFromRow(row) : undefined;
   }
 
+  async findProviderAccountByExternalId(provider: string, externalAccountId: string): Promise<ProviderAccount | undefined> {
+    const row = await this.db.query.providerAccounts.findFirst({
+      where: and(
+        eq(schema.providerAccounts.provider, provider),
+        eq(schema.providerAccounts.externalAccountId, externalAccountId),
+        isNull(schema.providerAccounts.deletedAt)
+      )
+    });
+    return row ? providerAccountFromRow(row) : undefined;
+  }
+
   async updateProviderAccount(accountId: UUID, patch: ProviderAccountPatch): Promise<ProviderAccount> {
     const values: Partial<typeof schema.providerAccounts.$inferInsert> = {
       updatedAt: new Date()
@@ -1460,6 +1486,98 @@ export class PostgresRyanStore implements RyanStore {
       .returning();
     if (!row) throw new Error(`Provider account not found: ${accountId}`);
     return providerAccountFromRow(row);
+  }
+
+  async listProviderAccountSummaries(): Promise<ProviderAccountSummary[]> {
+    const rows = await this.db
+      .select({
+        provider: schema.providerAccounts.provider,
+        status: schema.providerAccounts.status,
+        accountCount: count(),
+        userCount: sql<number>`count(distinct ${schema.providerAccounts.userId})`
+      })
+      .from(schema.providerAccounts)
+      .where(isNull(schema.providerAccounts.deletedAt))
+      .groupBy(schema.providerAccounts.provider, schema.providerAccounts.status)
+      .orderBy(asc(schema.providerAccounts.provider), asc(schema.providerAccounts.status));
+    return rows.map((row) => ({
+      provider: row.provider,
+      status: row.status,
+      accountCount: Number(row.accountCount),
+      userCount: Number(row.userCount)
+    }));
+  }
+
+  async getUserIntegrationSetting(userId: UUID, integrationId: string): Promise<UserIntegrationSetting | undefined> {
+    const resolvedUserId = await this.resolveUserId(userId);
+    const row = await this.db.query.userIntegrationSettings.findFirst({
+      where: and(
+        eq(schema.userIntegrationSettings.userId, resolvedUserId),
+        eq(schema.userIntegrationSettings.integrationId, integrationId)
+      )
+    });
+    return row ? userIntegrationSettingFromRow(row) : undefined;
+  }
+
+  async listUserIntegrationSettings(userId: UUID): Promise<UserIntegrationSetting[]> {
+    const resolvedUserId = await this.resolveUserId(userId);
+    const rows = await this.db
+      .select()
+      .from(schema.userIntegrationSettings)
+      .where(eq(schema.userIntegrationSettings.userId, resolvedUserId))
+      .orderBy(asc(schema.userIntegrationSettings.integrationId));
+    return rows.map(userIntegrationSettingFromRow);
+  }
+
+  async upsertUserIntegrationSetting(data: UserIntegrationSettingUpsertData): Promise<UserIntegrationSetting> {
+    const userId = await this.resolveUserId(data.userId);
+    const existing = await this.db.query.userIntegrationSettings.findFirst({
+      where: and(
+        eq(schema.userIntegrationSettings.userId, userId),
+        eq(schema.userIntegrationSettings.integrationId, data.integrationId)
+      )
+    });
+    const values: typeof schema.userIntegrationSettings.$inferInsert = {
+      userId,
+      integrationId: data.integrationId,
+      enabled: data.enabled ?? existing?.enabled ?? true,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      updatedAt: new Date()
+    };
+    const [row] = await this.db
+      .insert(schema.userIntegrationSettings)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [
+          schema.userIntegrationSettings.userId,
+          schema.userIntegrationSettings.integrationId
+        ],
+        set: {
+          enabled: values.enabled,
+          metadata: values.metadata,
+          updatedAt: new Date()
+        }
+      })
+      .returning();
+    if (!row) throw new Error("Failed to upsert user integration setting");
+    return userIntegrationSettingFromRow(row);
+  }
+
+  async listUserIntegrationSettingSummaries(): Promise<UserIntegrationSettingSummary[]> {
+    const rows = await this.db
+      .select({
+        integrationId: schema.userIntegrationSettings.integrationId,
+        enabled: schema.userIntegrationSettings.enabled,
+        userCount: sql<number>`count(distinct ${schema.userIntegrationSettings.userId})`
+      })
+      .from(schema.userIntegrationSettings)
+      .groupBy(schema.userIntegrationSettings.integrationId, schema.userIntegrationSettings.enabled)
+      .orderBy(asc(schema.userIntegrationSettings.integrationId), desc(schema.userIntegrationSettings.enabled));
+    return rows.map((row) => ({
+      integrationId: row.integrationId,
+      enabled: row.enabled,
+      userCount: Number(row.userCount)
+    }));
   }
 
   async upsertExternalSource(data: ExternalSourceUpsertData): Promise<ExternalSource> {

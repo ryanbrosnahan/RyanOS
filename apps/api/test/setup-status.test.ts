@@ -43,7 +43,7 @@ describe("setup status", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: "telegram-bot-token",
-          title: "Import Telegram bot token into encrypted DB"
+          title: "Store Telegram bot token"
         })
       ])
     );

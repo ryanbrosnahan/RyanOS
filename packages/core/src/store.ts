@@ -21,6 +21,7 @@ import type {
   ShoppingList,
   ShoppingListItem,
   SourceLink,
+  UserIntegrationSetting,
   VocabularyEncounter,
   VocabularyEntry
 } from "./types.js";
@@ -139,6 +140,28 @@ export type ProviderAccountPatch = Partial<
   Pick<ProviderAccount, "displayName" | "email" | "status" | "scopes" | "metadata">
 > & {
   externalAccountId?: string | null;
+};
+
+export type ProviderAccountSummary = {
+  provider: string;
+  status: string;
+  accountCount: number;
+  userCount: number;
+};
+
+export type UserIntegrationSettingUpsertData = {
+  userId: UUID;
+  integrationId: string;
+  enabled?: boolean;
+  metadata?: JsonObject;
+};
+
+export type UserIntegrationSettingPatch = Partial<Pick<UserIntegrationSetting, "enabled" | "metadata">>;
+
+export type UserIntegrationSettingSummary = {
+  integrationId: string;
+  enabled: boolean;
+  userCount: number;
 };
 
 export type ExternalSourceUpsertData = {
@@ -445,7 +468,13 @@ export interface RyanStore {
   upsertProviderAccount(account: ProviderAccountUpsertData): Promise<ProviderAccount>;
   listProviderAccounts(filters: { userId: UUID; provider?: string; limit?: number }): Promise<ProviderAccount[]>;
   getProviderAccount(accountId: UUID): Promise<ProviderAccount | undefined>;
+  findProviderAccountByExternalId(provider: string, externalAccountId: string): Promise<ProviderAccount | undefined>;
   updateProviderAccount(accountId: UUID, patch: ProviderAccountPatch): Promise<ProviderAccount>;
+  listProviderAccountSummaries(): Promise<ProviderAccountSummary[]>;
+  getUserIntegrationSetting(userId: UUID, integrationId: string): Promise<UserIntegrationSetting | undefined>;
+  listUserIntegrationSettings(userId: UUID): Promise<UserIntegrationSetting[]>;
+  upsertUserIntegrationSetting(setting: UserIntegrationSettingUpsertData): Promise<UserIntegrationSetting>;
+  listUserIntegrationSettingSummaries(): Promise<UserIntegrationSettingSummary[]>;
 
   upsertExternalSource(source: ExternalSourceUpsertData): Promise<ExternalSource>;
   getExternalSource(sourceId: UUID): Promise<ExternalSource | undefined>;

@@ -30,12 +30,14 @@ import {
   PostgresMessageStore,
   PostgresRyanStore,
   PostgresSecretStore,
+  getRyanOsUserById,
   resolveAuthenticatedUserId,
   resolveUserIdByEmail,
   type RyanDb,
+  type UserRole,
   type StoredMessage
 } from "@ryanos/db";
-import { nowIso, type JsonObject } from "@ryanos/shared";
+import { nowIso, type JsonObject, type UUID } from "@ryanos/shared";
 import { fromNodeHeaders } from "better-auth/node";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -310,6 +312,17 @@ const emailAccountsQuerySchema = z.object({
   userId: z.string().default("local-owner")
 });
 
+const integrationIdSchema = z.enum(["ai", "telegram", "gmail"]);
+
+const integrationParamsSchema = z.object({
+  id: integrationIdSchema
+});
+
+const integrationSettingsBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  enabled: z.boolean()
+});
+
 const emailAccountParamsSchema = z.object({
   id: z.string().min(1)
 });
@@ -324,7 +337,25 @@ const emailScanBodySchema = z.object({
   accountId: z.string().optional(),
   query: z.string().optional(),
   maxPerAccount: z.number().int().min(1).max(100).optional(),
-  syncAccounts: z.boolean().default(true)
+  syncAccounts: z.boolean().default(true),
+  includeNewAccounts: z.boolean().optional()
+});
+
+const gmailAuthBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  email: z.string().trim().email()
+});
+
+const gmailAuthCompleteBodySchema = gmailAuthBodySchema.extend({
+  redirectUrl: z.string().trim().url()
+});
+
+const telegramTokenBodySchema = z.object({
+  token: z.string().trim().min(1)
+});
+
+const telegramLinkCodeBodySchema = z.object({
+  userId: z.string().default("local-owner")
 });
 
 const activeEmailScans = new Map<string, { startedAt: string }>();
@@ -823,7 +854,6 @@ type AssistantDelivery = {
 
 async function telegramSetupStatus(db: RyanDb | undefined): Promise<SetupStatus> {
   const hasEnvBotToken = Boolean((process.env.TELEGRAM_BOT_TOKEN ?? "").trim());
-  const hasAllowlist = Boolean((process.env.TELEGRAM_ALLOWED_USER_IDS ?? "").trim());
   const setupActions: SetupStatus["setupActions"] = [];
   const warnings: string[] = [];
   const loadedVault = await loadSecretVaultFromEnv();
@@ -883,12 +913,12 @@ async function telegramSetupStatus(db: RyanDb | undefined): Promise<SetupStatus>
   if (!hasDbBotToken && !hasEnvBotToken) {
     setupActions.push({
       id: "telegram-bot-token",
-      title: "Import Telegram bot token into encrypted DB",
+      title: "Store Telegram bot token",
       blocking: true,
       instructions: [
         "Create a Telegram bot with BotFather.",
-        "Put the token in `secrets/telegram-bot-token` on this machine, then import it with the command below.",
-        "The token file is gitignored; remove it after import if you do not want a plaintext local copy."
+        "Paste the token into the Telegram settings section in RyanOS Admin while signed in as a superadmin.",
+        "RyanOS stores the token encrypted in Postgres and never echoes it back."
       ],
       command: "docker compose exec api pnpm telegram:store-token -- --file /app/secrets/telegram-bot-token",
       docs: ["https://core.telegram.org/bots/features#botfather"]
@@ -911,12 +941,6 @@ async function telegramSetupStatus(db: RyanDb | undefined): Promise<SetupStatus>
   if (hasDbBotToken && !hasEnvBotToken && !loadedVault.status.ready) {
     setupActions.push(...loadedVault.status.setupActions);
     warnings.push(...loadedVault.status.warnings);
-  }
-
-  if (!hasAllowlist) {
-    warnings.push(
-      "`TELEGRAM_ALLOWED_USER_IDS` is empty; local webhook testing accepts all Telegram sender IDs."
-    );
   }
 
   const dbReady = hasDbBotToken && loadedVault.status.ready && dbBotTokenDecryptable;
@@ -955,6 +979,40 @@ function emailScanConfig() {
     ),
     enabled: process.env.EMAIL_TRIAGE_ENABLED !== "false"
   };
+}
+
+type IntegrationId = z.infer<typeof integrationIdSchema>;
+
+const integrationNames: Record<IntegrationId, string> = {
+  ai: "AI provider",
+  telegram: "Telegram",
+  gmail: "Gmail"
+};
+
+function validateTelegramBotToken(token: string): string {
+  const trimmed = token.trim();
+  if (!/^\d+:[A-Za-z0-9_-]{20,}$/.test(trimmed)) {
+    throw new Error("Telegram bot token does not match the expected bot-token shape.");
+  }
+  return trimmed;
+}
+
+function telegramLinkCodeFromText(text: string): string | undefined {
+  const trimmed = text.trim();
+  const withoutStart = trimmed.toLowerCase().startsWith("/start")
+    ? trimmed.slice("/start".length).trim()
+    : trimmed;
+  const match = withoutStart.match(/\b[A-Z0-9]{6}\b/i);
+  return match?.[0]?.toUpperCase();
+}
+
+function telegramLinkCodeExpired(metadata: JsonObject): boolean {
+  const expiresAt = typeof metadata.expiresAt === "string" ? metadata.expiresAt : undefined;
+  return !expiresAt || new Date(expiresAt).getTime() <= Date.now();
+}
+
+function newTelegramLinkCode(): string {
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase();
 }
 
 async function gmailSetupStatus(emailClient: GmailClientLike): Promise<SetupStatus> {
@@ -1015,11 +1073,11 @@ async function gmailSetupStatus(emailClient: GmailClientLike): Promise<SetupStat
     });
     setupActions.push({
       id: "gmail-auth-account",
-      title: "Authorize each Gmail account with gog",
+      title: "Authorize Gmail accounts",
       blocking: true,
       instructions: [
-        "Run the manual gog auth command from the API container for each Gmail account.",
-        "Then run the sync command from RyanOS Admin or the API route."
+        "Use the Gmail settings section in RyanOS Admin to start browser-assisted auth for each account.",
+        "The CLI command remains available as a fallback if remote auth is not available in the current runtime."
       ],
       command: "ssh lenovo 'cd /opt/ryanos && docker compose -f docker-compose.server.yml exec api gog auth add account@gmail.com --services gmail --manual'",
       docs: ["https://gogcli.sh/quickstart.html"]
@@ -1097,6 +1155,7 @@ type RyanOsRequestAuth = {
   authUserId: string;
   userId: string;
   email: string;
+  role: UserRole;
   displayName?: string;
 };
 
@@ -1117,6 +1176,7 @@ export function buildApp(options: {
   store?: RyanStore;
   emailClient?: GmailClientLike;
   authMode?: RyanOsAuthMode;
+  devLocalRole?: UserRole;
 } = {}) {
   const app = Fastify({
     logger: true
@@ -1131,9 +1191,76 @@ export function buildApp(options: {
   const ai = options.ai ?? createAiProviderFromEnv();
   const emailClient = options.emailClient ?? new GogGmailClient();
   const authMode = options.authMode ?? authModeFromEnv();
+  const devLocalRole = options.devLocalRole ?? "superadmin";
   const auth = database ? createRyanOsAuth(database.pool) : undefined;
 
+  function currentUserId(request: RyanOsRequest): string {
+    return authMode === "dev-local" ? "local-owner" : request.ryanAuth?.userId ?? "local-owner";
+  }
+
+  function currentRole(request: RyanOsRequest): UserRole {
+    return authMode === "dev-local" ? devLocalRole : request.ryanAuth?.role ?? "user";
+  }
+
+  function requireSuperadmin(request: RyanOsRequest, reply: FastifyReply): boolean {
+    if (currentRole(request) === "superadmin") return true;
+    reply.code(403);
+    void reply.send({ error: "Superadmin access is required." });
+    return false;
+  }
+
+  async function integrationEnabled(userId: string, integrationId: IntegrationId): Promise<boolean> {
+    const setting = await store.getUserIntegrationSetting(userId as UUID, integrationId);
+    return setting?.enabled ?? true;
+  }
+
+  function setupForRole(entry: SetupStatus, role: UserRole): SetupStatus {
+    if (role === "superadmin" || entry.setupActions.length === 0) return entry;
+    return {
+      ...entry,
+      setupActions: [
+        {
+          id: `${entry.id}-superadmin-required`,
+          title: "Deployment setup required",
+          blocking: true,
+          instructions: [
+            "A RyanOS superadmin needs to finish this deployment-level setup before this integration can be used."
+          ]
+        }
+      ]
+    };
+  }
+
+  async function gmailAuthClient(reply: FastifyReply): Promise<
+    Pick<GogGmailClient, "startRemoteAuth" | "completeRemoteAuth"> | undefined
+  > {
+    if ("startRemoteAuth" in emailClient && "completeRemoteAuth" in emailClient) {
+      return emailClient as Pick<GogGmailClient, "startRemoteAuth" | "completeRemoteAuth">;
+    }
+    reply.code(503);
+    await reply.send({ error: "Gmail browser-assisted auth is not available in this runtime." });
+    return undefined;
+  }
+
   async function runAiSmoke(input: { userId: string; text: string }) {
+    if (!(await integrationEnabled(input.userId, "ai"))) {
+      return {
+        ok: false,
+        status: {
+          name: integrationNames.ai,
+          mode: "disabled",
+          ready: false,
+          setupRequired: false,
+          setupActions: [],
+          warnings: ["AI integration is disabled for this user."]
+        },
+        interpreted: {
+          text: "AI integration is disabled for this user.",
+          toolCalls: []
+        },
+        latencyMs: 0
+      };
+    }
     const status = await ai.getStatus();
     const startedAt = Date.now();
     if (!status.ready || ai.name === "none") {
@@ -1210,7 +1337,6 @@ export function buildApp(options: {
     return (
       path === "/" ||
       path === "/health" ||
-      path === "/v1/setup/status" ||
       path === "/v1/ai/status" ||
       path === "/v1/tools" ||
       path.startsWith("/auth/") ||
@@ -1327,10 +1453,12 @@ export function buildApp(options: {
       ...(session.user?.name !== undefined ? { displayName: session.user.name } : {})
     };
     const userId = await resolveAuthenticatedUserId(database.db, identity);
+    const user = await getRyanOsUserById(database.db, userId);
     request.ryanAuth = {
       authUserId,
       userId,
       email,
+      role: user?.role ?? "user",
       ...(session.user?.name ? { displayName: session.user.name } : {})
     };
     forceRequestUserId(request, userId);
@@ -1361,7 +1489,8 @@ export function buildApp(options: {
         user: {
           id: "local-owner",
           email: "local-owner@ryanos.local",
-          displayName: "Local Owner"
+          displayName: "Local Owner",
+          role: devLocalRole
         }
       };
     }
@@ -1374,7 +1503,8 @@ export function buildApp(options: {
       user: {
         id: request.ryanAuth.userId,
         email: request.ryanAuth.email,
-        displayName: request.ryanAuth.displayName ?? request.ryanAuth.email
+        displayName: request.ryanAuth.displayName ?? request.ryanAuth.email,
+        role: request.ryanAuth.role
       }
     };
   });
@@ -1386,13 +1516,203 @@ export function buildApp(options: {
     return result;
   });
 
-  app.get("/v1/setup/status", async () => {
+  app.get("/v1/setup/status", async (request: RyanOsRequest, reply) => {
+    if (!requireSuperadmin(request, reply)) return;
     const aiStatus = await ai.getStatus();
     return {
       ai: aiSetupStatus(aiStatus),
       integrations: [
         await telegramSetupStatus(database?.db),
         await gmailSetupStatus(emailClient)
+      ]
+    };
+  });
+
+  app.get("/v1/integrations", async (request: RyanOsRequest) => {
+    const userId = currentUserId(request);
+    const role = currentRole(request);
+    const [
+      aiStatus,
+      telegramSetup,
+      gmailSetup,
+      settings,
+      gmailAccounts,
+      gmailCounts,
+      telegramAccounts,
+      providerAccountSummaries,
+      integrationSettingSummaries
+    ] = await Promise.all([
+      ai.getStatus(),
+      telegramSetupStatus(database?.db),
+      gmailSetupStatus(emailClient),
+      store.listUserIntegrationSettings(userId as UUID),
+      store.listProviderAccounts({
+        userId: userId as UUID,
+        provider: "gmail",
+        limit: 200
+      }),
+      gmailProposalCounts(store, userId as UUID),
+      store.listProviderAccounts({
+        userId: userId as UUID,
+        provider: "telegram",
+        limit: 20
+      }),
+      role === "superadmin" ? store.listProviderAccountSummaries() : Promise.resolve([]),
+      role === "superadmin" ? store.listUserIntegrationSettingSummaries() : Promise.resolve([])
+    ]);
+    const settingsById = new Map(settings.map((setting) => [setting.integrationId, setting]));
+
+    function integrationView(id: IntegrationId, setup: SetupStatus, extra: Record<string, unknown> = {}) {
+      const setting = settingsById.get(id);
+      const enabled = setting?.enabled ?? true;
+      const visibleSetup = setupForRole(setup, role);
+      return {
+        id,
+        name: setup.name || integrationNames[id],
+        configured: setup.configured,
+        ready: setup.ready,
+        setupRequired: setup.setupRequired,
+        enabled,
+        effectiveReady: enabled && setup.ready,
+        setupActions: visibleSetup.setupActions,
+        warnings: visibleSetup.warnings,
+        settings: {
+          enabled,
+          metadata: setting?.metadata ?? {}
+        },
+        ...extra
+      };
+    }
+
+    return {
+      user: {
+        id: userId,
+        role
+      },
+      ...(role === "superadmin"
+        ? {
+            deployment: {
+              providerAccounts: providerAccountSummaries,
+              integrationSettings: integrationSettingSummaries
+            }
+          }
+        : {}),
+      integrations: [
+        integrationView("ai", aiSetupStatus(aiStatus)),
+        integrationView("telegram", telegramSetup, {
+          linkedAccounts: telegramAccounts.map((account) => ({
+            id: account.id,
+            displayName: account.displayName,
+            status: account.status,
+            linkedAt:
+              typeof account.metadata.linkedAt === "string"
+                ? account.metadata.linkedAt
+                : account.createdAt
+          })),
+          canManageDeployment: role === "superadmin"
+        }),
+        integrationView("gmail", gmailSetup, {
+          config: emailScanConfig(),
+          counts: gmailCounts,
+          accounts: await Promise.all(gmailAccounts.map((account) => gmailAccountView(store, account))),
+          canManageDeployment: role === "superadmin"
+        })
+      ]
+    };
+  });
+
+  app.patch("/v1/integrations/:id/settings", async (request) => {
+    const params = integrationParamsSchema.parse(request.params);
+    const body = integrationSettingsBodySchema.parse(request.body ?? {});
+    const setting = await store.upsertUserIntegrationSetting({
+      userId: body.userId as UUID,
+      integrationId: params.id,
+      enabled: body.enabled
+    });
+    return {
+      setting
+    };
+  });
+
+  app.post("/v1/admin/integrations/telegram/bot-token", async (request: RyanOsRequest, reply) => {
+    if (!requireSuperadmin(request, reply)) return;
+    const body = telegramTokenBodySchema.parse(request.body ?? {});
+    let token: string;
+    try {
+      token = validateTelegramBotToken(body.token);
+    } catch (err) {
+      reply.code(400);
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+    if (!database) {
+      reply.code(503);
+      return { error: "Telegram token storage requires DATABASE_URL." };
+    }
+    const loadedVault = await loadSecretVaultFromEnv();
+    if (!loadedVault.vault) {
+      reply.code(503);
+      return {
+        error: "RyanOS master key is not ready.",
+        warnings: loadedVault.status.warnings,
+        setupActions: loadedVault.status.setupActions
+      };
+    }
+    const result = await new PostgresSecretStore(database.db, loadedVault.vault).storeProviderSecret({
+      userId: "local-owner",
+      provider: "telegram",
+      externalAccountId: "bot",
+      accountDisplayName: "Telegram Bot",
+      kind: "bot_token",
+      plaintext: token,
+      metadata: {
+        importedBy: request.ryanAuth?.email ?? "dev-local",
+        importedFrom: "admin-web",
+        importedAt: nowIso()
+      }
+    });
+    return {
+      status: "stored",
+      provider: "telegram",
+      kind: "bot_token",
+      providerAccountId: result.providerAccountId,
+      secretRecordId: result.secretRecordId,
+      keyVersion: result.keyVersion
+    };
+  });
+
+  app.post("/v1/integrations/telegram/link-code", async (request, reply) => {
+    const body = telegramLinkCodeBodySchema.parse(request.body ?? {});
+    let code = "";
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const candidate = newTelegramLinkCode();
+      const existing = await store.findProviderAccountByExternalId("telegram_link_code", candidate);
+      if (!existing) {
+        code = candidate;
+        break;
+      }
+    }
+    if (!code) {
+      reply.code(503);
+      return { error: "Could not generate a unique Telegram link code." };
+    }
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await store.upsertProviderAccount({
+      userId: body.userId,
+      provider: "telegram_link_code",
+      externalAccountId: code,
+      displayName: "Telegram link code",
+      status: "pending",
+      metadata: {
+        createdAt: nowIso(),
+        expiresAt
+      }
+    });
+    return {
+      code,
+      expiresAt,
+      instructions: [
+        `Send /start ${code} to the RyanOS Telegram bot from the Telegram account you want to link.`,
+        "This code expires in 10 minutes."
       ]
     };
   });
@@ -1417,12 +1737,16 @@ export function buildApp(options: {
   });
 
   app.post("/v1/email/accounts/sync", async (request, reply) => {
-    const query = emailAccountsQuerySchema.parse(request.body ?? {});
+    const query = emailScanBodySchema.pick({
+      userId: true,
+      includeNewAccounts: true
+    }).parse(request.body ?? {});
     try {
       await syncGmailAccounts({
         store,
         client: emailClient,
-        userId: query.userId
+        userId: query.userId,
+        includeNewAccounts: authMode === "dev-local" || query.includeNewAccounts === true
       });
       const accounts = await store.listProviderAccounts({
         userId: query.userId,
@@ -1431,6 +1755,65 @@ export function buildApp(options: {
       });
       return {
         accounts: await Promise.all(accounts.map((account) => gmailAccountView(store, account)))
+      };
+    } catch (err) {
+      reply.code(503);
+      return {
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
+  });
+
+  app.post("/v1/integrations/gmail/auth/start", async (request, reply) => {
+    const body = gmailAuthBodySchema.parse(request.body ?? {});
+    const client = await gmailAuthClient(reply);
+    if (!client) return;
+    try {
+      const existing = await store.findProviderAccountByExternalId("gmail", body.email);
+      if (existing && existing.userId !== body.userId) {
+        reply.code(409);
+        return { error: "That Gmail account is already linked to another RyanOS user." };
+      }
+      const result = await client.startRemoteAuth({ email: body.email });
+      return {
+        authUrl: result.authUrl,
+        instructions: [
+          "Open the Google authorization URL.",
+          "Approve Gmail read-only access.",
+          "Copy the final redirect URL from the browser and paste it back into RyanOS."
+        ]
+      };
+    } catch (err) {
+      reply.code(503);
+      return {
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
+  });
+
+  app.post("/v1/integrations/gmail/auth/complete", async (request, reply) => {
+    const body = gmailAuthCompleteBodySchema.parse(request.body ?? {});
+    const client = await gmailAuthClient(reply);
+    if (!client) return;
+    try {
+      await client.completeRemoteAuth({
+        email: body.email,
+        redirectUrl: body.redirectUrl
+      });
+      await syncGmailAccounts({
+        store,
+        client: emailClient,
+        userId: body.userId,
+        accountEmail: body.email,
+        includeNewAccounts: true
+      });
+      const account = await store.findProviderAccountByExternalId("gmail", body.email);
+      if (!account || account.userId !== body.userId) {
+        reply.code(404);
+        return { error: "Gmail auth completed, but RyanOS could not find the synced account." };
+      }
+      return {
+        account: await gmailAccountView(store, account)
       };
     } catch (err) {
       reply.code(503);
@@ -1465,6 +1848,18 @@ export function buildApp(options: {
 
   app.post("/v1/email/scan", async (request, reply) => {
     const body = emailScanBodySchema.parse(request.body ?? {});
+    if (!(await integrationEnabled(body.userId, "gmail"))) {
+      reply.code(409);
+      return {
+        error: "Gmail integration is disabled for this user."
+      };
+    }
+    if (!(await integrationEnabled(body.userId, "ai"))) {
+      reply.code(409);
+      return {
+        error: "AI integration is disabled for this user."
+      };
+    }
     const lockKey = body.userId;
     const activeScan = activeEmailScans.get(lockKey);
     const config = emailScanConfig();
@@ -1500,12 +1895,13 @@ export function buildApp(options: {
     const scanInput: Parameters<typeof scanGmailInbox>[0] = {
       ai,
       store,
-      client: emailClient,
-      userId: body.userId,
-      query: body.query ?? config.query,
-      maxPerAccount: body.maxPerAccount ?? config.maxPerAccount,
-      syncAccounts: body.syncAccounts
-    };
+        client: emailClient,
+        userId: body.userId,
+        query: body.query ?? config.query,
+        maxPerAccount: body.maxPerAccount ?? config.maxPerAccount,
+        syncAccounts: body.syncAccounts,
+        includeNewAccounts: authMode === "dev-local" || body.includeNewAccounts === true
+      };
     if (body.accountId !== undefined) scanInput.accountId = body.accountId;
     try {
       const result = await scanGmailInbox(scanInput);
@@ -2730,6 +3126,7 @@ export function buildApp(options: {
     sourceDefault: string
   ) {
     if (!body.draftWithAi || body.definition !== undefined) return undefined;
+    if (!(await integrationEnabled(body.userId, "ai"))) return undefined;
     const status = await ai.getStatus();
     if (!status.ready || ai.name === "none") return undefined;
     const vocabularyTool = tools.list().find((tool) => tool.name === "vocabulary.addEntries");
@@ -3026,6 +3423,17 @@ export function buildApp(options: {
       beforeDateKey: dateKey,
       limit: 5
     });
+    if (!(await integrationEnabled(body.userId, "ai"))) {
+      return {
+        ...(await dailyPlanPayload({ userId: body.userId, timezone: body.timezone, dateKey })),
+        suggestionAttempt: {
+          source: "heuristic",
+          warnings: ["AI integration is disabled for this user."],
+          setupRequired: false,
+          setupActions: []
+        }
+      };
+    }
     const status = await ai.getStatus();
     if (!status.ready) {
       return {
@@ -3647,6 +4055,24 @@ export function buildApp(options: {
     storedMessage: StoredMessage | undefined,
     warnings: string[] = []
   ) {
+    if (!(await integrationEnabled(message.userId, "ai"))) {
+      const response = await persistAssistantResponse(
+        message,
+        "AI integration is disabled for this user.",
+        {
+          mode: "integration-disabled",
+          integrationId: "ai"
+        }
+      );
+      return {
+        mode: "integration-disabled",
+        provider: ai.name,
+        message,
+        ...(storedMessage ? { storedMessage } : {}),
+        ...(response ? { response } : {}),
+        warnings: [...warnings, "AI integration is disabled for this user."]
+      };
+    }
     const interpreted = await ai.interpret(message, tools.list());
     const toolResults: Array<{ name: string; result: ToolResult }> = [];
     for (const [index, toolCall] of interpreted.toolCalls.entries()) {
@@ -3736,6 +4162,107 @@ export function buildApp(options: {
       return normalized;
     }
 
+    const senderId = getTelegramSenderId(normalized.message);
+    const linkCode = telegramLinkCodeFromText(normalized.message.text);
+    if (senderId && linkCode) {
+      const pending = await store.findProviderAccountByExternalId("telegram_link_code", linkCode);
+      if (!pending || telegramLinkCodeExpired(pending.metadata)) {
+        reply.code(404);
+        return {
+          status: "rejected",
+          reason: "telegram_link_code_invalid_or_expired",
+          senderId
+        };
+      }
+      const existingSender = await store.findProviderAccountByExternalId("telegram", senderId);
+      if (existingSender && existingSender.userId !== pending.userId) {
+        reply.code(409);
+        return {
+          status: "rejected",
+          reason: "telegram_sender_already_linked",
+          senderId
+        };
+      }
+      const linked = await store.upsertProviderAccount({
+        userId: pending.userId,
+        provider: "telegram",
+        externalAccountId: senderId,
+        displayName: normalized.message.displayName ?? `Telegram ${senderId}`,
+        status: "active",
+        metadata: {
+          linkedAt: nowIso(),
+          linkedByCode: linkCode,
+          chatId: normalized.message.chatId,
+          telegram: asJsonObject(normalized.message.metadata.telegram)
+        }
+      });
+      await store.updateProviderAccount(pending.id, {
+        status: "used",
+        metadata: {
+          ...pending.metadata,
+          usedAt: nowIso(),
+          senderId,
+          linkedProviderAccountId: linked.id
+        }
+      });
+      const linkedMessage = { ...normalized.message, userId: pending.userId };
+      const delivery = await deliverAssistantResponse(
+        linkedMessage,
+        "Telegram is linked to your RyanOS account.",
+        false
+      );
+      return {
+        status: "linked",
+        providerAccountId: linked.id,
+        ...(delivery ? { delivery } : {})
+      };
+    }
+
+    if (authMode !== "dev-local") {
+      if (!database) {
+        reply.code(503);
+        return {
+          status: "rejected",
+          reason: "database_required_for_telegram_user_mapping"
+        };
+      }
+      if (!senderId) {
+        reply.code(403);
+        return {
+          status: "rejected",
+          reason: "telegram_sender_not_mapped",
+          senderId
+        };
+      }
+      const linkedAccount = await store.findProviderAccountByExternalId("telegram", senderId);
+      const email = telegramUserEmailMap().get(senderId);
+      const userId = linkedAccount
+        ? linkedAccount.userId
+        : email
+          ? await resolveUserIdByEmail(database.db, {
+              email,
+              ...(normalized.message.displayName ? { displayName: normalized.message.displayName } : {})
+            })
+          : undefined;
+      if (!userId) {
+        reply.code(403);
+        return {
+          status: "rejected",
+          reason: "telegram_sender_not_mapped",
+          senderId
+        };
+      }
+      if (!(await integrationEnabled(userId, "telegram"))) {
+        reply.code(403);
+        return {
+          status: "rejected",
+          reason: "telegram_integration_disabled",
+          senderId
+        };
+      }
+      return processIncomingMessage({ ...normalized.message, userId });
+    }
+
     const authorization = telegramAuthorization(normalized.message);
     if (!authorization.allowed) {
       reply.code(403);
@@ -3745,35 +4272,9 @@ export function buildApp(options: {
         senderId: authorization.senderId
       };
     }
-
     const warnings = authorization.configured
       ? []
       : ["TELEGRAM_ALLOWED_USER_IDS is not configured; accepting Telegram messages in local dev mode."];
-    if (authMode !== "dev-local") {
-      if (!database) {
-        reply.code(503);
-        return {
-          status: "rejected",
-          reason: "database_required_for_telegram_user_mapping"
-        };
-      }
-      const senderId = authorization.senderId;
-      const email = senderId ? telegramUserEmailMap().get(senderId) : undefined;
-      if (!senderId || !email) {
-        reply.code(403);
-        return {
-          status: "rejected",
-          reason: "telegram_sender_not_mapped",
-          senderId
-        };
-      }
-      const userId = await resolveUserIdByEmail(database.db, {
-        email,
-        ...(normalized.message.displayName ? { displayName: normalized.message.displayName } : {})
-      });
-      return processIncomingMessage({ ...normalized.message, userId }, warnings);
-    }
-
     return processIncomingMessage(normalized.message, warnings);
   }
 

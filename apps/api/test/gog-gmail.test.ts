@@ -114,6 +114,69 @@ describe("GogGmailClient", () => {
     ]);
   });
 
+  it("constructs remote Gmail auth commands", async () => {
+    const calls: string[][] = [];
+    const runner: GogRunner = async (args) => {
+      calls.push(args);
+      if (args.includes("1")) {
+        return {
+          exitCode: 0,
+          stderr: "",
+          stdout: JSON.stringify({
+            authUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=test"
+          })
+        };
+      }
+      return {
+        exitCode: 0,
+        stderr: "",
+        stdout: JSON.stringify({ status: "stored" })
+      };
+    };
+    const client = new GogGmailClient({ runner });
+
+    await expect(client.startRemoteAuth({ email: "chrissy@example.com" })).resolves.toMatchObject({
+      authUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=test"
+    });
+    await expect(
+      client.completeRemoteAuth({
+        email: "chrissy@example.com",
+        redirectUrl: "https://example.com/oauth2/callback?code=abc"
+      })
+    ).resolves.toMatchObject({
+      raw: { status: "stored" }
+    });
+
+    expect(calls[0]).toEqual([
+      "auth",
+      "add",
+      "chrissy@example.com",
+      "--services",
+      "gmail",
+      "--readonly",
+      "--gmail-no-send",
+      "--remote",
+      "--step",
+      "1",
+      "--json"
+    ]);
+    expect(calls[1]).toEqual([
+      "auth",
+      "add",
+      "chrissy@example.com",
+      "--services",
+      "gmail",
+      "--readonly",
+      "--gmail-no-send",
+      "--remote",
+      "--step",
+      "2",
+      "--auth-url",
+      "https://example.com/oauth2/callback?code=abc",
+      "--json"
+    ]);
+  });
+
   it("parses live gog Gmail thread search and wrapped get output", async () => {
     const runner: GogRunner = async (args) => {
       if (args.includes("search")) {

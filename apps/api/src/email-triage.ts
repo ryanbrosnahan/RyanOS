@@ -412,6 +412,8 @@ export async function syncGmailAccounts(input: {
   store: RyanStore;
   client: GmailClientLike;
   userId: UUID;
+  accountEmail?: string;
+  includeNewAccounts?: boolean;
 }): Promise<ProviderAccount[]> {
   const accounts = await input.client.listAccounts();
   const existing = await input.store.listProviderAccounts({
@@ -425,7 +427,13 @@ export async function syncGmailAccounts(input: {
   const synced: ProviderAccount[] = [];
   const syncedAt = nowIso();
   for (const account of accounts) {
+    const matchesRequestedAccount =
+      input.accountEmail === undefined ||
+      account.email.toLowerCase() === input.accountEmail.toLowerCase() ||
+      account.externalAccountId.toLowerCase() === input.accountEmail.toLowerCase();
+    if (!matchesRequestedAccount) continue;
     const prior = existingByExternalId.get(account.externalAccountId) ?? existingByExternalId.get(account.email);
+    if (!prior && input.accountEmail === undefined && input.includeNewAccounts !== true) continue;
     const priorSettings = prior ? emailTriageSettings(prior) : { enabled: true };
     const upsert: ProviderAccountUpsertData = {
       userId: input.userId,
@@ -587,6 +595,7 @@ export async function scanGmailInbox(input: {
   query?: string;
   maxPerAccount?: number;
   syncAccounts?: boolean;
+  includeNewAccounts?: boolean;
 }): Promise<EmailScanResult> {
   const query = input.query?.trim() || DEFAULT_EMAIL_SCAN_QUERY;
   const maxPerAccount = Math.min(
@@ -607,11 +616,15 @@ export async function scanGmailInbox(input: {
   };
   if (input.syncAccounts !== false) {
     try {
-      await syncGmailAccounts({
+      const syncInput: Parameters<typeof syncGmailAccounts>[0] = {
         store: input.store,
         client: input.client,
         userId: input.userId
-      });
+      };
+      if (input.includeNewAccounts !== undefined) {
+        syncInput.includeNewAccounts = input.includeNewAccounts;
+      }
+      await syncGmailAccounts(syncInput);
     } catch (err) {
       result.errors.push({
         error: `Gmail account sync failed: ${err instanceof Error ? err.message : String(err)}`

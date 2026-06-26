@@ -257,6 +257,15 @@ export type ProviderAccount = {
   deletedAt?: ISODateString;
 };
 
+export type UserIntegrationSetting = {
+  userId: UUID;
+  integrationId: string;
+  enabled: boolean;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+};
+
 export type ExternalSource = {
   id: UUID;
   userId: UUID;

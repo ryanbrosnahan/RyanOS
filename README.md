@@ -68,9 +68,12 @@ open without sign-in while iterating. To test real auth locally, set
 Better Auth is used as a self-hosted library in the API process, backed by
 Postgres; no Better Auth hosted service is required.
 
+Set `RYANOS_SUPERADMIN_EMAILS` to bootstrap deployment admins; matching users are
+promoted on login and are not demoted automatically if the env value changes.
+
 When RyanOS needs a human setup action, such as Codex login or a Telegram bot
-token, it should expose that through setup status instead of failing silently or
-working around the missing connector.
+token, it should expose that through Admin integrations or setup status instead
+of failing silently or working around the missing connector.
 
 ## Local Secrets
 
@@ -84,8 +87,9 @@ Generate the local master key:
 pnpm secrets:generate-key
 ```
 
-Telegram setup uses a local import path so the bot token does not pass through
-the dashboard or chat:
+Telegram setup stores the bot token encrypted in Postgres. In normal deployments,
+paste the token into Admin -> Integrations -> Telegram while signed in as a
+superadmin. The CLI import remains available as a fallback:
 
 ```bash
 # after creating a bot with BotFather, put the token in secrets/telegram-bot-token

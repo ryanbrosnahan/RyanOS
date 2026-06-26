@@ -4,6 +4,15 @@ import type { UUID } from "@ryanos/shared";
 import * as schema from "./schema.js";
 
 export type RyanDb = NodePgDatabase<typeof schema>;
+export type UserRole = "superadmin" | "user";
+
+export type RyanOsUserIdentity = {
+  id: UUID;
+  authUserId?: string;
+  email: string;
+  displayName: string;
+  role: UserRole;
+};
 
 const localOwnerEmail = "local-owner@ryanos.local";
 const uuidPattern =
@@ -28,10 +37,44 @@ function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+function csvValues(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function configuredSuperadminEmails(): Set<string> {
+  return new Set(csvValues(process.env.RYANOS_SUPERADMIN_EMAILS).map(normalizeEmail));
+}
+
+function roleForEmail(email: string, currentRole?: string | null): UserRole {
+  if (currentRole === "superadmin") return "superadmin";
+  return configuredSuperadminEmails().has(normalizeEmail(email)) ? "superadmin" : "user";
+}
+
+function userIdentityFromRow(row: typeof schema.users.$inferSelect): RyanOsUserIdentity {
+  const user: RyanOsUserIdentity = {
+    id: row.id,
+    email: row.email,
+    displayName: row.displayName,
+    role: row.role === "superadmin" ? "superadmin" : "user"
+  };
+  if (row.authUserId) user.authUserId = row.authUserId;
+  return user;
+}
+
 function displayNameForIdentity(identity: UserEmailIdentity): string {
   const trimmed = identity.displayName?.trim();
   if (trimmed) return trimmed;
   return normalizeEmail(identity.email);
+}
+
+export async function getRyanOsUserById(db: RyanDb, userId: UUID): Promise<RyanOsUserIdentity | undefined> {
+  const row = await db.query.users.findFirst({
+    where: eq(schema.users.id, userId)
+  });
+  return row ? userIdentityFromRow(row) : undefined;
 }
 
 export async function resolveUserId(db: RyanDb, userId: UUID): Promise<UUID> {
@@ -105,11 +148,13 @@ export async function resolveAuthenticatedUserId(
     where: eq(schema.users.email, email)
   });
   if (byEmail) {
+    const role = roleForEmail(email, byEmail.role);
     const [updated] = await db
       .update(schema.users)
       .set({
         authUserId: identity.authUserId,
         displayName,
+        role,
         updatedAt: new Date()
       })
       .where(eq(schema.users.id, byEmail.id))
@@ -122,7 +167,8 @@ export async function resolveAuthenticatedUserId(
     .values({
       authUserId: identity.authUserId,
       email,
-      displayName
+      displayName,
+      role: roleForEmail(email)
     })
     .returning({ id: schema.users.id });
   if (!created) throw new Error("Failed to create RyanOS user for authenticated account");
@@ -137,11 +183,13 @@ export async function resolveUserIdByEmail(db: RyanDb, identity: UserEmailIdenti
     where: eq(schema.users.email, email)
   });
   if (byEmail) {
-    if (byEmail.displayName !== displayName) {
+    const role = roleForEmail(email, byEmail.role);
+    if (byEmail.displayName !== displayName || byEmail.role !== role) {
       await db
         .update(schema.users)
         .set({
           displayName,
+          role,
           updatedAt: new Date()
         })
         .where(eq(schema.users.id, byEmail.id));
@@ -153,7 +201,8 @@ export async function resolveUserIdByEmail(db: RyanDb, identity: UserEmailIdenti
     .insert(schema.users)
     .values({
       email,
-      displayName
+      displayName,
+      role: roleForEmail(email)
     })
     .returning({ id: schema.users.id });
   if (!created) throw new Error("Failed to create RyanOS user for email identity");

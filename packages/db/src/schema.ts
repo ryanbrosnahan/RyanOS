@@ -6,6 +6,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   real,
   text,
   timestamp,
@@ -83,6 +84,7 @@ export const users = pgTable("users", {
   authUserId: text("auth_user_id"),
   email: text("email").notNull(),
   displayName: text("display_name").notNull(),
+  role: text("role").notNull().default("user"),
   timezone: text("timezone").notNull().default("America/Chicago"),
   locale: text("locale").notNull().default("en-US"),
   ...timestamps
@@ -504,6 +506,17 @@ export const providerAccounts = pgTable("provider_accounts", {
     table.provider,
     table.externalAccountId
   )
+}));
+
+export const userIntegrationSettings = pgTable("user_integration_settings", {
+  userId: uuid("user_id").notNull().references(() => users.id),
+  integrationId: text("integration_id").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps
+}, (table) => ({
+  pk: primaryKey({ columns: [table.userId, table.integrationId] }),
+  userIdx: index("user_integration_settings_user_idx").on(table.userId)
 }));
 
 export const secretRecords = pgTable("secret_records", {

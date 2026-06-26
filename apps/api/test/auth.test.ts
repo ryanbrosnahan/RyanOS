@@ -21,7 +21,8 @@ describe("auth mode", () => {
       authMode: "dev-local",
       user: {
         id: "local-owner",
-        email: "local-owner@ryanos.local"
+        email: "local-owner@ryanos.local",
+        role: "superadmin"
       }
     });
   });

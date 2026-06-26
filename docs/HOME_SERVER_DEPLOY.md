@@ -62,6 +62,7 @@ Edit `/opt/ryanos/.env` and set at least:
 - `BETTER_AUTH_URL`
 - `BETTER_AUTH_SECRET`
 - `RYANOS_INVITE_CODES`
+- `RYANOS_SUPERADMIN_EMAILS`
 - `RYANOS_CODEX_BRIDGE_TOKEN`
 - `RYANOS_CODEX_WORKDIR`
 
@@ -86,11 +87,16 @@ BETTER_AUTH_URL=https://<your-tailscale-serve-name>
 BETTER_AUTH_SECRET=<long-random-secret>
 RYANOS_INVITE_CODES=<comma-separated-signup-codes>
 RYANOS_AUTH_SECURE_COOKIES=true
+RYANOS_SUPERADMIN_EMAILS=<your-ryanos-account-email>
 ```
 
 Only people with a valid invite code can create accounts while email/password
 sign-up is enabled. After the first trusted accounts exist, rotate or remove
 unused invite codes.
+
+`RYANOS_SUPERADMIN_EMAILS` is a bootstrap/recovery allowlist. Matching users are
+promoted to `superadmin` when they log in, but RyanOS does not automatically
+demote users if the env value changes later.
 
 If restoring an existing deployment, restore both the Postgres data and the
 matching `secrets/master-key`. Encrypted integration tokens cannot be decrypted
@@ -120,21 +126,23 @@ Create or download a Google OAuth desktop client JSON and put it on Lenovo at:
 /opt/ryanos/secrets/google-oauth-client.json
 ```
 
-Register credentials and authorize each Gmail account from inside the API
-container:
+Register credentials from inside the API container:
 
 ```bash
 cd /opt/ryanos
 docker compose -f docker-compose.server.yml exec api gog auth credentials /app/secrets/google-oauth-client.json
-docker compose -f docker-compose.server.yml exec api gog auth add account@gmail.com --services gmail --manual
 docker compose -f docker-compose.server.yml exec api gog auth doctor --check
 ```
 
-Then open RyanOS Admin, use Gmail sync, enable the desired accounts, and run
-Scan now. RyanOS V1 reads unread inbox mail from the last 7 days, stores
-proposed to-dos, and only creates a normal RyanOS item after accepting a
-proposal. It does not mark messages read, label messages, create Gmail drafts,
-or send mail.
+Then open RyanOS Admin, expand Integrations -> Gmail, and add each Gmail account
+with the browser-assisted auth flow. RyanOS uses read-only Gmail access for this
+pass. The manual `gog auth add account@gmail.com --services gmail --manual`
+command remains a fallback if remote auth is unavailable.
+
+Use Gmail sync, enable the desired accounts, and run Scan now. RyanOS V1 reads
+unread inbox mail from the last 7 days, stores proposed to-dos, and only creates
+a normal RyanOS item after accepting a proposal. It does not mark messages read,
+label messages, create Gmail drafts, or send mail.
 
 ## RFP and grant reports
 
@@ -217,7 +225,6 @@ If Telegram polling is ready, set this in `/opt/ryanos/.env`:
 
 ```bash
 COMPOSE_PROFILES=telegram
-TELEGRAM_USER_EMAIL_MAP=<telegram-sender-id>:<ryanos-account-email>
 ```
 
 Then start or redeploy:
@@ -225,6 +232,15 @@ Then start or redeploy:
 ```bash
 docker compose -f docker-compose.server.yml --profile telegram up -d --build
 ```
+
+Create the Telegram bot with BotFather, then open RyanOS Admin as a superadmin,
+expand Integrations -> Telegram, and paste the bot token there. RyanOS stores it
+encrypted in Postgres and never echoes it back.
+
+Each user links their own Telegram sender by opening Integrations -> Telegram,
+generating a link code, and sending `/start <code>` to the bot. The legacy
+`TELEGRAM_USER_EMAIL_MAP=<telegram-sender-id>:<ryanos-account-email>` env value
+still works as a fallback, but link codes are the normal workflow.
 
 ## Tailscale Serve
 

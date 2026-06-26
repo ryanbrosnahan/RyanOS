@@ -9,6 +9,7 @@ type AuthSession = {
     id: string;
     email: string;
     displayName?: string | null;
+    role?: "superadmin" | "user";
   };
 };
 

@@ -21,6 +21,7 @@ import type {
   OpportunityProposalUpsertData,
   PolicyUpsertData,
   ProviderAccountPatch,
+  ProviderAccountSummary,
   ProviderAccountUpsertData,
   ProjectUpsertData,
   RyanStore,
@@ -30,6 +31,8 @@ import type {
   ShoppingItemCreateData,
   ShoppingItemListFilters,
   ShoppingItemPatch,
+  UserIntegrationSettingSummary,
+  UserIntegrationSettingUpsertData,
   VocabularyEncounterCreateData,
   VocabularyEntryCreateData,
   VocabularyEntryListFilters,
@@ -57,6 +60,7 @@ import type {
   ShoppingList,
   ShoppingListItem,
   SourceLink,
+  UserIntegrationSetting,
   VocabularyEncounter,
   VocabularyEntry
 } from "./types.js";
@@ -78,6 +82,7 @@ export class InMemoryRyanStore implements RyanStore {
   readonly policies = new Map<UUID, Policy>();
   readonly dailyPlans = new Map<UUID, DailyPlan>();
   readonly providerAccounts = new Map<UUID, ProviderAccount>();
+  readonly userIntegrationSettings = new Map<string, UserIntegrationSetting>();
   readonly externalSources = new Map<UUID, ExternalSource>();
   readonly sourceLinks: SourceLink[] = [];
   readonly emailActionProposals = new Map<UUID, EmailActionProposal>();
@@ -658,6 +663,15 @@ export class InMemoryRyanStore implements RyanStore {
     return this.providerAccounts.get(accountId);
   }
 
+  async findProviderAccountByExternalId(provider: string, externalAccountId: string): Promise<ProviderAccount | undefined> {
+    return [...this.providerAccounts.values()].find(
+      (account) =>
+        account.provider === provider &&
+        account.externalAccountId === externalAccountId &&
+        !account.deletedAt
+    );
+  }
+
   async updateProviderAccount(accountId: UUID, patch: ProviderAccountPatch): Promise<ProviderAccount> {
     const existing = this.providerAccounts.get(accountId);
     if (!existing) throw new Error(`Provider account not found: ${accountId}`);
@@ -676,6 +690,78 @@ export class InMemoryRyanStore implements RyanStore {
     if (patch.metadata !== undefined) updated.metadata = patch.metadata;
     this.providerAccounts.set(accountId, updated);
     return updated;
+  }
+
+  async listProviderAccountSummaries(): Promise<ProviderAccountSummary[]> {
+    const grouped = new Map<string, { provider: string; status: string; accounts: number; users: Set<UUID> }>();
+    for (const account of this.providerAccounts.values()) {
+      if (account.deletedAt) continue;
+      const key = `${account.provider}:${account.status}`;
+      const entry = grouped.get(key) ?? {
+        provider: account.provider,
+        status: account.status,
+        accounts: 0,
+        users: new Set<UUID>()
+      };
+      entry.accounts += 1;
+      entry.users.add(account.userId);
+      grouped.set(key, entry);
+    }
+    return [...grouped.values()]
+      .map((entry) => ({
+        provider: entry.provider,
+        status: entry.status,
+        accountCount: entry.accounts,
+        userCount: entry.users.size
+      }))
+      .sort((a, b) => a.provider.localeCompare(b.provider) || a.status.localeCompare(b.status));
+  }
+
+  async getUserIntegrationSetting(userId: UUID, integrationId: string): Promise<UserIntegrationSetting | undefined> {
+    return this.userIntegrationSettings.get(`${userId}:${integrationId}`);
+  }
+
+  async listUserIntegrationSettings(userId: UUID): Promise<UserIntegrationSetting[]> {
+    return [...this.userIntegrationSettings.values()]
+      .filter((setting) => setting.userId === userId)
+      .sort((a, b) => a.integrationId.localeCompare(b.integrationId));
+  }
+
+  async upsertUserIntegrationSetting(data: UserIntegrationSettingUpsertData): Promise<UserIntegrationSetting> {
+    const key = `${data.userId}:${data.integrationId}`;
+    const existing = this.userIntegrationSettings.get(key);
+    const timestamp = nowIso();
+    const setting: UserIntegrationSetting = {
+      userId: data.userId,
+      integrationId: data.integrationId,
+      enabled: data.enabled ?? existing?.enabled ?? true,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    this.userIntegrationSettings.set(key, setting);
+    return setting;
+  }
+
+  async listUserIntegrationSettingSummaries(): Promise<UserIntegrationSettingSummary[]> {
+    const grouped = new Map<string, { integrationId: string; enabled: boolean; users: Set<UUID> }>();
+    for (const setting of this.userIntegrationSettings.values()) {
+      const key = `${setting.integrationId}:${setting.enabled}`;
+      const entry = grouped.get(key) ?? {
+        integrationId: setting.integrationId,
+        enabled: setting.enabled,
+        users: new Set<UUID>()
+      };
+      entry.users.add(setting.userId);
+      grouped.set(key, entry);
+    }
+    return [...grouped.values()]
+      .map((entry) => ({
+        integrationId: entry.integrationId,
+        enabled: entry.enabled,
+        userCount: entry.users.size
+      }))
+      .sort((a, b) => a.integrationId.localeCompare(b.integrationId) || Number(b.enabled) - Number(a.enabled));
   }
 
   async upsertExternalSource(data: ExternalSourceUpsertData): Promise<ExternalSource> {
