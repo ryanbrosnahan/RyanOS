@@ -18,7 +18,14 @@ data class RyanOsSettings(
     get() = sessionCookie.isNotBlank()
 
   val normalizedBaseUrl: String
-    get() = apiBaseUrl.trim().trimEnd('/')
+    get() = normalizeApiBaseUrl(apiBaseUrl)
+}
+
+fun normalizeApiBaseUrl(value: String): String {
+  val trimmed = value.trim().trimEnd('/')
+  if (trimmed.isBlank()) return ""
+  if (Regex("^[A-Za-z][A-Za-z0-9+.-]*://").containsMatchIn(trimmed)) return trimmed
+  return "https://$trimmed"
 }
 
 data class AndroidReleaseManifest(

@@ -151,7 +151,7 @@ class RyanOsRepository private constructor(context: Context) {
 
   suspend fun saveSettings(settings: RyanOsSettings) {
     dataStore.edit { preferences ->
-      preferences[API_BASE_URL] = settings.apiBaseUrl.trim()
+      preferences[API_BASE_URL] = normalizeApiBaseUrl(settings.apiBaseUrl)
       preferences[USER_ID] = settings.userId.trim().ifBlank { "local-owner" }
       preferences[SESSION_COOKIE] = settings.sessionCookie.trim()
       preferences[TIMEZONE] = settings.timezone.trim().ifBlank { defaultTimezone() }
@@ -168,7 +168,7 @@ class RyanOsRepository private constructor(context: Context) {
 
   suspend fun signIn(apiBaseUrl: String, email: String, password: String): RyanOsSettings = withContext(Dispatchers.IO) {
     val current = settingsFlow.first()
-    val baseUrl = apiBaseUrl.trim()
+    val baseUrl = normalizeApiBaseUrl(apiBaseUrl)
     val cookie = RyanOsApi.signIn(
       settings = current.copy(apiBaseUrl = baseUrl),
       email = email.trim(),

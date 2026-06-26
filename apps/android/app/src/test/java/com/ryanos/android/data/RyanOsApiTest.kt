@@ -9,6 +9,18 @@ import org.junit.Test
 
 class RyanOsApiTest {
   @Test
+  fun normalizesApiBaseUrlWithDefaultHttpsScheme() {
+    assertEquals(
+      "https://ryan-lenovo-desktop.taile89fa5.ts.net/api",
+      normalizeApiBaseUrl(" ryan-lenovo-desktop.taile89fa5.ts.net/api/ ")
+    )
+    assertEquals(
+      "https://ryan-lenovo-desktop.taile89fa5.ts.net/api",
+      normalizeApiBaseUrl("https://ryan-lenovo-desktop.taile89fa5.ts.net/api/")
+    )
+  }
+
+  @Test
   fun derivesAndroidReleaseManifestUrlFromApiBaseUrl() {
     assertEquals(
       "https://ryan-lenovo-desktop.taile89fa5.ts.net/downloads/android/manifest.json",
@@ -19,6 +31,10 @@ class RyanOsApiTest {
     assertEquals(
       "https://example.com/ryanos/downloads/android/manifest.json",
       RyanOsApi.androidReleaseManifestUrl("https://example.com/ryanos/api/")
+    )
+    assertEquals(
+      "https://ryan-lenovo-desktop.taile89fa5.ts.net/downloads/android/manifest.json",
+      RyanOsApi.androidReleaseManifestUrl("ryan-lenovo-desktop.taile89fa5.ts.net/api")
     )
   }
 

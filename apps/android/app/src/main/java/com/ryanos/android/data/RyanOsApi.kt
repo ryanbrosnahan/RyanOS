@@ -1313,7 +1313,7 @@ object RyanOsApi {
     URLEncoder.encode(this, StandardCharsets.UTF_8.name())
 
   internal fun androidReleaseManifestUrl(apiBaseUrl: String): String {
-    val trimmed = apiBaseUrl.trim().trimEnd('/')
+    val trimmed = normalizeApiBaseUrl(apiBaseUrl)
     if (trimmed.isBlank()) throw IOException("Enter the RyanOS API base URL before checking updates.")
     val uri = URI(trimmed)
     val scheme = uri.scheme ?: throw IOException("RyanOS API base URL must include https://")
