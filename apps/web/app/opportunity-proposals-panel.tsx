@@ -205,10 +205,10 @@ export function OpportunityProposalsPanel() {
             }`}
           >
             {codexStatus.enabled && codexStatus.setup.ready
-              ? "Codex RFP ready"
+              ? "Codex automations ready"
               : codexStatus.setup.configured
-                ? "Codex RFP needs attention"
-                : "Codex RFP not set up"}
+                ? "Codex automations need attention"
+                : "Codex automations not set up"}
           </span>
           <span className="rounded-md bg-stone-100 px-2 py-1 font-medium text-stone-700">
             Last ingest {formatDate(codexStatus.account?.lastIngestAt) ?? "never"}
@@ -226,9 +226,9 @@ export function OpportunityProposalsPanel() {
       {!error && !loading && proposals.length === 0 ? (
         <p className="mt-3 text-sm leading-6 text-stone-600">
           {codexStatus && !codexStatus.setup.configured
-            ? "No proposed opportunity leads because Codex RFP automation ingest is not set up yet."
+            ? "No proposed opportunity leads because Codex automation ingest is not set up yet."
             : codexStatus && !codexStatus.setup.ready
-              ? "No proposed opportunity leads; Codex RFP automation ingest needs attention in Admin."
+              ? "No proposed opportunity leads; Codex automation ingest needs attention in Admin."
               : "No proposed opportunity leads."}
         </p>
       ) : null}

@@ -988,7 +988,7 @@ const integrationNames: Record<IntegrationId, string> = {
   ai: "AI provider",
   telegram: "Telegram",
   gmail: "Gmail",
-  codex_rfp: "Codex RFP automations"
+  codex_rfp: "Codex automations"
 };
 
 const codexRfpProvider = "codex_rfp_ingest";
@@ -1327,27 +1327,27 @@ export function buildApp(options: {
     if (!configured) {
       setupActions.push({
         id: "codex-rfp-token",
-        title: "Create Codex RFP ingest token",
+        title: "Create Codex automation ingest token",
         blocking: true,
         instructions: [
-          "Open RyanOS Admin and generate a Codex RFP token.",
-          "Add the generated endpoint and token to each local Codex RFP automation."
+          "Open RyanOS Admin and generate a Codex automation token.",
+          "Add the generated endpoint and token to each local Codex automation."
         ]
       });
     }
     if (configured && account?.status !== "active") {
       setupActions.push({
         id: "codex-rfp-token-disabled",
-        title: "Enable or rotate Codex RFP token",
+        title: "Enable or rotate Codex automation token",
         blocking: true,
         instructions: [
-          "The stored Codex RFP ingest token is disabled.",
+          "The stored Codex automation ingest token is disabled.",
           "Enable the integration or rotate the token from RyanOS Admin."
         ]
       });
     }
     if (configured && !enabled) {
-      warnings.push("Codex RFP automation ingest is disabled for this user.");
+      warnings.push("Codex automation ingest is disabled for this user.");
     }
 
     return {
@@ -1413,7 +1413,7 @@ export function buildApp(options: {
         userId,
         provider: codexRfpProvider,
         externalAccountId: next.tokenId,
-        displayName: "Codex RFP ingest token",
+        displayName: "Codex automation ingest token",
         status: "active",
         scopes: ["rfp_report:ingest"],
         metadata
@@ -1431,7 +1431,7 @@ export function buildApp(options: {
 
     await store.updateProviderAccount(existing.id, {
       externalAccountId: next.tokenId,
-      displayName: existing.displayName ?? "Codex RFP ingest token",
+      displayName: existing.displayName ?? "Codex automation ingest token",
       status: "active",
       scopes: existing.scopes.length > 0 ? existing.scopes : ["rfp_report:ingest"],
       metadata
@@ -1454,7 +1454,7 @@ export function buildApp(options: {
     const parsed = parseCodexRfpToken(codexRfpTokenFromRequest(request));
     if (!parsed) {
       reply.code(401);
-      void reply.send({ error: "Missing or invalid Codex RFP ingest token." });
+      void reply.send({ error: "Missing or invalid Codex automation ingest token." });
       return undefined;
     }
     const account = await store.findProviderAccountByExternalId(codexRfpProvider, parsed.tokenId);
@@ -1463,17 +1463,17 @@ export function buildApp(options: {
     const actualHash = hashCodexRfpSecret(parsed.tokenId, parsed.secret);
     if (!account || !expectedHash || !secureStringEqual(expectedHash, actualHash)) {
       reply.code(401);
-      void reply.send({ error: "Missing or invalid Codex RFP ingest token." });
+      void reply.send({ error: "Missing or invalid Codex automation ingest token." });
       return undefined;
     }
     if (account.status !== "active") {
       reply.code(403);
-      void reply.send({ error: "Codex RFP ingest token is disabled." });
+      void reply.send({ error: "Codex automation ingest token is disabled." });
       return undefined;
     }
     if (!(await integrationEnabled(account.userId, "codex_rfp"))) {
       reply.code(403);
-      void reply.send({ error: "Codex RFP automation ingest is disabled for this user." });
+      void reply.send({ error: "Codex automation ingest is disabled for this user." });
       return undefined;
     }
     return account;

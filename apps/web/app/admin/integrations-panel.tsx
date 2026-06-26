@@ -504,7 +504,7 @@ export function AdminOperationsPanel() {
       icon: Mail
     },
     {
-      label: "Codex RFP",
+      label: "Codex automations",
       value: integrationById.get("codex_rfp") ? statusLabel(integrationById.get("codex_rfp")!) : "Loading",
       icon: Search
     },
@@ -597,13 +597,14 @@ export function AdminOperationsPanel() {
             const open = expanded === integration.id;
             const codexEndpoint = integration.id === "codex_rfp" ? absoluteEndpoint(integration.endpointPath) : "";
             const codexSnippet = [
-              `RYANOS_RFP_INGEST_URL="${codexEndpoint}"`,
-              `RYANOS_RFP_INGEST_TOKEN="${codexToken ?? "<rotate-token-in-ryanos-admin>"}"`,
+              `CODEX_AUTOMATION_INGEST_URL="${codexEndpoint}"`,
+              `CODEX_AUTOMATION_INGEST_TOKEN="${codexToken ?? "<rotate-token-in-ryanos-admin>"}"`,
+              'CODEX_AUTOMATION_REPORT_PATH="<path-to-report-json>"',
               "curl -fsS \\",
               "  -H \"content-type: application/json\" \\",
-              "  -H \"authorization: Bearer $RYANOS_RFP_INGEST_TOKEN\" \\",
-              "  --data-binary @docs/rfp-auto-search.ryanos.json \\",
-              "  \"$RYANOS_RFP_INGEST_URL\""
+              "  -H \"authorization: Bearer $CODEX_AUTOMATION_INGEST_TOKEN\" \\",
+              "  --data-binary @\"$CODEX_AUTOMATION_REPORT_PATH\" \\",
+              "  \"$CODEX_AUTOMATION_INGEST_URL\""
             ].join("\n");
             return (
               <div key={integration.id} className="py-4 first:pt-0 last:pb-0">
@@ -773,9 +774,9 @@ export function AdminOperationsPanel() {
                             <p className="mt-1 font-medium text-stone-950">{integration.counts?.proposed ?? 0}</p>
                           </div>
                           <div className="rounded-md bg-stone-50 px-3 py-2">
-                            <p className="text-xs font-medium uppercase text-stone-500">Token</p>
-                            <p className="mt-1 break-all font-medium text-stone-950">
-                              {integration.account?.tokenPreview ?? "none"}
+                            <p className="text-xs font-medium uppercase text-stone-500">Credential</p>
+                            <p className="mt-1 font-medium text-stone-950">
+                              {integration.account?.tokenPreview ? "configured" : "none"}
                             </p>
                           </div>
                         </div>
