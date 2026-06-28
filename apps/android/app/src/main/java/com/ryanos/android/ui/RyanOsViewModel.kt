@@ -66,13 +66,6 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
     }
   }
 
-  fun suggestToday() {
-    launchWork("Planning today") {
-      repository.suggestDailyPlan()
-      statusText = "Daily suggestion refreshed"
-    }
-  }
-
   fun addTask(title: String) {
     val cleanTitle = title.trim()
     if (cleanTitle.isBlank()) return

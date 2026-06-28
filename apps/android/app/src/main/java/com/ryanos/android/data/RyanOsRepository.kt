@@ -425,25 +425,6 @@ class RyanOsRepository private constructor(context: Context) {
     }
   }
 
-  suspend fun suggestDailyPlan(): DailyPlanSnapshot = withContext(Dispatchers.IO) {
-    val settings = settingsFlow.first()
-    if (!settings.isConfigured) return@withContext refreshDailyPlan()
-    runCatching {
-      val result = RyanOsApi.suggestDailyPlanPayload(settings)
-      dataStore.edit { preferences ->
-        preferences[CACHED_DAILY_PLAN_PAYLOAD] = result.rawJson
-        preferences[DAILY_PLAN_LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()
-        preferences.remove(DAILY_PLAN_LAST_ERROR)
-      }
-      dailyPlanSnapshotFlow.first()
-    }.getOrElse { error ->
-      dataStore.edit { preferences ->
-        preferences[DAILY_PLAN_LAST_ERROR] = error.userFacingMessage()
-      }
-      dailyPlanSnapshotFlow.first()
-    }
-  }
-
   suspend fun refreshMessages(): MessageSnapshot = withContext(Dispatchers.IO) {
     val settings = settingsFlow.first()
     if (!settings.isConfigured) {

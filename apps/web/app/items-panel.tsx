@@ -9,13 +9,15 @@ import {
   ClipboardList,
   Code2,
   CalendarDays,
-  ChevronDown,
+  FileText,
   Folder,
   FolderKanban,
   Gauge,
   HeartPulse,
   Home,
   Landmark,
+  ListChecks,
+  MessageSquarePlus,
   PawPrint,
   Pencil,
   Plane,
@@ -29,7 +31,12 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch, apiPath } from "./api-client";
-import { ItemProgressDetails, ItemProgressSummaryLine } from "./item-progress-details";
+import {
+  ItemProgressDetails,
+  ItemProgressSummaryLine,
+  type ItemDetailIntent,
+  type ItemDetailIntentKind
+} from "./item-progress-details";
 
 type RecurrenceDay = {
   date: string;
@@ -402,6 +409,7 @@ export function ItemsPanel() {
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [editingScopeItemId, setEditingScopeItemId] = useState<string | null>(null);
   const [expandedDetailItemIds, setExpandedDetailItemIds] = useState<Set<string>>(new Set());
+  const [detailIntents, setDetailIntents] = useState<Record<string, ItemDetailIntent>>({});
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<Item | null>(null);
   const timezone = useMemo(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago",
@@ -632,6 +640,11 @@ export function ItemsPanel() {
         next.delete(item.id);
         return next;
       });
+      setDetailIntents((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
       setDeleteConfirmItem(null);
       window.dispatchEvent(new Event("ryanos-focus-refresh"));
     } catch (err) {
@@ -639,6 +652,38 @@ export function ItemsPanel() {
     } finally {
       setPendingKey(null);
     }
+  }
+
+  function closeDetailIntent(itemId: string) {
+    setExpandedDetailItemIds((current) => {
+      const next = new Set(current);
+      next.delete(itemId);
+      return next;
+    });
+    setDetailIntents((current) => {
+      const next = { ...current };
+      delete next[itemId];
+      return next;
+    });
+  }
+
+  function toggleDetailIntent(itemId: string, kind: ItemDetailIntentKind) {
+    const currentIntent = detailIntents[itemId];
+    const shouldCollapse = expandedDetailItemIds.has(itemId) && currentIntent?.kind === kind;
+    if (shouldCollapse) {
+      closeDetailIntent(itemId);
+      return;
+    }
+
+    setExpandedDetailItemIds((current) => {
+      const next = new Set(current);
+      next.add(itemId);
+      return next;
+    });
+    setDetailIntents((current) => ({
+      ...current,
+      [itemId]: { kind, nonce: Date.now() }
+    }));
   }
 
   async function updateDueDate(item: Item, dueDate: string) {
@@ -837,6 +882,7 @@ export function ItemsPanel() {
             });
             const editingScope = editingScopeItemId === item.id;
             const detailsExpanded = expandedDetailItemIds.has(item.id);
+            const detailIntent = detailIntents[item.id];
             return (
               <div key={item.id} className="py-3 first:pt-0 last:pb-0">
                 <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -866,77 +912,95 @@ export function ItemsPanel() {
                       </button>
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="flex min-w-0 items-start gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void toggleStar(item)}
-                          disabled={completed || pendingKey === `${item.id}:star`}
-                          className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
-                            item.starred
-                              ? "text-amber-700 hover:bg-amber-50"
-                              : "text-stone-400 hover:bg-stone-100 hover:text-amber-700"
-                          } disabled:cursor-wait disabled:opacity-50`}
-                          aria-label={item.starred ? `Unstar ${item.title}` : `Star ${item.title}`}
-                          aria-pressed={item.starred}
-                          title={completed ? "Completed" : item.starred ? "Unstar" : "Star"}
-                        >
-                          <Star className={`h-4 w-4 ${item.starred ? "fill-current" : ""}`} aria-hidden="true" />
-                        </button>
-                        <p
-                          className={`ryanos-clamp-2 min-w-0 max-w-2xl flex-1 text-sm font-medium ${
-                            completed ? "text-stone-500 line-through" : "text-stone-950"
-                          }`}
-                        >
-                          {item.title}
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => setEditingScopeItemId(editingScope ? null : item.id)}
-                          className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900 ${
-                            editingScope ? "bg-stone-100 text-stone-900" : ""
-                          }`}
-                          aria-label={
-                            hasRecurrence
-                              ? `Edit area and project for ${item.title}`
-                              : `Edit area, project, and due date for ${item.title}`
-                          }
-                          aria-pressed={editingScope}
-                          title={hasRecurrence ? "Edit area and project" : "Edit area, project, and due date"}
-                        >
-                          <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setDeleteConfirmItem(item)}
-                          disabled={pendingKey === `${item.id}:delete`}
-                          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-rose-50 hover:text-rose-700 disabled:cursor-wait disabled:opacity-50"
-                          aria-label={`Delete ${item.title}`}
-                          title="Delete"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExpandedDetailItemIds((current) => {
-                              const next = new Set(current);
-                              if (next.has(item.id)) next.delete(item.id);
-                              else next.add(item.id);
-                              return next;
-                            })
-                          }
-                          className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900 ${
-                            detailsExpanded ? "bg-stone-100 text-stone-900" : ""
-                          }`}
-                          aria-label={`${detailsExpanded ? "Hide" : "Show"} progress and checklist for ${item.title}`}
-                          aria-expanded={detailsExpanded}
-                          title={detailsExpanded ? "Hide details" : "Details"}
-                        >
-                          <ChevronDown
-                            className={`h-3.5 w-3.5 transition ${detailsExpanded ? "rotate-180" : ""}`}
-                            aria-hidden="true"
-                          />
-                        </button>
+                      <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-start">
+                        <div className="flex min-w-0 flex-1 items-start gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void toggleStar(item)}
+                            disabled={completed || pendingKey === `${item.id}:star`}
+                            className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
+                              item.starred
+                                ? "text-amber-700 hover:bg-amber-50"
+                                : "text-stone-400 hover:bg-stone-100 hover:text-amber-700"
+                            } disabled:cursor-wait disabled:opacity-50`}
+                            aria-label={item.starred ? `Unstar ${item.title}` : `Star ${item.title}`}
+                            aria-pressed={item.starred}
+                            title={completed ? "Completed" : item.starred ? "Unstar" : "Star"}
+                          >
+                            <Star className={`h-4 w-4 ${item.starred ? "fill-current" : ""}`} aria-hidden="true" />
+                          </button>
+                          <p
+                            className={`ryanos-clamp-2 min-w-0 max-w-[44rem] flex-1 break-words text-sm font-medium ${
+                              completed ? "text-stone-500 line-through" : "text-stone-950"
+                            }`}
+                          >
+                            {item.title}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1 pl-8 sm:pl-0">
+                          <button
+                            type="button"
+                            onClick={() => setEditingScopeItemId(editingScope ? null : item.id)}
+                            className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900 ${
+                              editingScope ? "bg-stone-100 text-stone-900" : ""
+                            }`}
+                            aria-label={
+                              hasRecurrence
+                                ? `Edit area and project for ${item.title}`
+                                : `Edit area, project, and due date for ${item.title}`
+                            }
+                            aria-pressed={editingScope}
+                            title={hasRecurrence ? "Edit area and project" : "Edit area, project, and due date"}
+                          >
+                            <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDeleteConfirmItem(item)}
+                            disabled={pendingKey === `${item.id}:delete`}
+                            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-rose-50 hover:text-rose-700 disabled:cursor-wait disabled:opacity-50"
+                            aria-label={`Delete ${item.title}`}
+                            title="Delete"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => toggleDetailIntent(item.id, "summary")}
+                            className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900 ${
+                              detailsExpanded && detailIntent?.kind === "summary" ? "bg-stone-100 text-stone-900" : ""
+                            }`}
+                            aria-label={`${detailsExpanded && detailIntent?.kind === "summary" ? "Hide" : "Show"} summary for ${item.title}`}
+                            aria-expanded={detailsExpanded && detailIntent?.kind === "summary"}
+                            title="Summary"
+                          >
+                            <FileText className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => toggleDetailIntent(item.id, "note")}
+                            className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900 ${
+                              detailsExpanded && detailIntent?.kind === "note" ? "bg-stone-100 text-stone-900" : ""
+                            }`}
+                            aria-label={`${detailsExpanded && detailIntent?.kind === "note" ? "Hide" : "Show"} progress notes for ${item.title}`}
+                            aria-expanded={detailsExpanded && detailIntent?.kind === "note"}
+                            title="Notes"
+                          >
+                            <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => toggleDetailIntent(item.id, "checklist")}
+                            className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900 ${
+                              detailsExpanded && detailIntent?.kind === "checklist" ? "bg-stone-100 text-stone-900" : ""
+                            }`}
+                            aria-label={`${detailsExpanded && detailIntent?.kind === "checklist" ? "Hide" : "Show"} checklist for ${item.title}`}
+                            aria-expanded={detailsExpanded && detailIntent?.kind === "checklist"}
+                            title="Checklist"
+                          >
+                            <ListChecks className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        </div>
                       </div>
                       <div className="mt-1 flex min-w-0 flex-wrap gap-1.5">
                         {item.scope?.area ? (
@@ -1117,6 +1181,8 @@ export function ItemsPanel() {
                     <ItemProgressDetails
                       item={item}
                       timezone={timezone}
+                      intent={detailIntent}
+                      onRequestClose={() => closeDetailIntent(item.id)}
                       onChanged={(updatedItem) =>
                         setItems((current) =>
                           current.map((candidate) => (candidate.id === updatedItem.id ? updatedItem : candidate))

@@ -1,9 +1,24 @@
 "use client";
 
-import { Check, CheckCircle2, ChevronDown, Loader2, RefreshCw, Star, Target } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  FileText,
+  ListChecks,
+  Loader2,
+  MessageSquarePlus,
+  Star,
+  Target
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { apiFetch, apiPath } from "./api-client";
-import { ItemProgressDetails, ItemProgressSummaryLine } from "./item-progress-details";
+import {
+  ItemProgressDetails,
+  ItemProgressSummaryLine,
+  type ItemDetailIntent,
+  type ItemDetailIntentKind
+} from "./item-progress-details";
 
 type ScopeLabel = {
   id: string;
@@ -147,11 +162,10 @@ function completedForDate(item: FocusItem, dateKey: string): boolean {
 export function DailyFocusPanel() {
   const [payload, setPayload] = useState<DailyPlanPayload | null>(null);
   const [loading, setLoading] = useState(true);
-  const [suggesting, setSuggesting] = useState(false);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedDetailItemIds, setExpandedDetailItemIds] = useState<Set<string>>(new Set());
-  const suggestionAttemptedRef = useRef(false);
+  const [detailIntents, setDetailIntents] = useState<Record<string, ItemDetailIntent>>({});
   const timezone = useMemo(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago",
     []
@@ -193,28 +207,6 @@ export function DailyFocusPanel() {
       if (!options?.background) setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function refreshSuggestion(options?: { background?: boolean }) {
-    if (!options?.background) setSuggesting(true);
-    setError(null);
-    try {
-      const response = await apiFetch(apiPath("/v1/daily-plan/suggest"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          timezone
-        })
-      });
-      if (!response.ok) throw new Error(`Daily suggestion returned ${response.status}`);
-      applyPayload((await response.json()) as DailyPlanPayload);
-    } catch (err) {
-      if (!options?.background) setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSuggesting(false);
     }
   }
 
@@ -282,6 +274,38 @@ export function DailyFocusPanel() {
     }
   }
 
+  function closeDetailIntent(itemId: string) {
+    setExpandedDetailItemIds((current) => {
+      const next = new Set(current);
+      next.delete(itemId);
+      return next;
+    });
+    setDetailIntents((current) => {
+      const next = { ...current };
+      delete next[itemId];
+      return next;
+    });
+  }
+
+  function toggleDetailIntent(itemId: string, kind: ItemDetailIntentKind) {
+    const currentIntent = detailIntents[itemId];
+    const shouldCollapse = expandedDetailItemIds.has(itemId) && currentIntent?.kind === kind;
+    if (shouldCollapse) {
+      closeDetailIntent(itemId);
+      return;
+    }
+
+    setExpandedDetailItemIds((current) => {
+      const next = new Set(current);
+      next.add(itemId);
+      return next;
+    });
+    setDetailIntents((current) => ({
+      ...current,
+      [itemId]: { kind, nonce: Date.now() }
+    }));
+  }
+
   useEffect(() => {
     void loadPlan();
     const handleExternalRefresh = () => {
@@ -298,16 +322,6 @@ export function DailyFocusPanel() {
       window.removeEventListener("ryanos-focus-refresh", handleExternalRefresh);
     };
   }, []);
-
-  useEffect(() => {
-    if (!payload || suggestionAttemptedRef.current) return;
-    if (payload.plan.suggestionSource === "ai" || payload.plan.suggestionSource === "user") return;
-    const storageKey = `ryanos:daily-plan-suggested:${payload.date}`;
-    if (window.sessionStorage.getItem(storageKey)) return;
-    window.sessionStorage.setItem(storageKey, "true");
-    suggestionAttemptedRef.current = true;
-    void refreshSuggestion({ background: true });
-  }, [payload?.date, payload?.plan.suggestionSource]);
 
   const focusItems = useMemo(() => {
     return payload?.starredItems ?? [];
@@ -365,21 +379,6 @@ export function DailyFocusPanel() {
           </h2>
         </div>
 
-        <div className="flex flex-wrap gap-2 lg:justify-end">
-          <button
-            type="button"
-            onClick={() => void refreshSuggestion()}
-            disabled={suggesting}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-stone-300 text-stone-700 hover:bg-stone-100 disabled:cursor-wait disabled:opacity-60"
-            aria-label="Refresh focus suggestions"
-            title="Refresh focus suggestions"
-          >
-            <RefreshCw
-              className={`h-4 w-4 ${suggesting ? "animate-spin" : ""}`}
-              aria-hidden="true"
-            />
-          </button>
-        </div>
       </div>
 
       {error ? <p className="px-4 pb-3 text-sm leading-6 text-rose-700 sm:px-5">{error}</p> : null}
@@ -392,6 +391,7 @@ export function DailyFocusPanel() {
               const completeKey = `${item.id}:complete`;
               const starKey = `${item.id}:star`;
               const detailsExpanded = expandedDetailItemIds.has(item.id);
+              const detailIntent = detailIntents[item.id];
               return (
                 <article
                   key={item.id}
@@ -443,25 +443,39 @@ export function DailyFocusPanel() {
                       </button>
                       <button
                         type="button"
-                        onClick={() =>
-                          setExpandedDetailItemIds((current) => {
-                            const next = new Set(current);
-                            if (next.has(item.id)) next.delete(item.id);
-                            else next.add(item.id);
-                            return next;
-                          })
-                        }
+                        onClick={() => toggleDetailIntent(item.id, "summary")}
                         className={`inline-flex h-7 w-7 items-center justify-center rounded-md bg-white text-stone-700 ring-1 ring-stone-200 hover:bg-stone-50 ${
-                          detailsExpanded ? "bg-stone-100" : ""
+                          detailsExpanded && detailIntent?.kind === "summary" ? "bg-stone-100" : ""
                         }`}
-                        aria-label={`${detailsExpanded ? "Hide" : "Show"} progress and checklist for ${item.title}`}
-                        aria-expanded={detailsExpanded}
-                        title={detailsExpanded ? "Hide details" : "Details"}
+                        aria-label={`${detailsExpanded && detailIntent?.kind === "summary" ? "Hide" : "Show"} summary for ${item.title}`}
+                        aria-expanded={detailsExpanded && detailIntent?.kind === "summary"}
+                        title="Summary"
                       >
-                        <ChevronDown
-                          className={`h-4 w-4 transition ${detailsExpanded ? "rotate-180" : ""}`}
-                          aria-hidden="true"
-                        />
+                        <FileText className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleDetailIntent(item.id, "note")}
+                        className={`inline-flex h-7 w-7 items-center justify-center rounded-md bg-white text-stone-700 ring-1 ring-stone-200 hover:bg-stone-50 ${
+                          detailsExpanded && detailIntent?.kind === "note" ? "bg-stone-100" : ""
+                        }`}
+                        aria-label={`${detailsExpanded && detailIntent?.kind === "note" ? "Hide" : "Show"} progress notes for ${item.title}`}
+                        aria-expanded={detailsExpanded && detailIntent?.kind === "note"}
+                        title="Notes"
+                      >
+                        <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toggleDetailIntent(item.id, "checklist")}
+                        className={`inline-flex h-7 w-7 items-center justify-center rounded-md bg-white text-stone-700 ring-1 ring-stone-200 hover:bg-stone-50 ${
+                          detailsExpanded && detailIntent?.kind === "checklist" ? "bg-stone-100" : ""
+                        }`}
+                        aria-label={`${detailsExpanded && detailIntent?.kind === "checklist" ? "Hide" : "Show"} checklist for ${item.title}`}
+                        aria-expanded={detailsExpanded && detailIntent?.kind === "checklist"}
+                        title="Checklist"
+                      >
+                        <ListChecks className="h-4 w-4" aria-hidden="true" />
                       </button>
                     </span>
                   </span>
@@ -469,6 +483,8 @@ export function DailyFocusPanel() {
                     <ItemProgressDetails
                       item={item}
                       timezone={timezone}
+                      intent={detailIntent}
+                      onRequestClose={() => closeDetailIntent(item.id)}
                       onChanged={(updatedItem) => {
                         mergeItemIntoPayload(updatedItem);
                         void loadPlan({ background: true });

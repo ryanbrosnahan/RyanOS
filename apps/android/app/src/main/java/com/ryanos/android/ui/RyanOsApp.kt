@@ -18,7 +18,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -271,7 +270,6 @@ fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
               statusText = viewModel.statusText,
               busy = viewModel.busy,
               onRefresh = viewModel::refreshToday,
-              onSuggest = viewModel::suggestToday,
               onToggle = { item -> viewModel.toggleFocusItem(item, dailyPlan.date) },
               onToggleDay = viewModel::toggleFocusItem,
               onToggleStar = viewModel::toggleStar,
@@ -378,7 +376,6 @@ private fun TodayScreen(
   statusText: String,
   busy: Boolean,
   onRefresh: () -> Unit,
-  onSuggest: () -> Unit,
   onToggle: (FocusItem) -> Unit,
   onToggleDay: (FocusItem, String, Boolean) -> Unit,
   onToggleStar: (FocusItem) -> Unit,
@@ -430,9 +427,6 @@ private fun TodayScreen(
         primaryLabel = "Refresh",
         primaryIcon = Icons.Filled.Refresh,
         onPrimary = onRefresh,
-        secondaryLabel = "Suggest",
-        secondaryIcon = Icons.Filled.AutoAwesome,
-        onSecondary = onSuggest,
         busy = busy
       )
     }
@@ -446,7 +440,7 @@ private fun TodayScreen(
       )
     }
     if (plan.configured) {
-      val focusItems = plan.selectedItems.ifEmpty { plan.starredItems }.ifEmpty { plan.suggestedItems.take(4) }
+      val focusItems = plan.starredItems
       item {
         FocusSection(
           title = "Focus",

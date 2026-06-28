@@ -75,7 +75,12 @@ function messageToTurn(message: StoredMessage): ChatTurn {
   };
 }
 
-export function ChatPanel() {
+type ChatPanelProps = {
+  variant?: "embedded" | "overlay";
+};
+
+export function ChatPanel({ variant = "embedded" }: ChatPanelProps = {}) {
+  const overlay = variant === "overlay";
   const [input, setInput] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -241,8 +246,12 @@ export function ChatPanel() {
   return (
     <div
       id="assistant-intake"
-      className="flex min-h-80 flex-col rounded-md border border-stone-300 bg-white shadow-sm"
-      style={{ height: panelHeight }}
+      className={`flex flex-col bg-white ${
+        overlay
+          ? "h-full min-h-0"
+          : "min-h-80 rounded-md border border-stone-300 shadow-sm"
+      }`}
+      style={overlay ? undefined : { height: panelHeight }}
     >
       <div className="flex items-center gap-2 px-4 pt-4">
         <MessageSquare className="h-5 w-5 text-sky-700" aria-hidden="true" />
@@ -297,18 +306,20 @@ export function ChatPanel() {
         </button>
       </form>
 
-      <button
-        ref={resizeHandleRef}
-        type="button"
-        className="mt-3 flex h-5 shrink-0 cursor-ns-resize touch-none items-center justify-center rounded-b-md border-t border-stone-200 text-stone-400 hover:bg-stone-50 hover:text-stone-700 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-sky-200"
-        title="Resize chat panel"
-        aria-label="Resize chat panel"
-        aria-orientation="horizontal"
-        onPointerDown={startResize}
-        onKeyDown={resizeWithKeyboard}
-      >
-        <GripHorizontal className="h-4 w-4" aria-hidden="true" />
-      </button>
+      {overlay ? null : (
+        <button
+          ref={resizeHandleRef}
+          type="button"
+          className="mt-3 flex h-5 shrink-0 cursor-ns-resize touch-none items-center justify-center rounded-b-md border-t border-stone-200 text-stone-400 hover:bg-stone-50 hover:text-stone-700 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-sky-200"
+          title="Resize chat panel"
+          aria-label="Resize chat panel"
+          aria-orientation="horizontal"
+          onPointerDown={startResize}
+          onKeyDown={resizeWithKeyboard}
+        >
+          <GripHorizontal className="h-4 w-4" aria-hidden="true" />
+        </button>
+      )}
     </div>
   );
 }

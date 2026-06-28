@@ -150,27 +150,6 @@ object RyanOsApi {
   }
 
   @Throws(IOException::class)
-  fun suggestDailyPlanPayload(settings: RyanOsSettings): DailyPlanPayloadResult {
-    val body = JSONObject()
-      .put("timezone", settings.timezone)
-    val rawJson = request(
-      settings = settings,
-      method = "POST",
-      url = "${settings.normalizedBaseUrl}/v1/daily-plan/suggest",
-      body = body
-    )
-    val syncedAt = Instant.now().toString()
-    return DailyPlanPayloadResult(
-      rawJson = rawJson,
-      snapshot = parseDailyPlanSnapshot(
-        rawJson = rawJson,
-        lastSyncedAt = syncedAt,
-        configured = true
-      )
-    )
-  }
-
-  @Throws(IOException::class)
   fun fetchMessagesPayload(settings: RyanOsSettings, limit: Int = 30): MessagePayloadResult {
     val query = mapOf(
       "provider" to "web",

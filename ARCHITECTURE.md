@@ -62,10 +62,10 @@ must live outside the public core.
 - The main dashboard is for coaching, daily focus, current commitments, and
   actionable personal context. Implementation status, setup readiness, core
   storage details, and integration diagnostics belong on an admin dashboard.
-- Daily planning should start from the question: "What 1-3 outcomes would make
-  today count?" The dashboard and chat should present the question daily,
-  preserve the user's answer, and keep a small suggested focus set prominent
-  near the top.
+- Daily focus should be task-first. Starred open items are the active focus set
+  until they are unstarred or completed. Historical daily-plan suggestions may
+  remain as candidate context, but the dashboard and app should not prompt for a
+  daily outcomes answer.
 
 ## 3. Deployment Model
 
