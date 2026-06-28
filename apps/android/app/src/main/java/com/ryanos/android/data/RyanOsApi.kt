@@ -238,6 +238,18 @@ object RyanOsApi {
   }
 
   @Throws(IOException::class)
+  fun deleteItem(settings: RyanOsSettings, itemId: String) {
+    val body = JSONObject()
+      .put("timezone", settings.timezone)
+    request(
+      settings = settings,
+      method = "DELETE",
+      url = "${settings.normalizedBaseUrl}/v1/items/${itemId.urlEncode()}",
+      body = body
+    )
+  }
+
+  @Throws(IOException::class)
   fun createShoppingItem(
     settings: RyanOsSettings,
     name: String,
@@ -268,6 +280,36 @@ object RyanOsApi {
       settings = settings,
       method = "PATCH",
       url = "${settings.normalizedBaseUrl}/v1/shopping/items/${itemId.urlEncode()}",
+      body = body
+    )
+    val syncedAt = Instant.now().toString()
+    return ShoppingPayloadResult(
+      rawJson = rawJson,
+      snapshot = parseShoppingSnapshot(
+        rawJson = rawJson,
+        lastSyncedAt = syncedAt,
+        configured = true
+      )
+    )
+  }
+
+  @Throws(IOException::class)
+  fun setShoppingStaple(
+    settings: RyanOsSettings,
+    name: String,
+    normalizedName: String,
+    category: String,
+    staple: Boolean
+  ): ShoppingPayloadResult {
+    val body = JSONObject()
+      .put("name", name)
+      .put("normalizedName", normalizedName)
+      .put("category", category)
+      .put("staple", staple)
+    val rawJson = request(
+      settings = settings,
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/mobile/shopping/staples",
       body = body
     )
     val syncedAt = Instant.now().toString()
@@ -468,6 +510,32 @@ object RyanOsApi {
         item.put("checkedAt", Instant.now().toString())
       } else {
         item.remove("checkedAt")
+      }
+      root.toString()
+    }.getOrElse { rawJson }
+  }
+
+  fun optimisticallySetShoppingStaplePayload(
+    rawJson: String?,
+    normalizedName: String,
+    staple: Boolean
+  ): String? {
+    if (rawJson.isNullOrBlank()) return rawJson
+    return runCatching {
+      val root = JSONObject(rawJson)
+      val items = root.optJSONArray("items")
+      if (items != null) {
+        for (index in 0 until items.length()) {
+          val item = items.optJSONObject(index) ?: continue
+          if (item.optStringOrNull("normalizedName") == normalizedName) item.put("staple", staple)
+        }
+      }
+      val suggestions = root.optJSONArray("suggestions")
+      if (suggestions != null) {
+        for (index in 0 until suggestions.length()) {
+          val suggestion = suggestions.optJSONObject(index) ?: continue
+          if (suggestion.optStringOrNull("normalizedName") == normalizedName) suggestion.put("staple", staple)
+        }
       }
       root.toString()
     }.getOrElse { rawJson }
@@ -989,6 +1057,7 @@ object RyanOsApi {
             note = item.optStringOrNull("note"),
             checked = checked,
             checkedAt = checkedAt,
+            staple = item.optBoolean("staple", false),
             source = item.optStringOrNull("source") ?: "manual",
             sortOrder = item.optInt("sortOrder", 0),
             catalogItemId = item.optStringOrNull("catalogItemId"),
@@ -1023,7 +1092,8 @@ object RyanOsApi {
             normalizedName = item.optStringOrNull("normalizedName") ?: name.lowercase(),
             category = item.optStringOrNull("category") ?: "miscellaneous",
             lastPurchasedAt = item.optStringOrNull("lastPurchasedAt"),
-            purchaseCount = item.optInt("purchaseCount", 0)
+            purchaseCount = item.optInt("purchaseCount", 0),
+            staple = item.optBoolean("staple", false)
           )
         )
       }

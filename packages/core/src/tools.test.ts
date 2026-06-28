@@ -13,6 +13,7 @@ describe("core tools", () => {
       .list()
       .find((tool) => tool.name === "recurrence.setPolicy");
     const itemStar = tools.list().find((tool) => tool.name === "item.star");
+    const itemDelete = tools.list().find((tool) => tool.name === "item.delete");
     const shoppingAdd = tools
       .list()
       .find((tool) => tool.name === "shopping.addItems");
@@ -43,6 +44,11 @@ describe("core tools", () => {
     expect(itemStar?.metadata).toMatchObject({
       sideEffect: "state_write",
       confirmation: "low_confidence",
+      retrySafety: "safe_with_idempotency_key"
+    });
+    expect(itemDelete?.metadata).toMatchObject({
+      sideEffect: "state_write",
+      confirmation: "required",
       retrySafety: "safe_with_idempotency_key"
     });
     expect(itemCreate?.inputSchema).toMatchObject({
@@ -541,6 +547,36 @@ describe("core tools", () => {
     expect(store.itemEvents.map((event) => event.eventType)).toEqual(
       expect.arrayContaining(["starred", "unstarred"])
     );
+  });
+
+  it("soft-deletes an item and clears its star", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Remove stale task",
+      kind: "task"
+    });
+    await tools.execute("item.star", {
+      userId: "user-1",
+      itemRef: "Remove stale task",
+      starred: true,
+      starredAt: "2026-05-27T14:00:00.000Z"
+    });
+
+    const deleted = await tools.execute("item.delete", {
+      userId: "user-1",
+      itemRef: "Remove stale task",
+      deletedAt: "2026-05-27T15:00:00.000Z"
+    });
+
+    expect(deleted.status).toBe("applied");
+    const item = [...store.items.values()][0];
+    expect(item?.deletedAt).toBe("2026-05-27T15:00:00.000Z");
+    expect(item?.starredAt).toBeUndefined();
+    await expect(store.listItems({ userId: "user-1" })).resolves.toEqual([]);
+    expect(store.itemEvents.map((event) => event.eventType)).toContain("deleted");
   });
 
   it("clears a one-off item star when completing it", async () => {

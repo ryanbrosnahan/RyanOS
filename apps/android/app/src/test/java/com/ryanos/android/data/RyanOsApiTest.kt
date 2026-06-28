@@ -471,6 +471,7 @@ class RyanOsApiTest {
               "category": "household good",
               "quantity": "1",
               "checked": false,
+              "staple": true,
               "source": "manual",
               "sortOrder": 0,
               "createdAt": "2026-06-19T12:00:00.000Z",
@@ -483,6 +484,7 @@ class RyanOsApiTest {
               "category": "personal care",
               "checked": true,
               "checkedAt": "2026-06-19T13:00:00.000Z",
+              "staple": false,
               "source": "manual",
               "sortOrder": 0,
               "createdAt": "2026-06-19T12:00:00.000Z",
@@ -495,6 +497,7 @@ class RyanOsApiTest {
               "category": "household good",
               "checked": true,
               "checkedAt": "2026-06-19T12:58:00.000Z",
+              "staple": false,
               "source": "manual",
               "sortOrder": 0,
               "createdAt": "2026-06-19T12:00:00.000Z",
@@ -508,6 +511,7 @@ class RyanOsApiTest {
               "normalizedName": "vitamins",
               "category": "health",
               "purchaseCount": 3,
+              "staple": true,
               "lastPurchasedAt": "2026-06-18T12:00:00.000Z"
             }
           ]
@@ -524,11 +528,14 @@ class RyanOsApiTest {
     assertEquals("household good", snapshot.items[0].category)
     assertEquals("1", snapshot.items[0].quantity)
     assertFalse(snapshot.items[0].checked)
+    assertTrue(snapshot.items[0].staple)
     assertTrue(snapshot.items[1].checked)
+    assertFalse(snapshot.items[1].staple)
     assertEquals("2026-06-19T13:00:00.000Z", snapshot.items[1].checkedAt)
     assertFalse(snapshot.items.any { it.id == "shopping-3" })
     assertEquals("Vitamins", snapshot.suggestions[0].name)
     assertEquals(3, snapshot.suggestions[0].purchaseCount)
+    assertTrue(snapshot.suggestions[0].staple)
   }
 
   @Test

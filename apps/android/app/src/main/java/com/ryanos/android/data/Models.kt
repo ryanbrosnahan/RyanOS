@@ -273,6 +273,7 @@ data class ShoppingItem(
   val note: String?,
   val checked: Boolean,
   val checkedAt: String?,
+  val staple: Boolean,
   val source: String,
   val sortOrder: Int,
   val catalogItemId: String?,
@@ -286,7 +287,8 @@ data class ShoppingSuggestion(
   val normalizedName: String,
   val category: String,
   val lastPurchasedAt: String?,
-  val purchaseCount: Int
+  val purchaseCount: Int,
+  val staple: Boolean
 )
 
 data class VocabularyPayloadResult(

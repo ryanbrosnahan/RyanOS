@@ -72,6 +72,7 @@ export type ItemPatch = Partial<
   starredAt?: string | null;
   completedAt?: string | null;
   cancelledAt?: string | null;
+  deletedAt?: string | null;
 };
 
 export type SearchMatch<T> = {

@@ -499,6 +499,61 @@ describe("setup status", () => {
     ]);
   });
 
+  it("soft-deletes an item through the REST API and removes it from focus", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    const app = buildApp();
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/tools/item.create/invoke",
+      payload: {
+        input: {
+          userId: "local-owner",
+          title: "Delete me",
+          kind: "task"
+        }
+      }
+    });
+    const itemId = created.json().data.item.id as string;
+    await app.inject({
+      method: "POST",
+      url: `/v1/items/${itemId}/star`,
+      payload: {
+        userId: "local-owner",
+        starred: true,
+        timezone: "UTC"
+      }
+    });
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/v1/items/${itemId}`,
+      payload: {
+        userId: "local-owner",
+        timezone: "UTC",
+        deletedAt: "2026-05-27T15:00:00.000Z"
+      }
+    });
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    const plan = await app.inject({
+      method: "GET",
+      url: "/v1/daily-plan?userId=local-owner&date=2026-05-27&timezone=UTC"
+    });
+    await app.close();
+
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json().item).toMatchObject({
+      id: itemId,
+      starred: false,
+      deletedAt: "2026-05-27T15:00:00.000Z"
+    });
+    expect(listed.json().items).toEqual([]);
+    expect(plan.json().starredItems).toEqual([]);
+  });
+
   it("returns rolling seven-day recurrence progress and toggles day completion", async () => {
     vi.stubEnv("DATABASE_URL", "");
 

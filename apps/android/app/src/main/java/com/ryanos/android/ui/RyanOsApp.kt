@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MenuBook
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material.icons.filled.Widgets
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.StarBorder
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -273,6 +275,7 @@ fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
               onToggle = { item -> viewModel.toggleFocusItem(item, dailyPlan.date) },
               onToggleDay = viewModel::toggleFocusItem,
               onToggleStar = viewModel::toggleStar,
+              onDelete = viewModel::deleteTask,
               onAddTask = { openCapture(CaptureKind.TASK) },
               onOpenSettings = {
                 navController.navigate(Destination.SETTINGS.route) {
@@ -289,7 +292,8 @@ fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
               onRefresh = viewModel::refreshShopping,
               onAdd = viewModel::addShoppingItem,
               onToggle = viewModel::toggleShoppingItem,
-              onEdit = viewModel::editShoppingItem
+              onEdit = viewModel::editShoppingItem,
+              onSetStaple = viewModel::setShoppingStaple
             )
           }
           composable(Destination.VOCABULARY.route) {
@@ -378,9 +382,42 @@ private fun TodayScreen(
   onToggle: (FocusItem) -> Unit,
   onToggleDay: (FocusItem, String, Boolean) -> Unit,
   onToggleStar: (FocusItem) -> Unit,
+  onDelete: (FocusItem) -> Unit,
   onAddTask: () -> Unit,
   onOpenSettings: () -> Unit
 ) {
+  var deleteItem by remember { mutableStateOf<FocusItem?>(null) }
+
+  deleteItem?.let { item ->
+    AlertDialog(
+      onDismissRequest = { deleteItem = null },
+      icon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+      title = { Text("Delete task?") },
+      text = {
+        Text(
+          text = item.title,
+          maxLines = 3,
+          overflow = TextOverflow.Ellipsis
+        )
+      },
+      confirmButton = {
+        TextButton(
+          onClick = {
+            onDelete(item)
+            deleteItem = null
+          }
+        ) {
+          Text("Delete")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { deleteItem = null }) {
+          Text("Cancel")
+        }
+      }
+    )
+  }
+
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
     contentPadding = PaddingValues(16.dp),
@@ -418,7 +455,8 @@ private fun TodayScreen(
           emptyText = "No focus items yet.",
           onToggle = onToggle,
           onToggleDay = onToggleDay,
-          onToggleStar = onToggleStar
+          onToggleStar = onToggleStar,
+          onDelete = { deleteItem = it }
         )
       }
       item {
@@ -429,7 +467,8 @@ private fun TodayScreen(
           emptyText = "Nothing else needs attention.",
           onToggle = onToggle,
           onToggleDay = onToggleDay,
-          onToggleStar = onToggleStar
+          onToggleStar = onToggleStar,
+          onDelete = { deleteItem = it }
         )
       }
       item {
@@ -440,7 +479,8 @@ private fun TodayScreen(
           emptyText = "No open tasks.",
           onToggle = onToggle,
           onToggleDay = onToggleDay,
-          onToggleStar = onToggleStar
+          onToggleStar = onToggleStar,
+          onDelete = { deleteItem = it }
         )
       }
       item {
@@ -458,7 +498,8 @@ private fun FocusSection(
   emptyText: String,
   onToggle: (FocusItem) -> Unit,
   onToggleDay: (FocusItem, String, Boolean) -> Unit,
-  onToggleStar: (FocusItem) -> Unit
+  onToggleStar: (FocusItem) -> Unit,
+  onDelete: (FocusItem) -> Unit
 ) {
   Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
     SectionTitle(title, if (items.isEmpty()) null else items.size.toString())
@@ -474,7 +515,8 @@ private fun FocusSection(
             val completed = day.status != "completed"
             onToggleDay(item, day.date, completed)
           },
-          onToggleStar = { onToggleStar(item) }
+          onToggleStar = { onToggleStar(item) },
+          onDelete = { onDelete(item) }
         )
       }
     }
@@ -487,7 +529,8 @@ private fun FocusItemRow(
   dateKey: String,
   onToggle: () -> Unit,
   onToggleDay: (FocusRecurrenceDay) -> Unit,
-  onToggleStar: () -> Unit
+  onToggleStar: () -> Unit,
+  onDelete: () -> Unit
 ) {
   val checked = item.checkedFor(dateKey)
   ElevatedCard(
@@ -531,6 +574,13 @@ private fun FocusItemRow(
             imageVector = if (item.starred) Icons.Filled.Star else Icons.Outlined.StarBorder,
             contentDescription = if (item.starred) "Unstar" else "Star",
             tint = if (item.starred) Color(0xFFB45309) else MaterialTheme.colorScheme.onSurfaceVariant
+          )
+        }
+        IconButton(onClick = onDelete) {
+          Icon(
+            imageVector = Icons.Filled.Delete,
+            contentDescription = "Delete",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
           )
         }
       }
@@ -631,14 +681,17 @@ private fun ShoppingScreen(
   onRefresh: () -> Unit,
   onAdd: (String, String?, String?) -> Unit,
   onToggle: (ShoppingItem) -> Unit,
-  onEdit: (String, ShoppingItemPatch) -> Unit
+  onEdit: (String, ShoppingItemPatch) -> Unit,
+  onSetStaple: (String, String, String, Boolean) -> Unit
 ) {
   val categories = snapshot.categories.ifEmpty { defaultShoppingCategories }
   var name by remember { mutableStateOf("") }
   var quantity by remember { mutableStateOf("") }
   var category by remember { mutableStateOf("") }
   var editItem by remember { mutableStateOf<ShoppingItem?>(null) }
-  val openItems = snapshot.items.filterNot { it.checked }
+  val openItems = snapshot.items
+    .filterNot { it.checked }
+    .sortedWith(compareByDescending<ShoppingItem> { it.staple }.thenBy { it.name.lowercase() })
   val checkedItems = snapshot.items.filter { it.checked }
   val groupedOpen = openItems.groupBy { it.category }
 
@@ -701,7 +754,10 @@ private fun ShoppingScreen(
                 ShoppingItemRow(
                   item = item,
                   onToggle = { onToggle(item) },
-                  onEdit = { editItem = item }
+                  onEdit = { editItem = item },
+                  onToggleStaple = {
+                    onSetStaple(item.name, item.normalizedName, item.category, !item.staple)
+                  }
                 )
               }
             }
@@ -715,7 +771,10 @@ private fun ShoppingScreen(
                 ShoppingItemRow(
                   item = item,
                   onToggle = { onToggle(item) },
-                  onEdit = { editItem = item }
+                  onEdit = { editItem = item },
+                  onToggleStaple = {
+                    onSetStaple(item.name, item.normalizedName, item.category, !item.staple)
+                  }
                 )
               }
             }
@@ -727,13 +786,42 @@ private fun ShoppingScreen(
           Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SectionTitle("Staples")
             snapshot.suggestions.take(8).forEach { suggestion ->
-              AssistChip(
-                onClick = {
-                  name = suggestion.name
-                  category = suggestion.category
-                },
-                label = { Text("${suggestion.name} / ${displayCategory(suggestion.category)}") }
-              )
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+              ) {
+                AssistChip(
+                  modifier = Modifier.weight(1f),
+                  onClick = {
+                    name = suggestion.name
+                    category = suggestion.category
+                  },
+                  label = {
+                    Text(
+                      text = "${suggestion.name} / ${displayCategory(suggestion.category)}",
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis
+                    )
+                  }
+                )
+                IconButton(
+                  onClick = {
+                    onSetStaple(
+                      suggestion.name,
+                      suggestion.normalizedName,
+                      suggestion.category,
+                      !suggestion.staple
+                    )
+                  }
+                ) {
+                  Icon(
+                    imageVector = if (suggestion.staple) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                    contentDescription = if (suggestion.staple) "Unset staple" else "Set staple",
+                    tint = if (suggestion.staple) Color(0xFFB45309) else MaterialTheme.colorScheme.onSurfaceVariant
+                  )
+                }
+              }
             }
           }
         }
@@ -797,7 +885,12 @@ private fun QuickShoppingForm(
 }
 
 @Composable
-private fun ShoppingItemRow(item: ShoppingItem, onToggle: () -> Unit, onEdit: () -> Unit) {
+private fun ShoppingItemRow(
+  item: ShoppingItem,
+  onToggle: () -> Unit,
+  onEdit: () -> Unit,
+  onToggleStaple: () -> Unit
+) {
   ElevatedCard {
     Row(
       modifier = Modifier
@@ -827,6 +920,13 @@ private fun ShoppingItemRow(item: ShoppingItem, onToggle: () -> Unit, onEdit: ()
           color = MaterialTheme.colorScheme.onSurfaceVariant,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis
+        )
+      }
+      IconButton(onClick = onToggleStaple) {
+        Icon(
+          imageVector = if (item.staple) Icons.Filled.Star else Icons.Outlined.StarBorder,
+          contentDescription = if (item.staple) "Unset staple" else "Set staple",
+          tint = if (item.staple) Color(0xFFB45309) else MaterialTheme.colorScheme.onSurfaceVariant
         )
       }
       IconButton(onClick = onEdit) {

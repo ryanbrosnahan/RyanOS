@@ -1391,6 +1391,76 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
   });
 
   registry.register({
+    name: "item.delete",
+    description: "Soft-delete an item so it leaves active lists, focus, and widgets while preserving history.",
+    metadata: {
+      sideEffect: "state_write",
+      confirmation: "required",
+      retrySafety: "safe_with_idempotency_key",
+      descriptionForModel: "Use only when the user explicitly wants to delete or remove a task from RyanOS."
+    },
+    inputSchema: toolEnvelopeSchema.extend({
+      userId: userIdSchema,
+      itemRef: z.string().min(1),
+      deletedAt: z.string().optional(),
+      note: z.string().optional()
+    }),
+    handler: async (input) => {
+      if (input.idempotencyKey) {
+        const replayed = await store.findItemEventByIdempotencyKey(input.userId, input.idempotencyKey);
+        if (replayed) {
+          return {
+            status: "replayed",
+            data: { event: replayed },
+            eventIds: [replayed.id],
+            messageForUser: "That item was already deleted."
+          };
+        }
+      }
+
+      const matches = await store.searchItems(input.userId, input.itemRef, 3);
+      const best = matches[0];
+      if (!best || best.confidence < 0.75) {
+        return {
+          status: "needs_clarification",
+          clarificationPrompt: `Which item should I delete for "${input.itemRef}"?`
+        };
+      }
+
+      const deletedAt = input.deletedAt ?? nowIso();
+      const item = await store.updateItem(best.record.id, {
+        deletedAt,
+        starredAt: null
+      });
+      const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+        userId: input.userId,
+        itemId: item.id,
+        eventType: "deleted",
+        occurredAt: deletedAt,
+        payload: { note: input.note ?? "", matchedBy: best.reason }
+      };
+      if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
+      if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
+      const event = await store.addItemEvent(eventInput);
+      const auditLog = await audit(store, {
+        userId: input.userId,
+        action: "item.delete",
+        toolName: "item.delete",
+        sourceMessageId: input.sourceMessageId,
+        request: input,
+        result: { itemId: item.id, eventId: event.id }
+      });
+      return {
+        status: "applied",
+        data: { item },
+        eventIds: [event.id],
+        auditId: auditLog.id,
+        messageForUser: `Deleted "${item.title}".`
+      };
+    }
+  });
+
+  registry.register({
     name: "item.progress.add",
     description: "Add a timestamped progress note to an item without completing it.",
     metadata: {

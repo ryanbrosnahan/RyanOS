@@ -3,15 +3,26 @@ import { nowIso } from "@ryanos/shared";
 import { readFile } from "node:fs/promises";
 
 const apiUrl = process.env.RYANOS_API_URL?.trim() || "http://api:4000";
-const rfpIngestToken = process.env.RYANOS_RFP_INGEST_TOKEN?.trim();
+const codexAutomationIngestToken = process.env.RYANOS_CODEX_AUTOMATION_INGEST_TOKEN?.trim()
+  || process.env.RYANOS_RFP_INGEST_TOKEN?.trim();
 const emailScanEnabled = process.env.EMAIL_TRIAGE_ENABLED !== "false";
 const emailScanIntervalMinutes = Math.min(
   Math.max(Number(process.env.EMAIL_SCAN_INTERVAL_MINUTES ?? "60") || 60, 5),
   1440
 );
-const rfpReportIngestEnabled = process.env.RFP_REPORT_INGEST_ENABLED !== "false";
+const rfpReportIngestEnabled = (
+  process.env.CODEX_AUTOMATION_REPORT_INGEST_ENABLED
+    ?? process.env.RFP_REPORT_INGEST_ENABLED
+) !== "false";
 const rfpReportIngestIntervalMinutes = Math.min(
-  Math.max(Number(process.env.RFP_REPORT_INGEST_INTERVAL_MINUTES ?? "60") || 60, 5),
+  Math.max(
+    Number(
+      process.env.CODEX_AUTOMATION_REPORT_INGEST_INTERVAL_MINUTES
+        ?? process.env.RFP_REPORT_INGEST_INTERVAL_MINUTES
+        ?? "60"
+    ) || 60,
+    5
+  ),
   1440
 );
 
@@ -27,7 +38,8 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 function configuredReportSources(): ReportSource[] {
-  const raw = process.env.RYANOS_RFP_REPORT_SOURCES?.trim();
+  const raw = process.env.RYANOS_CODEX_AUTOMATION_REPORT_SOURCES?.trim()
+    || process.env.RYANOS_RFP_REPORT_SOURCES?.trim();
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -81,7 +93,7 @@ const tasks: TaskList = {
     const result = await requestEmailScan(body);
     helpers.logger.info(`Email scan result: ${JSON.stringify(result)}`);
   },
-  "ryanos.rfp_reports.ingest": async (payload, helpers) => {
+  "ryanos.codex_automations.ingest": async (payload, helpers) => {
     const input = asRecord(payload);
     const sources = Array.isArray(input.sources)
       ? input.sources.flatMap((entry): ReportSource[] => {
@@ -97,7 +109,7 @@ const tasks: TaskList = {
         })
       : configuredReportSources();
     if (sources.length === 0) {
-      helpers.logger.info("No RFP report sources configured.");
+      helpers.logger.info("No Codex automation report sources configured.");
       return;
     }
     const results = [];
@@ -106,7 +118,10 @@ const tasks: TaskList = {
       const result = await requestOpportunityReportIngest(body);
       results.push({ path: source.path, result });
     }
-    helpers.logger.info(`RFP report ingest results: ${JSON.stringify(results)}`);
+    helpers.logger.info(`Codex automation report ingest results: ${JSON.stringify(results)}`);
+  },
+  "ryanos.rfp_reports.ingest": async (payload, helpers) => {
+    await tasks["ryanos.codex_automations.ingest"]!(payload, helpers);
   },
   "ryanos.daily_plan.prompt": async (payload, helpers) => {
     helpers.logger.info(`Daily plan prompt task is retired; ignoring payload: ${JSON.stringify(payload)}`);
@@ -135,12 +150,12 @@ async function requestOpportunityReportIngest(body: Record<string, unknown>): Pr
   const headers: Record<string, string> = {
     "content-type": "application/json"
   };
-  if (rfpIngestToken) {
-    headers.authorization = `Bearer ${rfpIngestToken}`;
+  if (codexAutomationIngestToken) {
+    headers.authorization = `Bearer ${codexAutomationIngestToken}`;
   }
   const response = await fetch(
-    rfpIngestToken
-      ? `${apiUrl}/v1/automation/rfp-reports/ingest`
+    codexAutomationIngestToken
+      ? `${apiUrl}/v1/automation/codex-automations/ingest`
       : `${apiUrl}/v1/opportunity-proposals/ingest`,
     {
       method: "POST",
@@ -202,9 +217,9 @@ if (rfpReportIngestEnabled && reportSources.length > 0) {
         const result = await requestOpportunityReportIngest(body);
         results.push({ path: source.path, result });
       }
-      console.log(`RyanOS RFP report ingest completed: ${JSON.stringify(results)}`);
+      console.log(`RyanOS Codex automation report ingest completed: ${JSON.stringify(results)}`);
     } catch (err) {
-      console.error(`RyanOS RFP report ingest failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`RyanOS Codex automation report ingest failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
   setTimeout(() => {

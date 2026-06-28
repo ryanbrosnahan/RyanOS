@@ -383,6 +383,8 @@ function messageForAi(input: {
       "RyanOS Gmail triage.",
       "Decide whether this unread inbox email warrants a reply, follow-up, scheduling action, delegation, or another concrete RyanOS to-do.",
       "If action is warranted, call email.propose_action exactly once with concise to-do fields.",
+      "Use initialProgressNote only when the email states useful progress that already happened, such as a message sent, response received, or vendor contacted.",
+      "Use checklistItems only for concrete flat substeps the email clearly implies; do not invent speculative steps.",
       "If no action is warranted, do not call any tool.",
       "Do not send email, create Gmail drafts, mark messages read, label messages, or create RyanOS items.",
       "",

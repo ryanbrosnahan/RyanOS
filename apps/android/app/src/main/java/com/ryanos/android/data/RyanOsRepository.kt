@@ -500,6 +500,21 @@ class RyanOsRepository private constructor(context: Context) {
     }
   }
 
+  suspend fun deleteItemAndRefreshToday(itemId: String): DailyPlanSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext refreshDailyPlan()
+    runCatching {
+      RyanOsApi.deleteItem(settings, itemId)
+      refresh()
+      refreshDailyPlan()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[DAILY_PLAN_LAST_ERROR] = error.userFacingMessage()
+      }
+      dailyPlanSnapshotFlow.first()
+    }
+  }
+
   suspend fun createShoppingItem(name: String, category: String?, quantity: String?): ShoppingSnapshot =
     withContext(Dispatchers.IO) {
       val settings = settingsFlow.first()
@@ -525,6 +540,45 @@ class RyanOsRepository private constructor(context: Context) {
     if (!settings.isConfigured) return@withContext refreshShopping()
     runCatching {
       val result = RyanOsApi.patchShoppingItem(settings, itemId, patch)
+      dataStore.edit { preferences ->
+        preferences[CACHED_SHOPPING_PAYLOAD] = result.rawJson
+        preferences[SHOPPING_LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()
+        preferences.remove(SHOPPING_LAST_ERROR)
+      }
+      shoppingSnapshotFlow.first()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[SHOPPING_LAST_ERROR] = error.userFacingMessage()
+      }
+      shoppingSnapshotFlow.first()
+    }
+  }
+
+  suspend fun setShoppingStaple(
+    name: String,
+    normalizedName: String,
+    category: String,
+    staple: Boolean
+  ): ShoppingSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext refreshShopping()
+    dataStore.edit { preferences ->
+      val updatedPayload = RyanOsApi.optimisticallySetShoppingStaplePayload(
+        rawJson = preferences[CACHED_SHOPPING_PAYLOAD],
+        normalizedName = normalizedName,
+        staple = staple
+      )
+      if (!updatedPayload.isNullOrBlank()) preferences[CACHED_SHOPPING_PAYLOAD] = updatedPayload
+      preferences.remove(SHOPPING_LAST_ERROR)
+    }
+    runCatching {
+      val result = RyanOsApi.setShoppingStaple(
+        settings = settings,
+        name = name,
+        normalizedName = normalizedName,
+        category = category,
+        staple = staple
+      )
       dataStore.edit { preferences ->
         preferences[CACHED_SHOPPING_PAYLOAD] = result.rawJson
         preferences[SHOPPING_LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()

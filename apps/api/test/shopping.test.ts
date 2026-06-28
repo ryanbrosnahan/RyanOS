@@ -10,6 +10,7 @@ type ShoppingItem = {
   quantity?: string;
   checked: boolean;
   checkedAt?: string;
+  staple: boolean;
 };
 
 type ShoppingPayload = {
@@ -20,6 +21,7 @@ type ShoppingPayload = {
     normalizedName: string;
     category: string;
     purchaseCount: number;
+    staple: boolean;
     lastPurchasedAt?: string;
   }>;
 };
@@ -75,7 +77,8 @@ describe("shopping list API", () => {
       normalizedName: "toothpaste",
       category: "personal care",
       quantity: "2",
-      checked: false
+      checked: false,
+      staple: false
     });
     expect(addPayload.categories).toContain("household good");
     expect(checked.statusCode).toBe(200);
@@ -173,6 +176,59 @@ describe("shopping list API", () => {
         })
       ])
     );
+  });
+
+  it("sets and unsets shopping staples on catalog-backed items", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const app = buildApp();
+
+    const added = await app.inject({
+      method: "POST",
+      url: "/v1/shopping/items",
+      payload: {
+        userId: "local-owner",
+        name: "Dish detergent",
+        category: "household good"
+      }
+    });
+    const item = (added.json() as { item: ShoppingItem }).item;
+
+    const stapled = await app.inject({
+      method: "POST",
+      url: "/v1/shopping/staples",
+      payload: {
+        userId: "local-owner",
+        name: item.name,
+        normalizedName: item.normalizedName,
+        category: item.category,
+        staple: true
+      }
+    });
+    const stapledPayload = stapled.json() as ShoppingPayload & { item?: ShoppingItem };
+
+    const unstapled = await app.inject({
+      method: "POST",
+      url: "/v1/mobile/shopping/staples",
+      payload: {
+        userId: "local-owner",
+        name: item.name,
+        normalizedName: item.normalizedName,
+        category: item.category,
+        staple: false
+      }
+    });
+    const unstapledPayload = unstapled.json() as ShoppingPayload;
+    await app.close();
+
+    expect(stapled.statusCode).toBe(200);
+    expect(itemNamed(stapledPayload, "Dish detergent")).toMatchObject({
+      staple: true
+    });
+    expect(stapledPayload.suggestions.every((suggestion) => suggestion.normalizedName !== "dish detergent")).toBe(true);
+    expect(unstapled.statusCode).toBe(200);
+    expect(itemNamed(unstapledPayload, "Dish detergent")).toMatchObject({
+      staple: false
+    });
   });
 
   it("exposes the same list operations for the mobile widget", async () => {

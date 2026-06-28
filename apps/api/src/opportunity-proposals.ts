@@ -47,6 +47,8 @@ export const opportunityCandidateSchema = z.object({
   summary: z.string().trim().max(5000).optional(),
   rationale: z.string().trim().max(2000).optional(),
   recommendedAction: z.string().trim().max(1000).optional(),
+  initialProgressNote: z.string().trim().min(1).max(4000).optional(),
+  checklistItems: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
   valueEstimate: z.string().trim().max(200).optional(),
   promoteToRyanOS: z.boolean().default(false),
   urgent: z.boolean().default(false),
@@ -87,6 +89,8 @@ type NormalizedOpportunityCandidate = {
   valueEstimate?: string;
   recommendedAction?: string;
   rationale?: string;
+  initialProgressNote?: string;
+  checklistItems?: string[];
 };
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -125,6 +129,13 @@ function uniqueStrings(values: string[]): string[] {
     output.push(trimmed);
   }
   return output;
+}
+
+function compactChecklistItems(values: string[] | undefined): string[] {
+  return uniqueStrings(values ?? [])
+    .map((value) => compactText(value, 500))
+    .filter((value): value is string => value !== undefined)
+    .slice(0, 20);
 }
 
 function sourceUrlsForCandidate(candidate: OpportunityCandidateInput): string[] {
@@ -185,7 +196,9 @@ function normalizeCandidate(input: {
     sourceUrls,
     stableRef: idempotencyKey,
     promoteToRyanOS: input.candidate.promoteToRyanOS,
-    urgent: input.candidate.urgent
+    urgent: input.candidate.urgent,
+    initialProgressNote: compactText(input.candidate.initialProgressNote, 4000),
+    checklistItems: compactChecklistItems(input.candidate.checklistItems)
   });
   const normalized: NormalizedOpportunityCandidate = {
     stableRef: idempotencyKey,
@@ -211,6 +224,10 @@ function normalizeCandidate(input: {
   if (recommendedAction !== undefined) normalized.recommendedAction = recommendedAction;
   const rationale = compactText(input.candidate.rationale, 2000);
   if (rationale !== undefined) normalized.rationale = rationale;
+  const initialProgressNote = compactText(input.candidate.initialProgressNote, 4000);
+  if (initialProgressNote !== undefined) normalized.initialProgressNote = initialProgressNote;
+  const checklistItems = compactChecklistItems(input.candidate.checklistItems);
+  if (checklistItems.length > 0) normalized.checklistItems = checklistItems;
   return normalized;
 }
 
@@ -239,6 +256,18 @@ function itemBodyForProposal(
     sourceUrlMetadata(source).length > 1 ? `Other sources: ${sourceUrlMetadata(source).slice(1).join(", ")}` : undefined
   ].filter((line): line is string => typeof line === "string" && line.trim().length > 0);
   return lines.length > 0 ? lines.join("\n\n") : undefined;
+}
+
+function initialProgressNoteForProposal(proposal: OpportunityProposal): string | undefined {
+  const value = asRecord(proposal.metadata)?.initialProgressNote;
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function checklistItemsForProposal(proposal: OpportunityProposal): string[] {
+  const values = asRecord(proposal.metadata)?.checklistItems;
+  return Array.isArray(values)
+    ? values.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
 }
 
 async function getOpportunityProposalForUser(input: {
@@ -456,6 +485,64 @@ export async function acceptOpportunityProposal(input: {
       opportunityId: opportunity.id
     })
   });
+  const initialProgressNote = initialProgressNoteForProposal(proposal);
+  if (initialProgressNote !== undefined) {
+    const note = await input.store.createItemProgressNote({
+      userId: input.userId,
+      itemId: item.id,
+      body: initialProgressNote,
+      metadata: asJsonObject({
+        source: "opportunity_proposal",
+        proposalId: proposal.id,
+        sourceId: proposal.sourceId,
+        opportunityId: opportunity.id
+      })
+    });
+    await input.store.addItemEvent({
+      userId: input.userId,
+      itemId: item.id,
+      eventType: "progress_note_added",
+      occurredAt: note.occurredAt,
+      idempotencyKey: `opportunity-proposal:${proposal.id}:initial-progress-note`,
+      payload: asJsonObject({
+        source: "opportunity_proposal",
+        proposalId: proposal.id,
+        progressNoteId: note.id
+      })
+    });
+  }
+  const checklistItems = checklistItemsForProposal(proposal);
+  if (checklistItems.length > 0) {
+    const createdChecklistItems: Array<{ id: UUID }> = [];
+    for (const [index, title] of checklistItems.entries()) {
+      createdChecklistItems.push(
+        await input.store.createItemChecklistItem({
+          userId: input.userId,
+          itemId: item.id,
+          title,
+          sortOrder: index,
+          metadata: asJsonObject({
+            source: "opportunity_proposal",
+            proposalId: proposal.id,
+            sourceId: proposal.sourceId,
+            opportunityId: opportunity.id
+          })
+        })
+      );
+    }
+    await input.store.addItemEvent({
+      userId: input.userId,
+      itemId: item.id,
+      eventType: "checklist_item_added",
+      occurredAt: nowIso(),
+      idempotencyKey: `opportunity-proposal:${proposal.id}:checklist`,
+      payload: asJsonObject({
+        source: "opportunity_proposal",
+        proposalId: proposal.id,
+        checklistItemIds: createdChecklistItems.map((checklistItem) => checklistItem.id)
+      })
+    });
+  }
   await input.store.addSourceLink({
     userId: input.userId,
     sourceId: proposal.sourceId,

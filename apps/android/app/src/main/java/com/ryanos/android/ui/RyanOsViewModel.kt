@@ -125,6 +125,15 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
     }
   }
 
+  fun deleteTask(item: FocusItem) {
+    launchWork("Deleting task") {
+      repository.deleteItemAndRefreshToday(item.id)
+      repository.refresh()
+      updateWidgets()
+      statusText = "Task deleted"
+    }
+  }
+
   fun addShoppingItem(name: String, category: String?, quantity: String?) {
     val cleanName = name.trim()
     if (cleanName.isBlank()) return
@@ -152,6 +161,14 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
       repository.patchShoppingItem(itemId, patch)
       updateWidgets()
       statusText = "Shopping item saved"
+    }
+  }
+
+  fun setShoppingStaple(name: String, normalizedName: String, category: String, staple: Boolean) {
+    launchWork(if (staple) "Setting staple" else "Unsetting staple") {
+      repository.setShoppingStaple(name, normalizedName, category, staple)
+      updateWidgets()
+      statusText = if (staple) "Shopping staple set" else "Shopping staple removed"
     }
   }
 

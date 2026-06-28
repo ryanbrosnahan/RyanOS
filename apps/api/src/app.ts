@@ -249,6 +249,14 @@ const shoppingCheckItemBodySchema = z.object({
   checked: z.boolean()
 });
 
+const shoppingStapleBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  name: z.string().min(1),
+  normalizedName: z.string().min(1).optional(),
+  category: shoppingCategorySchema.optional(),
+  staple: z.boolean()
+});
+
 const shoppingSuggestionsQuerySchema = z.object({
   userId: z.string().default("local-owner"),
   limit: z.coerce.number().int().min(1).max(50).default(12)
@@ -413,6 +421,12 @@ const starItemBodySchema = z.object({
   userId: z.string().default("local-owner"),
   starred: z.boolean(),
   starredAt: z.string().optional(),
+  timezone: z.string().default("America/Chicago")
+});
+
+const deleteItemBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  deletedAt: z.string().optional(),
   timezone: z.string().default("America/Chicago")
 });
 
@@ -992,8 +1006,9 @@ const integrationNames: Record<IntegrationId, string> = {
 };
 
 const codexRfpProvider = "codex_rfp_ingest";
-const codexRfpTokenPrefix = "ryanos_rfp";
-const codexRfpEndpointPath = "/api/v1/automation/rfp-reports/ingest";
+const codexAutomationTokenPrefix = "ryanos_codex";
+const codexLegacyRfpTokenPrefix = "ryanos_rfp";
+const codexRfpEndpointPath = "/api/v1/automation/codex-automations/ingest";
 
 function codexRfpMetadata(account: ProviderAccount | undefined): Record<string, unknown> {
   return asRecord(account?.metadata) ?? {};
@@ -1008,20 +1023,21 @@ function createCodexRfpToken(): {
 } {
   const tokenId = randomBytes(8).toString("hex");
   const secret = randomBytes(24).toString("base64url");
-  const token = `${codexRfpTokenPrefix}_${tokenId}_${secret}`;
+  const token = `${codexAutomationTokenPrefix}_${tokenId}_${secret}`;
   return {
     token,
     tokenId,
     secret,
     secretHash: hashCodexRfpSecret(tokenId, secret),
-    tokenPreview: `${codexRfpTokenPrefix}_${tokenId}_...${secret.slice(-4)}`
+    tokenPreview: `${codexAutomationTokenPrefix}_${tokenId}_...${secret.slice(-4)}`
   };
 }
 
 function parseCodexRfpToken(raw: string | undefined): { tokenId: string; secret: string } | undefined {
   const value = raw?.trim();
   if (!value) return undefined;
-  const match = value.match(/^ryanos_rfp_([a-f0-9]{16})_(.+)$/);
+  const prefixPattern = `(?:${codexAutomationTokenPrefix}|${codexLegacyRfpTokenPrefix})`;
+  const match = value.match(new RegExp(`^${prefixPattern}_([a-f0-9]{16})_(.+)$`));
   if (!match) return undefined;
   return {
     tokenId: match[1]!,
@@ -1590,6 +1606,7 @@ export function buildApp(options: {
       path.startsWith("/auth/") ||
       path === "/v1/webhooks/telegram" ||
       path === "/v1/inbound/telegram" ||
+      path === "/v1/automation/codex-automations/ingest" ||
       path === "/v1/automation/rfp-reports/ingest"
     );
   }
@@ -1908,7 +1925,7 @@ export function buildApp(options: {
     };
   });
 
-  app.post("/v1/automation/rfp-reports/ingest", async (request, reply) => {
+  async function codexAutomationIngestHandler(request: FastifyRequest, reply: FastifyReply) {
     const account = await authenticateCodexRfpIngestToken(request, reply);
     if (!account) return;
     try {
@@ -1951,7 +1968,10 @@ export function buildApp(options: {
         error: err instanceof Error ? err.message : String(err)
       };
     }
-  });
+  }
+
+  app.post("/v1/automation/codex-automations/ingest", codexAutomationIngestHandler);
+  app.post("/v1/automation/rfp-reports/ingest", codexAutomationIngestHandler);
 
   app.post("/v1/admin/integrations/telegram/bot-token", async (request: RyanOsRequest, reply) => {
     if (!requireSuperadmin(request, reply)) return;
@@ -3066,6 +3086,7 @@ export function buildApp(options: {
     source: string;
     sortOrder: number;
     catalogItemId?: string;
+    staple: boolean;
     createdAt: string;
     updatedAt: string;
   };
@@ -3077,9 +3098,34 @@ export function buildApp(options: {
     category: string;
     lastPurchasedAt?: string;
     purchaseCount: number;
+    staple: boolean;
   };
 
-  function shoppingItemView(item: ShoppingListItem): ShoppingItemView {
+  function shoppingCatalogStaple(item: ShoppingCatalogItem | undefined): boolean {
+    return asRecord(item?.metadata)?.staple === true;
+  }
+
+  function shoppingItemStaple(item: ShoppingListItem, catalogItem?: ShoppingCatalogItem): boolean {
+    return shoppingCatalogStaple(catalogItem) || asRecord(item.metadata)?.staple === true;
+  }
+
+  function shoppingMetadataWithStaple(metadata: JsonObject | undefined, staple: boolean): JsonObject {
+    const next = { ...(asRecord(metadata) ?? {}) };
+    if (staple) next.staple = true;
+    else delete next.staple;
+    return asJsonObject(next);
+  }
+
+  function compareShoppingCatalogItems(a: ShoppingCatalogItem, b: ShoppingCatalogItem): number {
+    const aStaple = shoppingCatalogStaple(a);
+    const bStaple = shoppingCatalogStaple(b);
+    if (aStaple !== bStaple) return aStaple ? -1 : 1;
+    const recency = (b.lastPurchasedAt ?? "").localeCompare(a.lastPurchasedAt ?? "");
+    if (recency !== 0) return recency;
+    return b.purchaseCount - a.purchaseCount;
+  }
+
+  function shoppingItemView(item: ShoppingListItem, catalogItem?: ShoppingCatalogItem): ShoppingItemView {
     const view: ShoppingItemView = {
       id: item.id,
       name: item.name,
@@ -3088,6 +3134,7 @@ export function buildApp(options: {
       checked: item.checkedAt !== undefined,
       source: item.source,
       sortOrder: item.sortOrder,
+      staple: shoppingItemStaple(item, catalogItem),
       createdAt: item.createdAt,
       updatedAt: item.updatedAt
     };
@@ -3104,7 +3151,8 @@ export function buildApp(options: {
       name: item.name,
       normalizedName: item.normalizedName,
       category: item.defaultCategory,
-      purchaseCount: item.purchaseCount
+      purchaseCount: item.purchaseCount,
+      staple: shoppingCatalogStaple(item)
     };
     if (item.lastPurchasedAt !== undefined) view.lastPurchasedAt = item.lastPurchasedAt;
     return view;
@@ -3120,6 +3168,7 @@ export function buildApp(options: {
       limit: Math.max(input.limit * 3, input.limit)
     });
     return catalogItems
+      .sort(compareShoppingCatalogItems)
       .filter((item) => !input.activeNormalizedNames.has(item.normalizedName))
       .slice(0, input.limit)
       .map(shoppingSuggestionView);
@@ -3137,6 +3186,8 @@ export function buildApp(options: {
       checkedAfter: shoppingLingerAfter(input.lingerHours),
       limit: 200
     });
+    const catalogItems = await store.listShoppingCatalogItems({ userId: input.userId, limit: 200 });
+    const catalogByName = new Map(catalogItems.map((item) => [item.normalizedName, item]));
     const activeNormalizedNames = new Set(items.map((item) => item.normalizedName));
     return {
       list: {
@@ -3145,7 +3196,7 @@ export function buildApp(options: {
       },
       categories: shoppingCategories,
       lingerHours: input.lingerHours,
-      items: items.map(shoppingItemView),
+      items: items.map((item) => shoppingItemView(item, catalogByName.get(item.normalizedName))),
       suggestions: await shoppingSuggestions({
         userId: input.userId,
         activeNormalizedNames,
@@ -3172,6 +3223,51 @@ export function buildApp(options: {
     });
   }
 
+  async function updateActiveShoppingItemsStaple(input: {
+    userId: string;
+    normalizedName: string;
+    catalogItem: ShoppingCatalogItem;
+  }): Promise<void> {
+    const list = await store.getDefaultShoppingList(input.userId);
+    const items = await store.listShoppingItems({
+      userId: input.userId,
+      listId: list.id,
+      checkedAfter: shoppingLingerAfter(24),
+      limit: 200
+    });
+    for (const item of items.filter((candidate) => candidate.normalizedName === input.normalizedName)) {
+      await store.updateShoppingItem(item.id, {
+        catalogItemId: input.catalogItem.id,
+        metadata: shoppingMetadataWithStaple(item.metadata, shoppingCatalogStaple(input.catalogItem))
+      });
+    }
+  }
+
+  async function setShoppingStaplePayload(body: z.infer<typeof shoppingStapleBodySchema>) {
+    const normalizedName = body.normalizedName ?? normalizeShoppingName(body.name);
+    const existing = await findShoppingCatalogItem(body.userId, normalizedName);
+    const name = body.name.trim();
+    const catalogInput: Parameters<typeof store.upsertShoppingCatalogItem>[0] = {
+      userId: body.userId,
+      name,
+      normalizedName,
+      defaultCategory: body.category ?? existing?.defaultCategory ?? inferShoppingCategory(name),
+      purchaseCount: existing?.purchaseCount ?? 0,
+      metadata: shoppingMetadataWithStaple(existing?.metadata, body.staple)
+    };
+    if (existing?.lastPurchasedAt !== undefined) catalogInput.lastPurchasedAt = existing.lastPurchasedAt;
+    const catalogItem = await store.upsertShoppingCatalogItem(catalogInput);
+    await updateActiveShoppingItemsStaple({
+      userId: body.userId,
+      normalizedName,
+      catalogItem
+    });
+    return {
+      catalogItem: shoppingSuggestionView(catalogItem),
+      ...(await shoppingListPayload({ userId: body.userId, lingerHours: 24, suggestions: 12 }))
+    };
+  }
+
   async function createShoppingItemPayload(body: z.infer<typeof shoppingCreateItemBodySchema>) {
     const list = await store.getDefaultShoppingList(body.userId);
     const normalizedName = normalizeShoppingName(body.name);
@@ -3190,11 +3286,13 @@ export function buildApp(options: {
         normalizedName,
         category,
         checkedAt: null,
+        ...(catalogItem !== undefined ? { catalogItemId: catalogItem.id } : {}),
+        metadata: shoppingMetadataWithStaple(existing.metadata, shoppingCatalogStaple(catalogItem)),
         ...(body.quantity !== undefined ? { quantity: body.quantity } : {}),
         ...(body.note !== undefined ? { note: body.note } : {})
       });
       return {
-        item: shoppingItemView(updated),
+        item: shoppingItemView(updated, catalogItem),
         ...(await shoppingListPayload({ userId: body.userId, lingerHours: 24, suggestions: 12 }))
       };
     }
@@ -3205,14 +3303,15 @@ export function buildApp(options: {
       name: body.name.trim(),
       normalizedName,
       category,
-      source: body.source
+      source: body.source,
+      metadata: shoppingMetadataWithStaple(undefined, shoppingCatalogStaple(catalogItem))
     };
     if (catalogItem !== undefined) createData.catalogItemId = catalogItem.id;
     if (body.quantity !== undefined) createData.quantity = body.quantity;
     if (body.note !== undefined) createData.note = body.note;
     const created = await store.createShoppingItem(createData);
     return {
-      item: shoppingItemView(created),
+      item: shoppingItemView(created, catalogItem),
       ...(await shoppingListPayload({ userId: body.userId, lingerHours: 24, suggestions: 12 }))
     };
   }
@@ -3247,8 +3346,9 @@ export function buildApp(options: {
     if (body.checked && checkedAt !== null) {
       await rememberShoppingPurchase(updated, checkedAt);
     }
+    const catalogItem = await findShoppingCatalogItem(body.userId, updated.normalizedName);
     return {
-      item: shoppingItemView(updated),
+      item: shoppingItemView(updated, catalogItem),
       ...(await shoppingListPayload({ userId: body.userId, lingerHours: 24, suggestions: 12 }))
     };
   }
@@ -3573,16 +3673,22 @@ export function buildApp(options: {
       return { error: "Shopping item not found" };
     }
     const patch: Parameters<typeof store.updateShoppingItem>[1] = {};
+    let catalogItem: ShoppingCatalogItem | undefined;
     if (body.name !== undefined) {
+      const normalizedName = normalizeShoppingName(body.name);
       patch.name = body.name.trim();
-      patch.normalizedName = normalizeShoppingName(body.name);
+      patch.normalizedName = normalizedName;
+      catalogItem = await findShoppingCatalogItem(body.userId, normalizedName);
+      patch.catalogItemId = catalogItem?.id ?? null;
+      patch.metadata = shoppingMetadataWithStaple(existing.metadata, shoppingCatalogStaple(catalogItem));
     }
     if (body.category !== undefined) patch.category = body.category;
     if (body.quantity !== undefined) patch.quantity = body.quantity;
     if (body.note !== undefined) patch.note = body.note;
     const updated = await store.updateShoppingItem(params.itemId, patch);
+    catalogItem ??= await findShoppingCatalogItem(body.userId, updated.normalizedName);
     return {
-      item: shoppingItemView(updated),
+      item: shoppingItemView(updated, catalogItem),
       ...(await shoppingListPayload({ userId: body.userId, lingerHours: 24, suggestions: 12 }))
     };
   });
@@ -3591,6 +3697,11 @@ export function buildApp(options: {
     const params = shoppingItemParamsSchema.parse(request.params);
     const body = shoppingCheckItemBodySchema.parse(request.body);
     return checkShoppingItemPayload(params.itemId, body, reply);
+  });
+
+  app.post("/v1/shopping/staples", async (request) => {
+    const body = shoppingStapleBodySchema.parse(request.body);
+    return setShoppingStaplePayload(body);
   });
 
   app.get("/v1/shopping/suggestions", async (request) => {
@@ -3628,6 +3739,11 @@ export function buildApp(options: {
     const params = shoppingItemParamsSchema.parse(request.params);
     const body = shoppingCheckItemBodySchema.parse(request.body);
     return checkShoppingItemPayload(params.itemId, body, reply);
+  });
+
+  app.post("/v1/mobile/shopping/staples", async (request) => {
+    const body = shoppingStapleBodySchema.parse(request.body);
+    return setShoppingStaplePayload(body);
   });
 
   app.get("/v1/vocabulary/entries", async (request) => {
@@ -4263,6 +4379,30 @@ export function buildApp(options: {
       date: referenceDateKey,
       timezone: query.timezone,
       items: visibleItems
+    };
+  });
+
+  app.delete("/v1/items/:itemId", async (request, reply) => {
+    const params = itemActionParamsSchema.parse(request.params);
+    const body = deleteItemBodySchema.parse(request.body ?? {});
+    const item = await itemForUser(body.userId, params.itemId);
+    if (!item) {
+      reply.code(404);
+      return { error: `Item not found: ${params.itemId}` };
+    }
+    const result = await tools.execute("item.delete", {
+      userId: body.userId,
+      itemRef: params.itemId,
+      deletedAt: body.deletedAt
+    });
+    if (result.status === "failed" || result.status === "rejected" || result.status === "needs_clarification") {
+      reply.code(400);
+      return { result };
+    }
+    const deleted = await store.getItem(params.itemId);
+    return {
+      result,
+      item: deleted ? await itemForDashboard(deleted, body.timezone, localDateKey(new Date(), body.timezone)) : undefined
     };
   });
 

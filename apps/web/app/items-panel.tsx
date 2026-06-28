@@ -23,6 +23,7 @@ import {
   RotateCcw,
   Sparkles,
   Star,
+  Trash2,
   Users
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -401,6 +402,7 @@ export function ItemsPanel() {
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [editingScopeItemId, setEditingScopeItemId] = useState<string | null>(null);
   const [expandedDetailItemIds, setExpandedDetailItemIds] = useState<Set<string>>(new Set());
+  const [deleteConfirmItem, setDeleteConfirmItem] = useState<Item | null>(null);
   const timezone = useMemo(
     () => Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago",
     []
@@ -608,6 +610,37 @@ export function ItemsPanel() {
     }
   }
 
+  async function deleteItem(item: Item) {
+    const key = `${item.id}:delete`;
+    setPendingKey(key);
+    setError(null);
+    try {
+      const response = await apiFetch(apiPath(`/v1/items/${encodeURIComponent(item.id)}`), {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          timezone
+        })
+      });
+      if (!response.ok) throw new Error(`Delete returned ${response.status}`);
+      setItems((current) => current.filter((candidate) => candidate.id !== item.id));
+      setEditingScopeItemId((current) => (current === item.id ? null : current));
+      setExpandedDetailItemIds((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
+      setDeleteConfirmItem(null);
+      window.dispatchEvent(new Event("ryanos-focus-refresh"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingKey(null);
+    }
+  }
+
   async function updateDueDate(item: Item, dueDate: string) {
     if (!dueDate) return;
     const key = `${item.id}:due`;
@@ -657,6 +690,50 @@ export function ItemsPanel() {
 
   return (
     <div className="rounded-md border border-stone-300 bg-white p-4 shadow-sm">
+      {deleteConfirmItem ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/30 px-4">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-task-title"
+            aria-describedby="delete-task-description"
+            className="w-full max-w-sm rounded-md border border-stone-300 bg-white p-4 shadow-xl"
+          >
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-rose-50 text-rose-700">
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+              </span>
+              <div className="min-w-0">
+                <h3 id="delete-task-title" className="text-sm font-semibold text-stone-950">
+                  Delete task?
+                </h3>
+                <p id="delete-task-description" className="mt-1 ryanos-clamp-2 text-sm leading-5 text-stone-600">
+                  {deleteConfirmItem.title}
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmItem(null)}
+                disabled={pendingKey === `${deleteConfirmItem.id}:delete`}
+                className="inline-flex h-9 items-center rounded-md border border-stone-300 px-3 text-sm font-medium text-stone-700 hover:bg-stone-100 disabled:cursor-wait disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void deleteItem(deleteConfirmItem)}
+                disabled={pendingKey === `${deleteConfirmItem.id}:delete`}
+                className="inline-flex h-9 items-center gap-1.5 rounded-md bg-rose-700 px-3 text-sm font-medium text-white hover:bg-rose-800 disabled:cursor-wait disabled:opacity-60"
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <CheckCircle2 className="h-5 w-5 text-sky-700" aria-hidden="true" />
@@ -827,6 +904,16 @@ export function ItemsPanel() {
                           title={hasRecurrence ? "Edit area and project" : "Edit area, project, and due date"}
                         >
                           <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDeleteConfirmItem(item)}
+                          disabled={pendingKey === `${item.id}:delete`}
+                          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-stone-500 hover:bg-rose-50 hover:text-rose-700 disabled:cursor-wait disabled:opacity-50"
+                          aria-label={`Delete ${item.title}`}
+                          title="Delete"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                         </button>
                         <button
                           type="button"

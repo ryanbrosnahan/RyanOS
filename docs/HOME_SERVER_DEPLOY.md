@@ -144,14 +144,14 @@ unread inbox mail from the last 7 days, stores proposed to-dos, and only creates
 a normal RyanOS item after accepting a proposal. It does not mark messages read,
 label messages, create Gmail drafts, or send mail.
 
-## RFP and grant reports
+## Codex automation reports
 
-RyanOS can ingest machine-readable reports from user-owned Codex RFP/grant
-search automations. The preferred setup is DB-backed: open RyanOS Admin,
-generate a Codex RFP ingest token, then add the generated upload snippet to each
-local Codex automation. RyanOS stores only a token hash in Postgres; the
-plaintext token is shown once and stays in the user's local Codex automation
-setup.
+RyanOS can ingest machine-readable reports from user-owned Codex automations
+such as opportunity, grant, procurement, or lead searches. The preferred setup
+is DB-backed: open RyanOS Admin, generate a Codex automation ingest token, then
+add the generated upload snippet to each local Codex automation. RyanOS stores
+only a token hash in Postgres; the plaintext token is shown once and stays in
+the user's local Codex automation setup.
 
 The project automation should keep writing its human notes to
 `docs/rfp-auto-search.md`, write a JSON sidecar such as
@@ -173,7 +173,9 @@ endpoint:
       "fit": "high",
       "summary": "RFI for case management software.",
       "rationale": "Good shaping opportunity for CourtNox workflows.",
-      "recommendedAction": "Decide whether to submit the James City RFI."
+      "recommendedAction": "Decide whether to submit the James City RFI.",
+      "initialProgressNote": "Automation found and screened this opportunity.",
+      "checklistItems": ["Open source documents", "Decide bid/no-bid"]
     }
   ]
 }
@@ -184,14 +186,21 @@ fallbacks, but it requires paths visible inside the worker runtime and an
 explicit ingest token:
 
 ```bash
-RYANOS_RFP_REPORT_SOURCES='["/Users/ryan/Projects/active/NoxJury/docs/rfp-auto-search.ryanos.json","/Users/ryan/Projects/active/filemytro/docs/rfp-auto-search.ryanos.json"]'
-RYANOS_RFP_INGEST_TOKEN='<Admin-generated Codex RFP ingest token>'
-RFP_REPORT_INGEST_INTERVAL_MINUTES=60
+RYANOS_CODEX_AUTOMATION_REPORT_SOURCES='["/Users/ryan/Projects/active/NoxJury/docs/rfp-auto-search.ryanos.json","/Users/ryan/Projects/active/filemytro/docs/rfp-auto-search.ryanos.json"]'
+RYANOS_CODEX_AUTOMATION_INGEST_TOKEN='<Admin-generated Codex automation ingest token>'
+CODEX_AUTOMATION_REPORT_INGEST_INTERVAL_MINUTES=60
 ```
+
+The older `RYANOS_RFP_REPORT_SOURCES`, `RYANOS_RFP_INGEST_TOKEN`, and
+`RFP_REPORT_INGEST_INTERVAL_MINUTES` names remain supported for existing local
+worker setups.
 
 RyanOS only surfaces candidates rated at least 7/10, marked `urgent`, or marked
 `promoteToRyanOS`. Accepting a proposed lead creates an opportunity plus one
-`opportunity_action` item; rejecting it creates nothing.
+`opportunity_action` item; rejecting it creates nothing. Use
+`initialProgressNote` only for progress that has already happened, and
+`checklistItems` only for concrete next steps the automation can justify from
+the source material.
 
 ## Codex bridge
 

@@ -22,6 +22,8 @@ function sidecar() {
         summary: "RFI for case management software.",
         rationale: "Good shaping opportunity for CourtNox workflows.",
         recommendedAction: "Decide whether to submit the James City RFI.",
+        initialProgressNote: "Automation found and screened this opportunity.",
+        checklistItems: ["Open source documents", "Decide bid/no-bid"],
         promoteToRyanOS: false
       },
       {
@@ -73,7 +75,7 @@ describe("opportunity proposal API", () => {
     });
   });
 
-  it("ingests automation reports through a per-user Codex RFP token and ignores body userId", async () => {
+  it("ingests automation reports through a per-user Codex automation token and ignores body userId", async () => {
     vi.stubEnv("DATABASE_URL", "");
     const store = new InMemoryRyanStore();
     const app = buildApp({ store });
@@ -88,12 +90,22 @@ describe("opportunity proposal API", () => {
     const token = tokenResponse.json().token as string;
     const ingest = await app.inject({
       method: "POST",
-      url: "/v1/automation/rfp-reports/ingest",
+      url: "/v1/automation/codex-automations/ingest",
       headers: {
         authorization: `Bearer ${token}`
       },
       payload: {
         userId: "user-b",
+        report: sidecar()
+      }
+    });
+    const legacyIngest = await app.inject({
+      method: "POST",
+      url: "/v1/automation/rfp-reports/ingest",
+      headers: {
+        authorization: `Bearer ${token}`
+      },
+      payload: {
         report: sidecar()
       }
     });
@@ -108,28 +120,29 @@ describe("opportunity proposal API", () => {
     await app.close();
 
     expect(tokenResponse.statusCode).toBe(200);
-    expect(token).toMatch(/^ryanos_rfp_[a-f0-9]{16}_.+/);
+    expect(token).toMatch(/^ryanos_codex_[a-f0-9]{16}_.+/);
     expect(ingest.statusCode).toBe(200);
     expect(ingest.json().result).toMatchObject({
       proposalsCreatedOrUpdated: 1
     });
+    expect(legacyIngest.statusCode).toBe(200);
     expect(ownerProposals.json().proposals).toHaveLength(1);
     expect(otherProposals.json().proposals).toHaveLength(0);
   });
 
-  it("rejects missing or invalid Codex RFP ingest tokens", async () => {
+  it("rejects missing or invalid Codex automation ingest tokens", async () => {
     vi.stubEnv("DATABASE_URL", "");
     const store = new InMemoryRyanStore();
     const app = buildApp({ store });
 
     const missing = await app.inject({
       method: "POST",
-      url: "/v1/automation/rfp-reports/ingest",
+      url: "/v1/automation/codex-automations/ingest",
       payload: sidecar()
     });
     const invalid = await app.inject({
       method: "POST",
-      url: "/v1/automation/rfp-reports/ingest",
+      url: "/v1/automation/codex-automations/ingest",
       headers: {
         authorization: "Bearer ryanos_rfp_0011223344556677_wrong"
       },
@@ -141,7 +154,7 @@ describe("opportunity proposal API", () => {
     expect(invalid.statusCode).toBe(401);
   });
 
-  it("returns 403 for disabled Codex RFP ingest tokens", async () => {
+  it("returns 403 for disabled Codex automation ingest tokens", async () => {
     vi.stubEnv("DATABASE_URL", "");
     const store = new InMemoryRyanStore();
     const app = buildApp({ store });
@@ -163,7 +176,7 @@ describe("opportunity proposal API", () => {
     });
     const ingest = await app.inject({
       method: "POST",
-      url: "/v1/automation/rfp-reports/ingest",
+      url: "/v1/automation/codex-automations/ingest",
       headers: {
         "x-ryanos-ingest-token": token
       },
@@ -174,7 +187,7 @@ describe("opportunity proposal API", () => {
     expect(ingest.statusCode).toBe(403);
   });
 
-  it("rotation invalidates the old Codex RFP token", async () => {
+  it("rotation invalidates the old Codex automation token", async () => {
     vi.stubEnv("DATABASE_URL", "");
     const store = new InMemoryRyanStore();
     const app = buildApp({ store });
@@ -197,7 +210,7 @@ describe("opportunity proposal API", () => {
     const secondToken = second.json().token as string;
     const oldTokenIngest = await app.inject({
       method: "POST",
-      url: "/v1/automation/rfp-reports/ingest",
+      url: "/v1/automation/codex-automations/ingest",
       headers: {
         authorization: `Bearer ${firstToken}`
       },
@@ -205,7 +218,7 @@ describe("opportunity proposal API", () => {
     });
     const newTokenIngest = await app.inject({
       method: "POST",
-      url: "/v1/automation/rfp-reports/ingest",
+      url: "/v1/automation/codex-automations/ingest",
       headers: {
         authorization: `Bearer ${secondToken}`
       },
@@ -303,6 +316,15 @@ describe("opportunity proposal API", () => {
     });
     expect(store.opportunities.size).toBe(1);
     expect(store.items.size).toBe(1);
+    expect([...store.itemProgressNotes.values()]).toEqual([
+      expect.objectContaining({
+        body: "Automation found and screened this opportunity."
+      })
+    ]);
+    expect([...store.itemChecklistItems.values()].map((item) => item.title)).toEqual([
+      "Open source documents",
+      "Decide bid/no-bid"
+    ]);
 
     const repeated = await app.inject({
       method: "POST",
@@ -314,6 +336,8 @@ describe("opportunity proposal API", () => {
     expect(repeated.statusCode).toBe(200);
     expect(store.opportunities.size).toBe(1);
     expect(store.items.size).toBe(1);
+    expect(store.itemProgressNotes.size).toBe(1);
+    expect(store.itemChecklistItems.size).toBe(2);
   });
 
   it("rejects a proposal without creating an opportunity or item", async () => {

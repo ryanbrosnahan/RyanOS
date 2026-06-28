@@ -310,6 +310,10 @@ export class InMemoryRyanStore implements RyanStore {
       if (patch.cancelledAt === null) delete updated.cancelledAt;
       else updated.cancelledAt = patch.cancelledAt;
     }
+    if (patch.deletedAt !== undefined) {
+      if (patch.deletedAt === null) delete updated.deletedAt;
+      else updated.deletedAt = patch.deletedAt;
+    }
     this.items.set(itemId, updated);
     return updated;
   }

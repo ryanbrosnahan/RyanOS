@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Plus, RefreshCw, RotateCcw, ShoppingBasket } from "lucide-react";
+import { Check, Plus, RefreshCw, RotateCcw, ShoppingBasket, Star } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { apiFetch, apiPath } from "../api-client";
 
@@ -15,6 +15,7 @@ type ShoppingItem = {
   note?: string;
   checked: boolean;
   checkedAt?: string;
+  staple: boolean;
 };
 
 type ShoppingSuggestion = {
@@ -24,6 +25,7 @@ type ShoppingSuggestion = {
   category: ShoppingCategory | string;
   lastPurchasedAt?: string;
   purchaseCount: number;
+  staple: boolean;
 };
 
 type ShoppingResponse = {
@@ -39,6 +41,8 @@ const fallbackCategories: ShoppingCategory[] = [
   "health",
   "miscellaneous"
 ];
+
+type ShoppingStapleTarget = Pick<ShoppingItem | ShoppingSuggestion, "name" | "normalizedName" | "category" | "staple">;
 
 function categoryTone(category: string): string {
   switch (category) {
@@ -76,7 +80,14 @@ export function ShoppingListPanel() {
   const [error, setError] = useState("");
 
   const categories = data?.categories ?? fallbackCategories;
-  const activeItems = data?.items.filter((item) => !item.checked) ?? [];
+  const activeItems = useMemo(
+    () =>
+      [...(data?.items.filter((item) => !item.checked) ?? [])].sort((a, b) => {
+        if (a.staple !== b.staple) return a.staple ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      }),
+    [data?.items]
+  );
   const checkedItems = data?.items.filter((item) => item.checked) ?? [];
   const grouped = useMemo(() => {
     const groups = new Map<string, ShoppingItem[]>();
@@ -182,6 +193,38 @@ export function ShoppingListPanel() {
     }
   }
 
+  async function setStaple(target: ShoppingStapleTarget, staple: boolean) {
+    const previous = data;
+    if (previous) {
+      setData({
+        ...previous,
+        items: previous.items.map((item) =>
+          item.normalizedName === target.normalizedName ? { ...item, staple } : item
+        ),
+        suggestions: previous.suggestions.map((suggestion) =>
+          suggestion.normalizedName === target.normalizedName ? { ...suggestion, staple } : suggestion
+        )
+      });
+    }
+    try {
+      const response = await apiFetch(apiPath("/v1/shopping/staples"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: target.name,
+          normalizedName: target.normalizedName,
+          category: target.category,
+          staple
+        })
+      });
+      if (!response.ok) throw new Error(`Shopping API ${response.status}`);
+      setData(await response.json());
+    } catch (err) {
+      if (previous) setData(previous);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   return (
     <div className="space-y-5">
       <form
@@ -253,14 +296,19 @@ export function ShoppingListPanel() {
               </div>
               <div className="divide-y divide-stone-200">
                 {items.map((item) => (
-                  <button
+                  <div
                     key={item.id}
-                    onClick={() => toggleItem(item, true)}
                     className="flex w-full items-center gap-3 py-3 text-left hover:bg-stone-50"
                   >
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-stone-300 text-stone-500">
+                    <button
+                      type="button"
+                      onClick={() => toggleItem(item, true)}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-stone-300 text-stone-500 hover:bg-white"
+                      aria-label={`Mark ${item.name} bought`}
+                      title="Bought"
+                    >
                       <Check className="h-4 w-4" aria-hidden="true" />
-                    </span>
+                    </button>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium text-stone-950">{item.name}</span>
                       {[item.quantity, item.note].filter(Boolean).length > 0 ? (
@@ -269,7 +317,21 @@ export function ShoppingListPanel() {
                         </span>
                       ) : null}
                     </span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => void setStaple(item, !item.staple)}
+                      className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${
+                        item.staple
+                          ? "text-amber-700 hover:bg-amber-50"
+                          : "text-stone-400 hover:bg-stone-100 hover:text-amber-700"
+                      }`}
+                      aria-label={item.staple ? `Unset ${item.name} as staple` : `Set ${item.name} as staple`}
+                      aria-pressed={item.staple}
+                      title={item.staple ? "Unset staple" : "Set staple"}
+                    >
+                      <Star className={`h-4 w-4 ${item.staple ? "fill-current" : ""}`} aria-hidden="true" />
+                    </button>
+                  </div>
                 ))}
               </div>
             </section>
@@ -282,15 +344,34 @@ export function ShoppingListPanel() {
           <h2 className="mb-3 text-base font-semibold text-stone-950">Staples</h2>
           <div className="flex flex-wrap gap-2">
             {data.suggestions.map((suggestion) => (
-              <button
+              <span
                 key={suggestion.id}
-                onClick={() => addSuggestion(suggestion)}
-                className="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-stone-50 px-3 py-2 text-sm text-stone-800 hover:bg-stone-100"
+                className="inline-flex items-center gap-1 rounded-md border border-stone-300 bg-stone-50 p-1 text-sm text-stone-800"
               >
-                <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-                {suggestion.name}
-                <span className="text-xs text-stone-500">{formatLastBought(suggestion.lastPurchasedAt)}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => addSuggestion(suggestion)}
+                  className="inline-flex min-w-0 items-center gap-2 rounded px-2 py-1 hover:bg-stone-100"
+                >
+                  <Plus className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span className="max-w-48 truncate">{suggestion.name}</span>
+                  <span className="text-xs text-stone-500">{formatLastBought(suggestion.lastPurchasedAt)}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void setStaple(suggestion, !suggestion.staple)}
+                  className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded ${
+                    suggestion.staple
+                      ? "text-amber-700 hover:bg-amber-50"
+                      : "text-stone-400 hover:bg-stone-100 hover:text-amber-700"
+                  }`}
+                  aria-label={suggestion.staple ? `Unset ${suggestion.name} as staple` : `Set ${suggestion.name} as staple`}
+                  aria-pressed={suggestion.staple}
+                  title={suggestion.staple ? "Unset staple" : "Set staple"}
+                >
+                  <Star className={`h-3.5 w-3.5 ${suggestion.staple ? "fill-current" : ""}`} aria-hidden="true" />
+                </button>
+              </span>
             ))}
           </div>
         </section>
@@ -301,18 +382,37 @@ export function ShoppingListPanel() {
           <h2 className="mb-3 text-base font-semibold text-stone-950">Checked today</h2>
           <div className="divide-y divide-stone-200">
             {checkedItems.map((item) => (
-              <button
+              <div
                 key={item.id}
-                onClick={() => toggleItem(item, false)}
                 className="flex w-full items-center gap-3 py-3 text-left hover:bg-stone-50"
               >
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-stone-200 text-stone-600">
+                <button
+                  type="button"
+                  onClick={() => toggleItem(item, false)}
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-stone-200 text-stone-600 hover:bg-stone-300"
+                  aria-label={`Restore ${item.name}`}
+                  title="Restore"
+                >
                   <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                </span>
+                </button>
                 <span className="min-w-0 flex-1 truncate text-sm text-stone-500 line-through">
                   {item.name}
                 </span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => void setStaple(item, !item.staple)}
+                  className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md ${
+                    item.staple
+                      ? "text-amber-700 hover:bg-amber-50"
+                      : "text-stone-400 hover:bg-stone-100 hover:text-amber-700"
+                  }`}
+                  aria-label={item.staple ? `Unset ${item.name} as staple` : `Set ${item.name} as staple`}
+                  aria-pressed={item.staple}
+                  title={item.staple ? "Unset staple" : "Set staple"}
+                >
+                  <Star className={`h-4 w-4 ${item.staple ? "fill-current" : ""}`} aria-hidden="true" />
+                </button>
+              </div>
             ))}
           </div>
         </section>

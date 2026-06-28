@@ -882,6 +882,9 @@ export class PostgresRyanStore implements RyanStore {
     if (patch.cancelledAt !== undefined) {
       values.cancelledAt = patch.cancelledAt === null ? null : toDate(patch.cancelledAt);
     }
+    if (patch.deletedAt !== undefined) {
+      values.deletedAt = patch.deletedAt === null ? null : toDate(patch.deletedAt);
+    }
 
     const [row] = await this.db
       .update(schema.items)
