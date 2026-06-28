@@ -36,6 +36,7 @@ export type ChecklistItem = {
 type DetailItem = {
   id: string;
   title: string;
+  body?: string;
 } & ItemProgressSummary;
 
 type DetailsPayload<TItem extends DetailItem> = {
@@ -85,6 +86,8 @@ export function ItemProgressDetails<TItem extends DetailItem>({
   const [error, setError] = useState<string | null>(null);
   const [noteBody, setNoteBody] = useState("");
   const [checklistTitle, setChecklistTitle] = useState("");
+  const [showNoteComposer, setShowNoteComposer] = useState(false);
+  const [showChecklistComposer, setShowChecklistComposer] = useState(false);
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editingNoteBody, setEditingNoteBody] = useState("");
   const [editingChecklistId, setEditingChecklistId] = useState<string | null>(null);
@@ -92,6 +95,7 @@ export function ItemProgressDetails<TItem extends DetailItem>({
 
   const progressNotes = details?.progressNotes ?? [];
   const checklistItems = details?.checklistItems ?? [];
+  const summary = details?.item.body?.trim() ?? "";
   const checklistSummary = useMemo(() => {
     const completed = checklistItems.filter((checklistItem) => checklistItem.checked).length;
     return { completed, total: checklistItems.length };
@@ -139,6 +143,7 @@ export function ItemProgressDetails<TItem extends DetailItem>({
         body: JSON.stringify({ timezone, body })
       }));
       setNoteBody("");
+      setShowNoteComposer(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -194,6 +199,7 @@ export function ItemProgressDetails<TItem extends DetailItem>({
         body: JSON.stringify({ timezone, title })
       }));
       setChecklistTitle("");
+      setShowChecklistComposer(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -244,18 +250,48 @@ export function ItemProgressDetails<TItem extends DetailItem>({
       {loading ? (
         <p className="text-xs text-stone-500">Loading details...</p>
       ) : (
-        <div className="grid gap-4 xl:grid-cols-2">
+        <div className="space-y-4">
+          {summary ? (
+            <section className="rounded-md bg-white px-3 py-2 ring-1 ring-stone-200">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-stone-500">Summary</h4>
+              <p className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words text-sm leading-6 text-stone-800">
+                {summary}
+              </p>
+            </section>
+          ) : null}
+
+          <div className="grid gap-4 xl:grid-cols-2">
           <section>
             <div className="flex items-center justify-between gap-3">
               <h4 className="text-xs font-semibold uppercase tracking-wide text-stone-500">Progress</h4>
-              <span className="text-xs text-stone-500">{progressNotes.length}</span>
+              <span className="flex items-center gap-2">
+                <span className="text-xs text-stone-500">{progressNotes.length}</span>
+                <button
+                  type="button"
+                  onClick={() => setShowNoteComposer((current) => !current)}
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-stone-600 ring-1 ring-stone-200 hover:bg-white hover:text-stone-900 ${
+                    showNoteComposer ? "bg-white text-stone-900" : ""
+                  }`}
+                  aria-label={showNoteComposer ? "Hide progress note form" : "Add progress note"}
+                  aria-expanded={showNoteComposer}
+                  title={showNoteComposer ? "Hide note form" : "Add note"}
+                >
+                  <span className="relative inline-flex h-4 w-4 items-center justify-center" aria-hidden="true">
+                    <Pencil className="absolute h-3.5 w-3.5 -translate-x-0.5 translate-y-0.5" />
+                    <Plus className="absolute h-3 w-3 translate-x-1 -translate-y-1" />
+                  </span>
+                </button>
+              </span>
             </div>
-            <div className="mt-2 flex gap-2">
+            {showNoteComposer ? (
+              <div className="mt-2 flex gap-2">
               <input
                 type="text"
                 value={noteBody}
+                autoFocus
                 onChange={(event) => setNoteBody(event.target.value)}
                 onKeyDown={(event) => {
+                  if (event.key === "Escape") setShowNoteComposer(false);
                   if (event.key === "Enter") void addNote();
                 }}
                 placeholder="Add progress note"
@@ -271,7 +307,20 @@ export function ItemProgressDetails<TItem extends DetailItem>({
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNoteComposer(false);
+                  setNoteBody("");
+                }}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                aria-label="Cancel progress note"
+                title="Cancel"
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
             </div>
+            ) : null}
             <div className="mt-3 space-y-2">
               {progressNotes.length === 0 ? (
                 <p className="text-xs leading-5 text-stone-500">No progress notes yet.</p>
@@ -347,16 +396,36 @@ export function ItemProgressDetails<TItem extends DetailItem>({
           <section>
             <div className="flex items-center justify-between gap-3">
               <h4 className="text-xs font-semibold uppercase tracking-wide text-stone-500">Checklist</h4>
-              <span className="text-xs text-stone-500">
-                {checklistSummary.completed}/{checklistSummary.total}
+              <span className="flex items-center gap-2">
+                <span className="text-xs text-stone-500">
+                  {checklistSummary.completed}/{checklistSummary.total}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowChecklistComposer((current) => !current)}
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-md text-stone-600 ring-1 ring-stone-200 hover:bg-white hover:text-stone-900 ${
+                    showChecklistComposer ? "bg-white text-stone-900" : ""
+                  }`}
+                  aria-label={showChecklistComposer ? "Hide checklist item form" : "Add checklist item"}
+                  aria-expanded={showChecklistComposer}
+                  title={showChecklistComposer ? "Hide step form" : "Add step"}
+                >
+                  <span className="relative inline-flex h-4 w-4 items-center justify-center" aria-hidden="true">
+                    <Check className="absolute h-3.5 w-3.5 -translate-x-0.5 translate-y-0.5" />
+                    <Plus className="absolute h-3 w-3 translate-x-1 -translate-y-1" />
+                  </span>
+                </button>
               </span>
             </div>
-            <div className="mt-2 flex gap-2">
+            {showChecklistComposer ? (
+              <div className="mt-2 flex gap-2">
               <input
                 type="text"
                 value={checklistTitle}
+                autoFocus
                 onChange={(event) => setChecklistTitle(event.target.value)}
                 onKeyDown={(event) => {
+                  if (event.key === "Escape") setShowChecklistComposer(false);
                   if (event.key === "Enter") void addChecklistItem();
                 }}
                 placeholder="Add checklist step"
@@ -372,7 +441,20 @@ export function ItemProgressDetails<TItem extends DetailItem>({
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowChecklistComposer(false);
+                  setChecklistTitle("");
+                }}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-stone-900"
+                aria-label="Cancel checklist item"
+                title="Cancel"
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
             </div>
+            ) : null}
             <div className="mt-3 space-y-1.5">
               {checklistItems.length === 0 ? (
                 <p className="text-xs leading-5 text-stone-500">No checklist steps yet.</p>
@@ -465,6 +547,7 @@ export function ItemProgressDetails<TItem extends DetailItem>({
               )}
             </div>
           </section>
+          </div>
         </div>
       )}
       {error ? <p className="mt-3 text-xs font-medium text-rose-700">{error}</p> : null}

@@ -31,6 +31,7 @@ type FocusItem = {
   id: string;
   kind: string;
   title: string;
+  body?: string;
   status: string;
   starred: boolean;
   starredAt?: string;
@@ -405,7 +406,7 @@ export function DailyFocusPanel() {
                       <Star className="h-4 w-4 fill-current" aria-hidden="true" />
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block text-sm font-semibold leading-5 text-stone-950">
+                      <span className="ryanos-clamp-3 block text-sm font-semibold leading-5 text-stone-950">
                         {item.title}
                       </span>
                       <span className="mt-1 block text-xs leading-5 text-stone-600">
@@ -518,7 +519,7 @@ export function DailyFocusPanel() {
                     aria-pressed={item.starred}
                   >
                     <Star className={`h-3.5 w-3.5 shrink-0 ${item.starred ? "fill-current" : ""}`} aria-hidden="true" />
-                    <span className="truncate">{item.title}</span>
+                    <span className="ryanos-clamp-2 min-w-0 text-left">{item.title}</span>
                     <span className="shrink-0 text-[11px] opacity-75">{focusStatus(item)}</span>
                   </button>
                 );
@@ -541,11 +542,11 @@ export function DailyFocusPanel() {
                 type="button"
                 onClick={() => void toggleStar(item)}
                 disabled={pendingKey === `${item.id}:star`}
-                className="flex min-h-14 items-start justify-between gap-3 rounded-md bg-stone-50 px-3 py-2 text-left ring-1 ring-stone-200 transition hover:bg-stone-100 disabled:cursor-wait disabled:opacity-70"
+                className="flex min-h-14 min-w-0 items-start justify-between gap-3 rounded-md bg-stone-50 px-3 py-2 text-left ring-1 ring-stone-200 transition hover:bg-stone-100 disabled:cursor-wait disabled:opacity-70"
                 aria-label={`Star ${item.title}`}
               >
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-medium text-stone-950">{item.title}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="ryanos-clamp-2 block text-sm font-medium text-stone-950">{item.title}</span>
                   <span className="mt-1 block truncate text-xs text-stone-600">{itemMeta(item)}</span>
                 </span>
                 <span className="flex shrink-0 items-center gap-2">

@@ -22,3 +22,18 @@ select {
   font: inherit;
 }
 
+.ryanos-clamp-2,
+.ryanos-clamp-3 {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+}
+
+.ryanos-clamp-2 {
+  -webkit-line-clamp: 2;
+}
+
+.ryanos-clamp-3 {
+  -webkit-line-clamp: 3;
+}

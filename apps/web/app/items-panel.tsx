@@ -81,6 +81,7 @@ type Item = {
   id: string;
   kind: string;
   title: string;
+  body?: string;
   status: string;
   starred: boolean;
   starredAt?: string;
@@ -761,8 +762,8 @@ export function ItemsPanel() {
             const detailsExpanded = expandedDetailItemIds.has(item.id);
             return (
               <div key={item.id} className="py-3 first:pt-0 last:pb-0">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex min-w-0 items-start gap-3">
+                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 flex-1 items-start gap-3">
                     {hasRecurrence ? (
                       <div className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-stone-300 bg-stone-50 text-stone-500">
                         <RotateCcw className="h-4 w-4" aria-hidden="true" />
@@ -787,7 +788,7 @@ export function ItemsPanel() {
                         )}
                       </button>
                     )}
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 items-start gap-2">
                         <button
                           type="button"
@@ -805,7 +806,7 @@ export function ItemsPanel() {
                           <Star className={`h-4 w-4 ${item.starred ? "fill-current" : ""}`} aria-hidden="true" />
                         </button>
                         <p
-                          className={`min-w-0 flex-1 truncate text-sm font-medium ${
+                          className={`ryanos-clamp-2 min-w-0 max-w-2xl flex-1 text-sm font-medium ${
                             completed ? "text-stone-500 line-through" : "text-stone-950"
                           }`}
                         >
@@ -955,7 +956,7 @@ export function ItemsPanel() {
                       ) : null}
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 sm:shrink-0 sm:justify-end">
                     <span
                       className="inline-flex items-center gap-1 rounded-md bg-stone-100 px-2 py-1 text-xs font-medium text-stone-600"
                       aria-label={`Priority score ${item.priorityScore}`}
@@ -1025,7 +1026,7 @@ export function ItemsPanel() {
                   </div>
                 ) : null}
                 {detailsExpanded ? (
-                  <div className="pl-12">
+                  <div className="pl-0 sm:pl-12">
                     <ItemProgressDetails
                       item={item}
                       timezone={timezone}
