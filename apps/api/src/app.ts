@@ -812,7 +812,143 @@ function aiTurnResponseText(
     .map((toolResult) => toolResultResponseText(toolResult.result))
     .filter((value): value is string => value !== undefined && value.trim().length > 0);
   if (toolMessages.length > 0) return toolMessages.join("\n");
-  return interpretedText;
+  if (interpretedText !== undefined && interpretedText.trim().length > 0) return interpretedText;
+  return "I received that, but I couldn't turn it into a RyanOS action. Try phrasing it like \"add a task ...\".";
+}
+
+type QuickAddTaskDraft = {
+  title: string;
+  checklistItems: string[];
+};
+
+const quickAddTaskCommandPattern =
+  /\b(?:add|create|make)\s+(?:(?:a|an|another)\s+)?(?:task|todo|to-do)\b/gi;
+const quickAddActionVerbs = new Set([
+  "ask",
+  "book",
+  "buy",
+  "call",
+  "check",
+  "compare",
+  "confirm",
+  "decide",
+  "deposit",
+  "draft",
+  "drop",
+  "email",
+  "fill",
+  "find",
+  "follow",
+  "get",
+  "look",
+  "mail",
+  "make",
+  "message",
+  "order",
+  "pay",
+  "pick",
+  "prepare",
+  "print",
+  "reserve",
+  "review",
+  "schedule",
+  "scan",
+  "send",
+  "ship",
+  "sign",
+  "submit",
+  "text",
+  "update",
+  "upload",
+  "visit",
+  "write"
+]);
+
+function cleanTaskPhrase(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/^[\s:,-]+/, "")
+    .replace(/^(?:to|for|called|named|that\s+says)\s+/i, "")
+    .replace(/[.!?\s]+$/g, "")
+    .trim();
+}
+
+function sentenceCase(value: string): string {
+  const cleaned = cleanTaskPhrase(value);
+  if (cleaned.length === 0) return cleaned;
+  return `${cleaned[0]?.toUpperCase() ?? ""}${cleaned.slice(1)}`;
+}
+
+function firstWord(value: string): string {
+  return value.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+}
+
+function looksLikeActionStep(value: string): boolean {
+  const first = firstWord(value);
+  return quickAddActionVerbs.has(first);
+}
+
+function splitChecklistList(value: string): string[] {
+  return value
+    .split(/\n+|[;]+|,\s+|\s+(?:and then|then)\s+|\s+and\s+/i)
+    .map(sentenceCase)
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+function inferChecklistItems(title: string): string[] {
+  const segments = title
+    .split(/\s+(?:and then|then)\s+|,\s+|\s+and\s+/i)
+    .map(sentenceCase)
+    .filter(Boolean);
+  if (segments.length < 2) return [];
+  if (!segments.every(looksLikeActionStep)) return [];
+  return segments.slice(0, 20);
+}
+
+function quickAddTaskDraftFromCommand(commandText: string): QuickAddTaskDraft | undefined {
+  const cleaned = cleanTaskPhrase(commandText);
+  if (!cleaned) return undefined;
+
+  const explicitChecklist = cleaned.match(
+    /^(.*?)\s+(?:with|including)\s+(?:a\s+)?(?:checklist|steps|subtasks)\s*:?\s+(.+)$/i
+  );
+  const colonChecklist = explicitChecklist ?? cleaned.match(/^(.*?):\s+(.+)$/);
+  if (colonChecklist) {
+    const title = sentenceCase(colonChecklist[1] ?? "");
+    const checklistItems = splitChecklistList(colonChecklist[2] ?? "");
+    if (title && checklistItems.length > 0) return { title, checklistItems };
+  }
+
+  const title = sentenceCase(cleaned);
+  if (!title) return undefined;
+  return {
+    title,
+    checklistItems: inferChecklistItems(title)
+  };
+}
+
+function quickAddTaskDrafts(text: string): QuickAddTaskDraft[] {
+  const matches = [...text.matchAll(quickAddTaskCommandPattern)];
+  if (matches.length === 0) {
+    const todoMatch = text.match(/^\s*(?:todo|to-do|task)\s*:\s*(.+)$/i);
+    const draft = todoMatch ? quickAddTaskDraftFromCommand(todoMatch[1] ?? "") : undefined;
+    return draft ? [draft] : [];
+  }
+
+  const drafts: QuickAddTaskDraft[] = [];
+  for (const [index, match] of matches.entries()) {
+    const start = (match.index ?? 0) + match[0].length;
+    const next = matches[index + 1];
+    const end = next?.index ?? text.length;
+    let commandText = text.slice(start, end);
+    if (!/(?:checklist|steps|subtasks|:)/i.test(commandText)) {
+      commandText = commandText.split(/[.;\n]/, 1)[0] ?? commandText;
+    }
+    const draft = quickAddTaskDraftFromCommand(commandText);
+    if (draft) drafts.push(draft);
+  }
+  return drafts.slice(0, 5);
 }
 
 function telegramAuthorization(message: IncomingMessage): {
@@ -4509,12 +4645,60 @@ export function buildApp(options: {
     };
   }
 
+  async function executeQuickAddTaskFallback(
+    message: IncomingMessage
+  ): Promise<Array<{ name: string; result: ToolResult }>> {
+    const drafts = quickAddTaskDrafts(message.text);
+    const results: Array<{ name: string; result: ToolResult }> = [];
+    for (const [index, draft] of drafts.entries()) {
+      results.push({
+        name: "item.create",
+        result: await tools.execute(
+          "item.create",
+          enrichToolInput(
+            {
+              title: draft.title,
+              kind: "task",
+              checklistItems: draft.checklistItems,
+              confidence: 0.82
+            },
+            message,
+            "item.create",
+            index
+          )
+        )
+      });
+    }
+    return results;
+  }
+
   async function processPersistedMessage(
     message: IncomingMessage,
     storedMessage: StoredMessage | undefined,
     warnings: string[] = []
   ) {
     if (!(await integrationEnabled(message.userId, "ai"))) {
+      const toolResults = await executeQuickAddTaskFallback(message);
+      if (toolResults.length > 0) {
+        const response = await persistAssistantResponse(
+          message,
+          aiTurnResponseText(undefined, toolResults),
+          {
+            mode: "quick-add-fallback",
+            reason: "ai-integration-disabled",
+            toolCallCount: toolResults.length
+          }
+        );
+        return {
+          mode: "quick-add-fallback",
+          provider: ai.name,
+          message,
+          ...(storedMessage ? { storedMessage } : {}),
+          toolResults,
+          ...(response ? { response } : {}),
+          warnings: [...warnings, "AI integration is disabled; used local task quick-add fallback."]
+        };
+      }
       const response = await persistAssistantResponse(
         message,
         "AI integration is disabled for this user.",
@@ -4540,6 +4724,13 @@ export function buildApp(options: {
         enrichToolInput(toolCall.input, message, toolCall.name, index)
       );
       toolResults.push({ name: toolCall.name, result });
+    }
+    if (toolResults.length === 0) {
+      const fallbackResults = await executeQuickAddTaskFallback(message);
+      if (fallbackResults.length > 0) {
+        toolResults.push(...fallbackResults);
+        warnings.push("AI returned no tool calls; used local task quick-add fallback.");
+      }
     }
     const response = await persistAssistantResponse(
       message,

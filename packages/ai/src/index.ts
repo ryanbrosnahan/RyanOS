@@ -740,6 +740,7 @@ export function buildCodexPrompt(message: IncomingMessage, tools: PublicToolDefi
     "Every inputJson object must validate against that tool's inputSchema.",
     "Use the exact inputSchema property names. Do not invent aliases such as type, target, status, or cadence unless they appear in the schema.",
     "Do not include runtime envelope fields such as sourceMessageId, sourceProvider, sourceChatId, sourceUserId, idempotencyKey, dryRun, or requireConfirmation; RyanOS fills those.",
+    "When a requested task has concrete substeps under one outcome, create one parent task and include those substeps as checklistItems if item.create supports that field; do not turn each substep into a separate task.",
     "For a habit or recurring preference, create the item, then set its recurrence policy, then record any stated completions with the recurring item title as recurrenceRef.",
     "Do not execute tools, mutate files, contact external services, or invent connector setup.",
     "If a setup/login/connector/token action is needed, return no tool calls and explain it in text.",

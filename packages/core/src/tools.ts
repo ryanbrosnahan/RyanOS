@@ -760,7 +760,7 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       sideEffect: "state_write",
       confirmation: "not_required",
       retrySafety: "safe_with_idempotency_key",
-      descriptionForModel: "Creates a RyanOS item only; does not contact external systems. Use `kind` for item type, for example `{ \"title\": \"Go to the gym\", \"kind\": \"habit\", \"areaRef\": \"Health\" }`. Use `areaRef` for the broad domain and `projectRef` for a specific silo."
+      descriptionForModel: "Creates a RyanOS item only; does not contact external systems. Use `kind` for item type, for example `{ \"title\": \"Go to the gym\", \"kind\": \"habit\", \"areaRef\": \"Health\" }`. Use `areaRef` for the broad domain and `projectRef` for a specific silo. When a requested task has concrete substeps, create one parent item and put those steps in `checklistItems` instead of creating separate task items for each step."
     },
     inputSchema: toolEnvelopeSchema.extend({
       userId: userIdSchema,
@@ -772,7 +772,8 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       dueAt: z.string().optional(),
       startAt: z.string().optional(),
       estimateMinutes: z.number().int().positive().optional(),
-      body: z.string().optional()
+      body: z.string().optional(),
+      checklistItems: z.array(z.string().trim().min(1).max(500)).max(20).default([])
     }),
     handler: async (input) => {
       if (shoppingListReference(input.areaRef) || shoppingListReference(input.projectRef)) {
@@ -831,6 +832,10 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       if (input.body !== undefined) createData.body = input.body;
       if (Object.keys(metadata).length > 0) createData.metadata = asJsonObject(metadata);
 
+      const checklistTitles = input.checklistItems
+        .map((title) => title.trim())
+        .filter(Boolean);
+
       const item = await store.createItem(createData);
       const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
         userId: input.userId,
@@ -842,20 +847,59 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
       if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
       const event = await store.addItemEvent(eventInput);
+      const eventIds = [event.id];
+      const checklistItems = [];
+      if (checklistTitles.length > 0) {
+        for (const [index, title] of checklistTitles.entries()) {
+          checklistItems.push(
+            await store.createItemChecklistItem({
+              userId: input.userId,
+              itemId: item.id,
+              title,
+              sortOrder: index,
+              metadata: asJsonObject({ source: "item.create" })
+            })
+          );
+        }
+        const checklistEventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
+          userId: input.userId,
+          itemId: item.id,
+          eventType: "checklist_item_added",
+          occurredAt: nowIso(),
+          payload: {
+            checklistItemIds: checklistItems.map((checklistItem) => checklistItem.id),
+            source: "item.create"
+          }
+        };
+        if (input.sourceMessageId !== undefined) checklistEventInput.sourceMessageId = input.sourceMessageId;
+        if (input.idempotencyKey !== undefined) checklistEventInput.idempotencyKey = `${input.idempotencyKey}:checklist`;
+        const checklistEvent = await store.addItemEvent(checklistEventInput);
+        eventIds.push(checklistEvent.id);
+      }
       const auditLog = await audit(store, {
         userId: input.userId,
         action: "item.create",
         toolName: "item.create",
         sourceMessageId: input.sourceMessageId,
         request: input,
-        result: { itemId: item.id, eventId: event.id, areaId: item.areaId, projectId: item.projectId }
+        result: {
+          itemId: item.id,
+          eventId: event.id,
+          eventIds,
+          areaId: item.areaId,
+          projectId: item.projectId,
+          checklistItemIds: checklistItems.map((checklistItem) => checklistItem.id)
+        }
       });
       return {
         status: "applied",
-        data: { item },
-        eventIds: [event.id],
+        data: { item, checklistItems },
+        eventIds,
         auditId: auditLog.id,
-        messageForUser: `Created "${item.title}".`
+        messageForUser:
+          checklistItems.length > 0
+            ? `Created "${item.title}" with ${checklistItems.length} checklist ${checklistItems.length === 1 ? "item" : "items"}.`
+            : `Created "${item.title}".`
       };
     }
   });

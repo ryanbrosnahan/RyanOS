@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScriptedAiProvider } from "@ryanos/ai";
+import { InMemoryRyanStore } from "@ryanos/core";
 import { buildApp } from "../src/app.js";
 
 describe("setup status", () => {
@@ -239,6 +240,57 @@ describe("setup status", () => {
         })
       ])
     );
+  });
+
+  it("falls back to local task quick-add when AI returns no action", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const text =
+      "add a task deposit Dad's Lamar check. Add a task to review Dad's RE agent contract and check in with them";
+    const store = new InMemoryRyanStore();
+
+    const app = buildApp({
+      store,
+      ai: new ScriptedAiProvider([
+        {
+          matchText: text,
+          result: {
+            toolCalls: []
+          }
+        }
+      ])
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/messages",
+      payload: {
+        provider: "web",
+        chatId: "dashboard",
+        userId: "local-owner",
+        text,
+        timestamp: "2026-05-27T14:00:00.000Z"
+      }
+    });
+    await app.close();
+
+    const items = [...store.items.values()];
+    const checklistItems = [...store.itemChecklistItems.values()].sort((a, b) => a.sortOrder - b.sortOrder);
+    expect(response.statusCode).toBe(200);
+    expect(response.json().response.text).toContain("Created \"Deposit Dad's Lamar check\".");
+    expect(response.json().response.text).toContain(
+      "Created \"Review Dad's RE agent contract and check in with them\" with 2 checklist items."
+    );
+    expect(response.json().toolResults.map((result: { result: { status: string } }) => result.result.status)).toEqual([
+      "applied",
+      "applied"
+    ]);
+    expect(items.map((item) => item.title)).toEqual([
+      "Deposit Dad's Lamar check",
+      "Review Dad's RE agent contract and check in with them"
+    ]);
+    expect(checklistItems.map((item) => item.title)).toEqual([
+      "Review Dad's RE agent contract",
+      "Check in with them"
+    ]);
   });
 
   it("uses the AI provider path to add shopping-list items from a natural language message", async () => {

@@ -708,6 +708,30 @@ describe("core tools", () => {
     );
   });
 
+  it("creates initial checklist items with a new task", async () => {
+    const store = new InMemoryRyanStore();
+    const tools = createCoreToolRegistry(store);
+
+    const created = await tools.execute("item.create", {
+      userId: "user-1",
+      title: "Reserve groomsman tuxedos",
+      kind: "task",
+      checklistItems: ["Email rental place", "Confirm sizes", "Pay deposit"]
+    });
+
+    const checklistItems = [...store.itemChecklistItems.values()].sort((a, b) => a.sortOrder - b.sortOrder);
+    expect(created.status).toBe("applied");
+    expect(created.messageForUser).toBe("Created \"Reserve groomsman tuxedos\" with 3 checklist items.");
+    expect(checklistItems.map((item) => item.title)).toEqual([
+      "Email rental place",
+      "Confirm sizes",
+      "Pay deposit"
+    ]);
+    expect(store.itemEvents.map((event) => event.eventType)).toEqual(
+      expect.arrayContaining(["created", "checklist_item_added"])
+    );
+  });
+
   it("reopens a completed one-off item", async () => {
     const store = new InMemoryRyanStore();
     const tools = createCoreToolRegistry(store);

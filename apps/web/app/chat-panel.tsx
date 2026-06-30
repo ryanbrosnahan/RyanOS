@@ -18,8 +18,10 @@ type ToolResult = {
 
 type MessageResponse = {
   mode: string;
+  storedMessage?: unknown;
   response?: {
     text: string;
+    storedMessage?: unknown;
   };
   interpreted?: {
     text?: string;
@@ -236,6 +238,11 @@ export function ChatPanel({ variant = "embedded" }: ChatPanelProps = {}) {
           text: responseText(payload)
         }
       ]);
+      window.dispatchEvent(new Event("ryanos-items-refresh"));
+      window.dispatchEvent(new Event("ryanos-focus-refresh"));
+      if (payload.storedMessage || payload.response?.storedMessage) {
+        void loadMessages({ background: true });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
