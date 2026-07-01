@@ -83,6 +83,7 @@ export class PostgresMessageStore {
     const userId = await resolveUserId(this.db, input.userId);
     const session = await this.db.query.sessions.findFirst({
       where: and(
+        eq(schema.sessions.userId, userId),
         eq(schema.sessions.provider, input.provider),
         eq(schema.sessions.providerChatId, input.chatId)
       )
@@ -229,7 +230,11 @@ export class PostgresMessageStore {
         metadata: asJsonObject({ accountId: input.accountId })
       })
       .onConflictDoUpdate({
-        target: [schema.sessions.provider, schema.sessions.providerChatId],
+        target: [
+          schema.sessions.userId,
+          schema.sessions.provider,
+          schema.sessions.providerChatId
+        ],
         set: {
           lastMessageAt: input.occurredAt,
           updatedAt: new Date()
