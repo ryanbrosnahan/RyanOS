@@ -1211,11 +1211,12 @@ function validateTelegramBotToken(token: string): string {
 
 function telegramLinkCodeFromText(text: string): string | undefined {
   const trimmed = text.trim();
-  const withoutStart = trimmed.toLowerCase().startsWith("/start")
-    ? trimmed.slice("/start".length).trim()
-    : trimmed;
-  const match = withoutStart.match(/\b[A-Z0-9]{6}\b/i);
-  return match?.[0]?.toUpperCase();
+  const match = trimmed.match(/^\/start(?:@[A-Za-z0-9_]+)?(?:\s+([A-Z0-9]{6})\b)?/i);
+  return match?.[1]?.toUpperCase();
+}
+
+function telegramTextIsStartCommand(text: string): boolean {
+  return /^\/start(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text.trim());
 }
 
 function telegramLinkCodeExpired(metadata: JsonObject): boolean {
@@ -4815,8 +4816,23 @@ export function buildApp(options: {
     const senderId = getTelegramSenderId(normalized.message);
     const linkCode = telegramLinkCodeFromText(normalized.message.text);
     if (senderId && linkCode) {
+      const existingSender = await store.findProviderAccountByExternalId("telegram", senderId);
       const pending = await store.findProviderAccountByExternalId("telegram_link_code", linkCode);
       if (!pending || telegramLinkCodeExpired(pending.metadata)) {
+        if (existingSender) {
+          const linkedMessage = { ...normalized.message, userId: existingSender.userId };
+          const delivery = await deliverAssistantResponse(
+            linkedMessage,
+            "Telegram is already linked to your RyanOS account.",
+            false
+          );
+          return {
+            status: "linked",
+            alreadyLinked: true,
+            providerAccountId: existingSender.id,
+            ...(delivery ? { delivery } : {})
+          };
+        }
         reply.code(404);
         return {
           status: "rejected",
@@ -4824,13 +4840,35 @@ export function buildApp(options: {
           senderId
         };
       }
-      const existingSender = await store.findProviderAccountByExternalId("telegram", senderId);
       if (existingSender && existingSender.userId !== pending.userId) {
         reply.code(409);
         return {
           status: "rejected",
           reason: "telegram_sender_already_linked",
           senderId
+        };
+      }
+      if (existingSender) {
+        await store.updateProviderAccount(pending.id, {
+          status: "used",
+          metadata: {
+            ...pending.metadata,
+            usedAt: nowIso(),
+            senderId,
+            linkedProviderAccountId: existingSender.id
+          }
+        });
+        const linkedMessage = { ...normalized.message, userId: existingSender.userId };
+        const delivery = await deliverAssistantResponse(
+          linkedMessage,
+          "Telegram is already linked to your RyanOS account.",
+          false
+        );
+        return {
+          status: "linked",
+          alreadyLinked: true,
+          providerAccountId: existingSender.id,
+          ...(delivery ? { delivery } : {})
         };
       }
       const linked = await store.upsertProviderAccount({
@@ -4866,6 +4904,24 @@ export function buildApp(options: {
         providerAccountId: linked.id,
         ...(delivery ? { delivery } : {})
       };
+    }
+
+    if (senderId && telegramTextIsStartCommand(normalized.message.text)) {
+      const existingSender = await store.findProviderAccountByExternalId("telegram", senderId);
+      if (existingSender) {
+        const linkedMessage = { ...normalized.message, userId: existingSender.userId };
+        const delivery = await deliverAssistantResponse(
+          linkedMessage,
+          "Telegram is already linked to your RyanOS account.",
+          false
+        );
+        return {
+          status: "linked",
+          alreadyLinked: true,
+          providerAccountId: existingSender.id,
+          ...(delivery ? { delivery } : {})
+        };
+      }
     }
 
     if (authMode !== "dev-local") {

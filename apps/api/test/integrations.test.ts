@@ -292,6 +292,45 @@ describe("integrations API", () => {
       }
     });
     const integrations = await app.inject({ method: "GET", url: "/v1/integrations" });
+    const taskInbound = await app.inject({
+      method: "POST",
+      url: "/v1/inbound/telegram",
+      payload: {
+        update_id: 2,
+        message: {
+          message_id: 3,
+          date: 1779857601,
+          chat: { id: 123456, type: "private" },
+          from: {
+            id: 424242,
+            is_bot: false,
+            first_name: "Chrissy",
+            username: "chrissy"
+          },
+          text: "add task file ABC123 paperwork"
+        }
+      }
+    });
+    const staleStart = await app.inject({
+      method: "POST",
+      url: "/v1/inbound/telegram",
+      payload: {
+        update_id: 3,
+        message: {
+          message_id: 4,
+          date: 1779857602,
+          chat: { id: 123456, type: "private" },
+          from: {
+            id: 424242,
+            is_bot: false,
+            first_name: "Chrissy",
+            username: "chrissy"
+          },
+          text: "/start ABC123"
+        }
+      }
+    });
+    const items = await store.listItems({ userId: "local-owner" as UUID });
     await app.close();
 
     expect(link.statusCode).toBe(200);
@@ -311,5 +350,21 @@ describe("integrations API", () => {
         })
       ])
     );
+    expect(taskInbound.statusCode).toBe(200);
+    expect(taskInbound.json()).not.toMatchObject({
+      status: "rejected"
+    });
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: "File ABC123 paperwork"
+        })
+      ])
+    );
+    expect(staleStart.statusCode).toBe(200);
+    expect(staleStart.json()).toMatchObject({
+      status: "linked",
+      alreadyLinked: true
+    });
   });
 });
