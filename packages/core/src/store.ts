@@ -87,6 +87,7 @@ export type ItemListFilters = {
   completedAfter?: string;
   completedBefore?: string;
   limit?: number;
+  offset?: number;
 };
 
 export type ItemProgressNoteCreateData = {

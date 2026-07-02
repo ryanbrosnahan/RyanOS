@@ -89,19 +89,26 @@ import com.ryanos.android.BuildConfig
 import com.ryanos.android.MainActivity
 import com.ryanos.android.data.AndroidUpdateStatus
 import com.ryanos.android.data.DailyPlanSnapshot
+import com.ryanos.android.data.EmailProposal
 import com.ryanos.android.data.FocusItem
 import com.ryanos.android.data.FocusRecurrenceDay
+import com.ryanos.android.data.InboxSnapshot
+import com.ryanos.android.data.ItemDetailsSnapshot
 import com.ryanos.android.data.MessageSnapshot
+import com.ryanos.android.data.OpportunityProposal
 import com.ryanos.android.data.RyanOsSettings
 import com.ryanos.android.data.RyanOsWidgetKind
 import com.ryanos.android.data.ShoppingItem
 import com.ryanos.android.data.ShoppingItemPatch
 import com.ryanos.android.data.ShoppingSnapshot
+import com.ryanos.android.data.TaskListSnapshot
 import com.ryanos.android.data.VocabularyEntry
 import com.ryanos.android.data.VocabularyEntryPatch
 import com.ryanos.android.data.VocabularySnapshot
+import com.ryanos.android.data.WidgetChecklistItem
 import com.ryanos.android.data.WidgetScope
 import com.ryanos.android.data.WidgetSnapshot
+import com.ryanos.android.data.WidgetProgressNote
 import com.ryanos.android.data.clampRecurrenceLeadDays
 
 private enum class Destination(
@@ -109,7 +116,8 @@ private enum class Destination(
   val label: String,
   val icon: ImageVector
 ) {
-  TODAY(MainActivity.SCREEN_TODAY, "Today", Icons.Filled.Today),
+  TASKS(MainActivity.SCREEN_TASKS, "Tasks", Icons.Filled.Today),
+  INBOX(MainActivity.SCREEN_INBOX, "Inbox", Icons.Filled.Search),
   SHOPPING(MainActivity.SCREEN_SHOPPING, "Shopping", Icons.Filled.ShoppingCart),
   VOCABULARY(MainActivity.SCREEN_VOCABULARY, "Words", Icons.Filled.MenuBook),
   CHAT(MainActivity.SCREEN_CHAT, "Chat", Icons.Filled.Chat),
@@ -123,16 +131,25 @@ private enum class CaptureKind(val label: String) {
   CHAT("Chat")
 }
 
+private enum class TaskFilter(val label: String) {
+  ALL("All"),
+  FOCUS("Focus"),
+  DUE("Due"),
+  DONE("Done today")
+}
+
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
   val navController = rememberNavController()
   val settings by viewModel.settingsFlow.collectAsState(initial = RyanOsSettings())
   val dailyPlan by viewModel.dailyPlanFlow.collectAsState(initial = DailyPlanSnapshot(configured = settings.isConfigured))
+  val taskList by viewModel.taskListFlow.collectAsState(initial = TaskListSnapshot(configured = settings.isConfigured))
   val todoSnapshot by viewModel.todoFlow.collectAsState(initial = WidgetSnapshot(configured = settings.isConfigured))
   val shoppingSnapshot by viewModel.shoppingFlow.collectAsState(initial = ShoppingSnapshot(configured = settings.isConfigured))
   val vocabularySnapshot by viewModel.vocabularyFlow.collectAsState(initial = VocabularySnapshot(configured = settings.isConfigured))
   val messageSnapshot by viewModel.messageFlow.collectAsState(initial = MessageSnapshot(configured = settings.isConfigured))
+  val inboxSnapshot by viewModel.inboxFlow.collectAsState(initial = InboxSnapshot(configured = settings.isConfigured))
   val backStackEntry by navController.currentBackStackEntryAsState()
   val currentDestination = destinationForRoute(backStackEntry?.destination?.route)
   var captureKind by remember { mutableStateOf(CaptureKind.TASK) }
@@ -141,7 +158,7 @@ fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
 
   LaunchedEffect(initialScreen) {
     val destination = destinationForRoute(initialScreen)
-    if (destination != Destination.TODAY) {
+    if (destination != Destination.TASKS) {
       navController.navigate(destination.route) {
         popUpTo(navController.graph.findStartDestination().id) { saveState = true }
         launchSingleTop = true
@@ -223,6 +240,15 @@ fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
               IconButton(onClick = { viewModel.refreshInitial() }) {
                 Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
               }
+              IconButton(
+                onClick = {
+                  navController.navigate(Destination.SETTINGS.route) {
+                    launchSingleTop = true
+                  }
+                }
+              ) {
+                Icon(Icons.Filled.Settings, contentDescription = "Settings")
+              }
             }
           )
         },
@@ -241,7 +267,7 @@ fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
           }
         },
         floatingActionButton = {
-          if (currentDestination != Destination.SETTINGS) {
+          if (currentDestination != Destination.SETTINGS && currentDestination != Destination.INBOX) {
             if (wide) {
               ExtendedFloatingActionButton(
                 onClick = { openCapture() },
@@ -258,23 +284,50 @@ fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
       ) { padding ->
         NavHost(
           navController = navController,
-          startDestination = Destination.TODAY.route,
+          startDestination = Destination.TASKS.route,
           modifier = Modifier
             .fillMaxSize()
             .padding(padding)
         ) {
-          composable(Destination.TODAY.route) {
-            TodayScreen(
+          composable(Destination.TASKS.route) {
+            TasksScreen(
               plan = dailyPlan,
+              tasks = taskList,
               todoSnapshot = todoSnapshot,
+              detailsByItemId = viewModel.itemDetails,
               statusText = viewModel.statusText,
               busy = viewModel.busy,
-              onRefresh = viewModel::refreshToday,
+              onRefresh = viewModel::refreshTasks,
+              onLoadMore = viewModel::loadMoreTasks,
+              onLoadDetails = viewModel::loadItemDetails,
               onToggle = { item -> viewModel.toggleFocusItem(item, dailyPlan.date) },
               onToggleDay = viewModel::toggleFocusItem,
               onToggleStar = viewModel::toggleStar,
               onDelete = viewModel::deleteTask,
+              onUpdateSummary = viewModel::updateItemSummary,
+              onAddProgressNote = viewModel::addProgressNote,
+              onUpdateProgressNote = viewModel::updateProgressNote,
+              onDeleteProgressNote = viewModel::deleteProgressNote,
+              onAddChecklistItem = viewModel::addChecklistItem,
+              onUpdateChecklistItem = viewModel::updateChecklistItem,
+              onCheckChecklistItem = viewModel::checkChecklistItem,
+              onDeleteChecklistItem = viewModel::deleteChecklistItem,
               onAddTask = { openCapture(CaptureKind.TASK) },
+              onOpenSettings = {
+                navController.navigate(Destination.SETTINGS.route) {
+                  launchSingleTop = true
+                }
+              }
+            )
+          }
+          composable(Destination.INBOX.route) {
+            InboxScreen(
+              snapshot = inboxSnapshot,
+              busy = viewModel.busy,
+              statusText = viewModel.statusText,
+              onRefresh = viewModel::refreshInbox,
+              onEmailAction = viewModel::actOnEmailProposal,
+              onOpportunityAction = viewModel::actOnOpportunityProposal,
               onOpenSettings = {
                 navController.navigate(Destination.SETTINGS.route) {
                   launchSingleTop = true
@@ -340,7 +393,7 @@ private fun RyanOsNavigationBar(
   onNavigate: (Destination) -> Unit
 ) {
   NavigationBar {
-    Destination.entries.forEach { destination ->
+    Destination.entries.filterNot { it == Destination.SETTINGS }.forEach { destination ->
       NavigationBarItem(
         selected = destination == currentDestination,
         onClick = { onNavigate(destination) },
@@ -365,6 +418,161 @@ private fun RyanOsNavigationRail(
         icon = { Icon(destination.icon, contentDescription = null) },
         label = { Text(destination.label) }
       )
+    }
+  }
+}
+
+@Composable
+private fun TasksScreen(
+  plan: DailyPlanSnapshot,
+  tasks: TaskListSnapshot,
+  todoSnapshot: WidgetSnapshot,
+  detailsByItemId: Map<String, ItemDetailsSnapshot>,
+  statusText: String,
+  busy: Boolean,
+  onRefresh: () -> Unit,
+  onLoadMore: () -> Unit,
+  onLoadDetails: (String) -> Unit,
+  onToggle: (FocusItem) -> Unit,
+  onToggleDay: (FocusItem, String, Boolean) -> Unit,
+  onToggleStar: (FocusItem) -> Unit,
+  onDelete: (FocusItem) -> Unit,
+  onUpdateSummary: (String, String) -> Unit,
+  onAddProgressNote: (String, String) -> Unit,
+  onUpdateProgressNote: (String, String, String) -> Unit,
+  onDeleteProgressNote: (String, String) -> Unit,
+  onAddChecklistItem: (String, String) -> Unit,
+  onUpdateChecklistItem: (String, String, String) -> Unit,
+  onCheckChecklistItem: (String, String, Boolean) -> Unit,
+  onDeleteChecklistItem: (String, String) -> Unit,
+  onAddTask: () -> Unit,
+  onOpenSettings: () -> Unit
+) {
+  var deleteItem by remember { mutableStateOf<FocusItem?>(null) }
+  var expandedItemIds by remember { mutableStateOf(setOf<String>()) }
+  var filter by remember { mutableStateOf(TaskFilter.ALL) }
+
+  deleteItem?.let { item ->
+    AlertDialog(
+      onDismissRequest = { deleteItem = null },
+      icon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+      title = { Text("Delete task?") },
+      text = {
+        Text(
+          text = item.title,
+          maxLines = 3,
+          overflow = TextOverflow.Ellipsis
+        )
+      },
+      confirmButton = {
+        TextButton(
+          onClick = {
+            onDelete(item)
+            deleteItem = null
+          }
+        ) {
+          Text("Delete")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { deleteItem = null }) {
+          Text("Cancel")
+        }
+      }
+    )
+  }
+
+  val allItems = tasks.items.ifEmpty { plan.items }
+  val focusIds = plan.starredItems.map { it.id }.toSet()
+  val visibleItems = when (filter) {
+    TaskFilter.ALL -> allItems
+    TaskFilter.FOCUS -> allItems.filter { it.starred || focusIds.contains(it.id) }
+    TaskFilter.DUE -> allItems.filter { it.dueAt != null || it.recurrence != null }
+    TaskFilter.DONE -> allItems.filter { it.status == "done" || it.completion.completedToday }
+  }
+
+  LazyColumn(
+    modifier = Modifier.fillMaxSize(),
+    contentPadding = PaddingValues(16.dp),
+    verticalArrangement = Arrangement.spacedBy(14.dp)
+  ) {
+    item {
+      HeaderActions(
+        title = "Tasks",
+        subtitle = syncSubtitle(tasks.lastSyncedAt ?: plan.lastSyncedAt, tasks.error ?: plan.error),
+        primaryLabel = "Refresh",
+        primaryIcon = Icons.Filled.Refresh,
+        onPrimary = onRefresh,
+        busy = busy
+      )
+    }
+    item {
+      StatusBanner(
+        configured = tasks.configured || plan.configured,
+        error = tasks.error ?: plan.error,
+        statusText = statusText,
+        emptyMessage = "Connect RyanOS in Settings to load tasks.",
+        onOpenSettings = onOpenSettings
+      )
+    }
+    if (tasks.configured || plan.configured) {
+      item {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          TaskFilter.entries.forEach { candidate ->
+            FilterChip(
+              selected = filter == candidate,
+              onClick = { filter = candidate },
+              label = { Text(candidate.label) }
+            )
+          }
+        }
+      }
+      if (visibleItems.isEmpty()) {
+        item { EmptyText(if (filter == TaskFilter.ALL) "No open tasks." else "No tasks in this view.") }
+      } else {
+        items(visibleItems, key = { it.id }) { item ->
+          val expanded = expandedItemIds.contains(item.id)
+          FocusItemRow(
+            item = item,
+            dateKey = plan.date.ifBlank { tasks.date },
+            expanded = expanded,
+            details = detailsByItemId[item.id],
+            onToggle = { onToggle(item) },
+            onToggleDay = { day ->
+              val completed = day.status != "completed"
+              onToggleDay(item, day.date, completed)
+            },
+            onToggleStar = { onToggleStar(item) },
+            onDelete = { deleteItem = item },
+            onToggleExpanded = {
+              expandedItemIds = if (expanded) expandedItemIds - item.id else expandedItemIds + item.id
+              if (!expanded && detailsByItemId[item.id] == null) onLoadDetails(item.id)
+            },
+            onUpdateSummary = { body -> onUpdateSummary(item.id, body) },
+            onAddProgressNote = { body -> onAddProgressNote(item.id, body) },
+            onUpdateProgressNote = { noteId, body -> onUpdateProgressNote(item.id, noteId, body) },
+            onDeleteProgressNote = { noteId -> onDeleteProgressNote(item.id, noteId) },
+            onAddChecklistItem = { title -> onAddChecklistItem(item.id, title) },
+            onUpdateChecklistItem = { checklistItemId, title -> onUpdateChecklistItem(item.id, checklistItemId, title) },
+            onCheckChecklistItem = { checklistItemId, checked -> onCheckChecklistItem(item.id, checklistItemId, checked) },
+            onDeleteChecklistItem = { checklistItemId -> onDeleteChecklistItem(item.id, checklistItemId) }
+          )
+        }
+      }
+      if (tasks.hasMore) {
+        item {
+          OutlinedButton(
+            enabled = !busy,
+            onClick = onLoadMore,
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Text("Load more tasks")
+          }
+        }
+      }
+      item {
+        WidgetPreviewCard(todoSnapshot = todoSnapshot, onAddTask = onAddTask)
+      }
     }
   }
 }
@@ -485,6 +693,341 @@ private fun TodayScreen(
 }
 
 @Composable
+private fun InboxScreen(
+  snapshot: InboxSnapshot,
+  busy: Boolean,
+  statusText: String,
+  onRefresh: () -> Unit,
+  onEmailAction: (String, String) -> Unit,
+  onOpportunityAction: (String, String) -> Unit,
+  onOpenSettings: () -> Unit
+) {
+  LazyColumn(
+    modifier = Modifier.fillMaxSize(),
+    contentPadding = PaddingValues(16.dp),
+    verticalArrangement = Arrangement.spacedBy(14.dp)
+  ) {
+    item {
+      HeaderActions(
+        title = "Inbox",
+        subtitle = syncSubtitle(snapshot.lastSyncedAt, snapshot.error),
+        primaryLabel = "Refresh",
+        primaryIcon = Icons.Filled.Refresh,
+        onPrimary = onRefresh,
+        busy = busy
+      )
+    }
+    item {
+      StatusBanner(
+        configured = snapshot.configured,
+        error = snapshot.error,
+        statusText = statusText,
+        emptyMessage = "Connect RyanOS in Settings to load proposed tasks.",
+        onOpenSettings = onOpenSettings
+      )
+    }
+    if (snapshot.configured) {
+      item {
+        CodexAutomationCard(
+          status = snapshot.codexStatus,
+          onOpenSettings = onOpenSettings
+        )
+      }
+      item {
+        SectionTitle("Email proposals", snapshot.emailProposals.size.takeIf { it > 0 }?.toString())
+      }
+      if (snapshot.emailProposals.isEmpty()) {
+        item { EmptyText("No proposed email tasks.") }
+      } else {
+        items(snapshot.emailProposals, key = { it.id }) { proposal ->
+          EmailProposalRow(
+            proposal = proposal,
+            busy = busy,
+            onAccept = { onEmailAction(proposal.id, "accept") },
+            onReject = { onEmailAction(proposal.id, "reject") }
+          )
+        }
+      }
+      item {
+        SectionTitle("Codex automation proposals", snapshot.opportunityProposals.size.takeIf { it > 0 }?.toString())
+      }
+      if (snapshot.opportunityProposals.isEmpty()) {
+        item {
+          EmptyText(
+            if (snapshot.codexStatus?.ready == false) {
+              "Codex automations are not set up yet."
+            } else {
+              "No proposed automation tasks."
+            }
+          )
+        }
+      } else {
+        items(snapshot.opportunityProposals, key = { it.id }) { proposal ->
+          OpportunityProposalRow(
+            proposal = proposal,
+            busy = busy,
+            onAccept = { onOpportunityAction(proposal.id, "accept") },
+            onReject = { onOpportunityAction(proposal.id, "reject") }
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun CodexAutomationCard(
+  status: com.ryanos.android.data.CodexAutomationStatus?,
+  onOpenSettings: () -> Unit
+) {
+  ElevatedCard {
+    Column(
+      modifier = Modifier.padding(14.dp),
+      verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = "Codex automations",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+          )
+          Text(
+            text = when {
+              status == null -> "Status has not loaded yet."
+              !status.configured -> "Not configured."
+              !status.enabled -> "Disabled."
+              !status.ready -> "Needs setup."
+              else -> "Ready."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+        }
+        OutlinedButton(onClick = onOpenSettings) {
+          Icon(Icons.Filled.Settings, contentDescription = null)
+          Spacer(Modifier.width(6.dp))
+          Text("Settings")
+        }
+      }
+      if (status != null) {
+        val meta = listOfNotNull(
+          "${status.proposedCount} proposed",
+          shortDateTime(status.lastIngestAt)?.let { "last ingest $it" }
+        ).joinToString(" / ")
+        if (meta.isNotBlank()) {
+          Text(
+            text = meta,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+        }
+        status.warnings.take(2).forEach { warning ->
+          Text(
+            text = warning,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun EmailProposalRow(
+  proposal: EmailProposal,
+  busy: Boolean,
+  onAccept: () -> Unit,
+  onReject: () -> Unit
+) {
+  val uriHandler = LocalUriHandler.current
+  ElevatedCard {
+    Column(
+      modifier = Modifier.padding(14.dp),
+      verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = proposal.title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+          Text(
+            text = listOfNotNull(
+              proposal.actionType.takeIf { it.isNotBlank() },
+              proposal.priority.takeIf { it.isNotBlank() },
+              proposal.dueAt?.take(10),
+              proposal.confidence?.let { "$it% confidence" }
+            ).joinToString(" / "),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+        ProposalActions(
+          busy = busy,
+          acceptDescription = "Accept email proposal",
+          rejectDescription = "Reject email proposal",
+          onAccept = onAccept,
+          onReject = onReject
+        )
+      }
+      ProposalContextLine(
+        primary = proposal.subject,
+        secondary = listOfNotNull(proposal.sender, proposal.accountLabel, shortDateTime(proposal.occurredAt)).joinToString(" / ")
+      )
+      ProposalBodyText(proposal.body ?: proposal.sourceSummary ?: proposal.rationale)
+      proposal.draftReplyText?.takeIf { it.isNotBlank() }?.let {
+        Text(
+          text = "Draft reply: $it",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          maxLines = 3,
+          overflow = TextOverflow.Ellipsis
+        )
+      }
+      proposal.sourceUrl?.let { url ->
+        TextButton(onClick = { uriHandler.openUri(url) }) {
+          Text("Open source")
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun OpportunityProposalRow(
+  proposal: OpportunityProposal,
+  busy: Boolean,
+  onAccept: () -> Unit,
+  onReject: () -> Unit
+) {
+  val uriHandler = LocalUriHandler.current
+  ElevatedCard {
+    Column(
+      modifier = Modifier.padding(14.dp),
+      verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+      ) {
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = proposal.title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+          Text(
+            text = listOfNotNull(
+              projectLabel(proposal.projectSlug).takeIf { it.isNotBlank() },
+              proposal.fit.takeIf { it.isNotBlank() },
+              proposal.priority.takeIf { it.isNotBlank() },
+              proposal.rating?.let { "rating ${"%.1f".format(it)}" },
+              proposal.decisionBy?.take(10),
+              proposal.dueAt?.take(10)
+            ).joinToString(" / "),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+        ProposalActions(
+          busy = busy,
+          acceptDescription = "Accept automation proposal",
+          rejectDescription = "Reject automation proposal",
+          onAccept = onAccept,
+          onReject = onReject
+        )
+      }
+      ProposalBodyText(
+        proposal.recommendedAction
+          ?: proposal.summary
+          ?: proposal.sourceSummary
+          ?: proposal.rationale
+      )
+      ProposalContextLine(
+        primary = proposal.sourceTitle,
+        secondary = listOfNotNull(proposal.valueEstimate, shortDateTime(proposal.occurredAt)).joinToString(" / ")
+      )
+      val sourceUrl = proposal.sourceUrl ?: proposal.sourceUrls.firstOrNull()
+      if (sourceUrl != null) {
+        TextButton(onClick = { uriHandler.openUri(sourceUrl) }) {
+          Text("Open source")
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun ProposalActions(
+  busy: Boolean,
+  acceptDescription: String,
+  rejectDescription: String,
+  onAccept: () -> Unit,
+  onReject: () -> Unit
+) {
+  Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+    IconButton(enabled = !busy, onClick = onReject) {
+      Icon(Icons.Filled.Close, contentDescription = rejectDescription)
+    }
+    IconButton(enabled = !busy, onClick = onAccept) {
+      Icon(
+        Icons.Filled.CheckCircle,
+        contentDescription = acceptDescription,
+        tint = MaterialTheme.colorScheme.primary
+      )
+    }
+  }
+}
+
+@Composable
+private fun ProposalBodyText(text: String?) {
+  if (text.isNullOrBlank()) return
+  Text(
+    text = text,
+    style = MaterialTheme.typography.bodyMedium,
+    color = MaterialTheme.colorScheme.onSurface,
+    maxLines = 4,
+    overflow = TextOverflow.Ellipsis
+  )
+}
+
+@Composable
+private fun ProposalContextLine(primary: String?, secondary: String?) {
+  val text = listOfNotNull(
+    primary?.takeIf { it.isNotBlank() },
+    secondary?.takeIf { it.isNotBlank() }
+  ).joinToString(" / ")
+  if (text.isBlank()) return
+  Text(
+    text = text,
+    style = MaterialTheme.typography.bodySmall,
+    color = MaterialTheme.colorScheme.onSurfaceVariant,
+    maxLines = 2,
+    overflow = TextOverflow.Ellipsis
+  )
+}
+
+@Composable
 private fun FocusSection(
   title: String,
   items: List<FocusItem>,
@@ -524,7 +1067,18 @@ private fun FocusItemRow(
   onToggle: () -> Unit,
   onToggleDay: (FocusRecurrenceDay) -> Unit,
   onToggleStar: () -> Unit,
-  onDelete: () -> Unit
+  onDelete: () -> Unit,
+  expanded: Boolean = false,
+  details: ItemDetailsSnapshot? = null,
+  onToggleExpanded: () -> Unit = {},
+  onUpdateSummary: (String) -> Unit = {},
+  onAddProgressNote: (String) -> Unit = {},
+  onUpdateProgressNote: (String, String) -> Unit = { _, _ -> },
+  onDeleteProgressNote: (String) -> Unit = {},
+  onAddChecklistItem: (String) -> Unit = {},
+  onUpdateChecklistItem: (String, String) -> Unit = { _, _ -> },
+  onCheckChecklistItem: (String, Boolean) -> Unit = { _, _ -> },
+  onDeleteChecklistItem: (String) -> Unit = {}
 ) {
   val checked = item.checkedFor(dateKey)
   ElevatedCard(
@@ -614,6 +1168,322 @@ private fun FocusItemRow(
           color = MaterialTheme.colorScheme.onSurfaceVariant
         )
       }
+      TextButton(onClick = onToggleExpanded) {
+        Text(if (expanded) "Hide details" else "Details")
+      }
+      if (expanded) {
+        TaskDetailsContent(
+          item = item,
+          details = details,
+          onAddProgressNote = onAddProgressNote,
+          onUpdateSummary = onUpdateSummary,
+          onUpdateProgressNote = onUpdateProgressNote,
+          onDeleteProgressNote = onDeleteProgressNote,
+          onAddChecklistItem = onAddChecklistItem,
+          onUpdateChecklistItem = onUpdateChecklistItem,
+          onCheckChecklistItem = onCheckChecklistItem,
+          onDeleteChecklistItem = onDeleteChecklistItem
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun TaskDetailsContent(
+  item: FocusItem,
+  details: ItemDetailsSnapshot?,
+  onUpdateSummary: (String) -> Unit,
+  onAddProgressNote: (String) -> Unit,
+  onUpdateProgressNote: (String, String) -> Unit,
+  onDeleteProgressNote: (String) -> Unit,
+  onAddChecklistItem: (String) -> Unit,
+  onUpdateChecklistItem: (String, String) -> Unit,
+  onCheckChecklistItem: (String, Boolean) -> Unit,
+  onDeleteChecklistItem: (String) -> Unit
+) {
+  val detailItem = details?.item
+  val summary = detailItem?.body?.trim() ?: item.body?.trim().orEmpty()
+  val notes = details?.progressNotes ?: item.progress.latest
+  val checklistItems = details?.checklistItems ?: item.checklist.items
+  var summaryDraft by remember(item.id, summary) { mutableStateOf(summary) }
+  var editingSummary by remember(item.id) { mutableStateOf(false) }
+  var noteDraft by remember(item.id) { mutableStateOf("") }
+  var checklistDraft by remember(item.id) { mutableStateOf("") }
+  var addingNote by remember(item.id) { mutableStateOf(false) }
+  var addingChecklistItem by remember(item.id) { mutableStateOf(false) }
+
+  Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    if (details?.error != null) {
+      Text(
+        text = details.error,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.error
+      )
+    } else if (details == null) {
+      Text(
+        text = "Loading details...",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+      )
+    }
+
+    if (summary.isNotBlank() || editingSummary) {
+      DetailSectionTitle("Summary")
+      if (editingSummary) {
+        OutlinedTextField(
+          value = summaryDraft,
+          onValueChange = { summaryDraft = it },
+          modifier = Modifier.fillMaxWidth(),
+          minLines = 2,
+          maxLines = 5,
+          placeholder = { Text("Add a short task summary") }
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          Button(
+            enabled = summaryDraft.trim().isNotBlank(),
+            onClick = {
+              onUpdateSummary(summaryDraft)
+              editingSummary = false
+            }
+          ) {
+            Text("Save")
+          }
+          TextButton(onClick = {
+            summaryDraft = summary
+            editingSummary = false
+          }) {
+            Text("Cancel")
+          }
+        }
+      } else {
+        Text(
+          text = summary,
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onSurface
+        )
+        TextButton(onClick = { editingSummary = true }) {
+          Text("Edit summary")
+        }
+      }
+    }
+
+    if (notes.isNotEmpty()) {
+      DetailSectionTitle("Progress")
+      notes.forEach { note ->
+        ProgressNoteRow(
+          note = note,
+          onSave = { body -> onUpdateProgressNote(note.id, body) },
+          onDelete = { onDeleteProgressNote(note.id) }
+        )
+      }
+    }
+    if (addingNote) {
+      OutlinedTextField(
+        value = noteDraft,
+        onValueChange = { noteDraft = it },
+        modifier = Modifier.fillMaxWidth(),
+        minLines = 1,
+        maxLines = 3,
+        placeholder = { Text("Add progress note") }
+      )
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(
+          enabled = noteDraft.trim().isNotBlank(),
+          onClick = {
+            onAddProgressNote(noteDraft)
+            noteDraft = ""
+            addingNote = false
+          }
+        ) {
+          Text("Save note")
+        }
+        TextButton(onClick = {
+          noteDraft = ""
+          addingNote = false
+        }) {
+          Text("Cancel")
+        }
+      }
+    }
+
+    if (checklistItems.isNotEmpty()) {
+      DetailSectionTitle("Checklist")
+      checklistItems.forEach { checklistItem ->
+        ChecklistDetailRow(
+          item = checklistItem,
+          onCheck = { checked -> onCheckChecklistItem(checklistItem.id, checked) },
+          onSave = { title -> onUpdateChecklistItem(checklistItem.id, title) },
+          onDelete = { onDeleteChecklistItem(checklistItem.id) }
+        )
+      }
+    }
+    if (addingChecklistItem) {
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+          value = checklistDraft,
+          onValueChange = { checklistDraft = it },
+          modifier = Modifier.weight(1f),
+          singleLine = true,
+          placeholder = { Text("Add checklist item") }
+        )
+        TextButton(
+          enabled = checklistDraft.trim().isNotBlank(),
+          onClick = {
+            onAddChecklistItem(checklistDraft)
+            checklistDraft = ""
+            addingChecklistItem = false
+          }
+        ) {
+          Text("Save")
+        }
+      }
+      TextButton(onClick = {
+        checklistDraft = ""
+        addingChecklistItem = false
+      }) {
+        Text("Cancel")
+      }
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      if (summary.isBlank() && !editingSummary) {
+        TextButton(onClick = { editingSummary = true }) {
+          Icon(Icons.Filled.Edit, contentDescription = null)
+          Spacer(Modifier.width(6.dp))
+          Text("Summary")
+        }
+      }
+      if (!addingNote) {
+        TextButton(onClick = { addingNote = true }) {
+          Icon(Icons.Filled.Add, contentDescription = null)
+          Spacer(Modifier.width(6.dp))
+          Text("Note")
+        }
+      }
+      if (!addingChecklistItem) {
+        TextButton(onClick = { addingChecklistItem = true }) {
+          Icon(Icons.Filled.CheckCircle, contentDescription = null)
+          Spacer(Modifier.width(6.dp))
+          Text("Step")
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun DetailSectionTitle(text: String) {
+  Text(
+    text = text,
+    style = MaterialTheme.typography.labelLarge,
+    color = MaterialTheme.colorScheme.onSurfaceVariant
+  )
+}
+
+@Composable
+private fun ProgressNoteRow(
+  note: WidgetProgressNote,
+  onSave: (String) -> Unit,
+  onDelete: () -> Unit
+) {
+  var editing by remember(note.id) { mutableStateOf(false) }
+  var draft by remember(note.id, note.body) { mutableStateOf(note.body) }
+
+  Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    if (editing) {
+      OutlinedTextField(
+        value = draft,
+        onValueChange = { draft = it },
+        modifier = Modifier.fillMaxWidth(),
+        minLines = 1,
+        maxLines = 4
+      )
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(
+          enabled = draft.trim().isNotBlank(),
+          onClick = {
+            onSave(draft)
+            editing = false
+          }
+        ) {
+          Text("Save")
+        }
+        TextButton(onClick = {
+          draft = note.body
+          editing = false
+        }) {
+          Text("Cancel")
+        }
+      }
+    } else {
+      Text(
+        text = note.body,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurface
+      )
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(onClick = { editing = true }) {
+          Text("Edit")
+        }
+        TextButton(onClick = onDelete) {
+          Text("Delete")
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun ChecklistDetailRow(
+  item: WidgetChecklistItem,
+  onCheck: (Boolean) -> Unit,
+  onSave: (String) -> Unit,
+  onDelete: () -> Unit
+) {
+  var editing by remember(item.id) { mutableStateOf(false) }
+  var draft by remember(item.id, item.title) { mutableStateOf(item.title) }
+
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.spacedBy(8.dp)
+  ) {
+    IconButton(onClick = { onCheck(!item.checked) }) {
+      Icon(
+        imageVector = if (item.checked) Icons.Filled.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
+        contentDescription = if (item.checked) "Uncheck" else "Check"
+      )
+    }
+    if (editing) {
+      OutlinedTextField(
+        value = draft,
+        onValueChange = { draft = it },
+        modifier = Modifier.weight(1f),
+        singleLine = true
+      )
+      TextButton(
+        enabled = draft.trim().isNotBlank(),
+        onClick = {
+          onSave(draft)
+          editing = false
+        }
+      ) {
+        Text("Save")
+      }
+    } else {
+      Text(
+        text = item.title,
+        modifier = Modifier.weight(1f),
+        style = MaterialTheme.typography.bodyMedium,
+        textDecoration = if (item.checked) TextDecoration.LineThrough else TextDecoration.None
+      )
+      IconButton(onClick = { editing = true }) {
+        Icon(Icons.Filled.Edit, contentDescription = "Edit checklist item")
+      }
+    }
+    IconButton(onClick = onDelete) {
+      Icon(Icons.Filled.Delete, contentDescription = "Delete checklist item")
     }
   }
 }
@@ -1835,7 +2705,7 @@ private fun ScopeChips(scope: WidgetScope?) {
 }
 
 private fun destinationForRoute(route: String?): Destination =
-  Destination.entries.firstOrNull { it.route == route } ?: Destination.TODAY
+  Destination.entries.firstOrNull { it.route == route } ?: Destination.TASKS
 
 private fun captureKindFor(destination: Destination): CaptureKind =
   when (destination) {
@@ -1850,6 +2720,19 @@ private fun syncSubtitle(lastSyncedAt: String?, error: String?): String? =
 
 private fun formatDateLabel(dateKey: String): String =
   dateKey
+
+private fun shortDateTime(value: String?): String? =
+  value?.replace('T', ' ')?.take(16)
+
+private fun projectLabel(value: String): String =
+  value
+    .replace("_", " ")
+    .replace("-", " ")
+    .split(" ")
+    .filter { it.isNotBlank() }
+    .joinToString(" ") { part ->
+      part.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+    }
 
 private fun displayCategory(category: String): String =
   category.replace("_", " ").replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }

@@ -343,7 +343,10 @@ export class InMemoryRyanStore implements RyanStore {
         if (aDue !== bDue) return aDue.localeCompare(bDue);
         return b.createdAt.localeCompare(a.createdAt);
       })
-      .slice(0, Math.min(Math.max(filters.limit ?? 30, 1), 100));
+      .slice(
+        Math.max(filters.offset ?? 0, 0),
+        Math.max(filters.offset ?? 0, 0) + Math.min(Math.max(filters.limit ?? 30, 1), 200)
+      );
   }
 
   async searchItems(

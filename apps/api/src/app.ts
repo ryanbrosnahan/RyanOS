@@ -91,7 +91,8 @@ const listItemsQuerySchema = z.object({
     .default(false),
   timezone: z.string().default("America/Chicago"),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(30)
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  offset: z.coerce.number().int().min(0).default(0)
 });
 
 const taxonomyQuerySchema = z.object({
@@ -4497,7 +4498,8 @@ export function buildApp(options: {
     const dayBounds = localDayBounds(referenceDateKey, query.timezone);
     const filters: Parameters<typeof store.listItems>[0] = {
       userId: query.userId,
-      limit: 100
+      limit: query.limit + 1,
+      offset: query.offset
     };
     const statuses = parseItemStatuses(query.status);
     if (statuses !== undefined) filters.statuses = statuses;
@@ -4510,12 +4512,17 @@ export function buildApp(options: {
       items.map((item) => itemForDashboard(item, query.timezone, referenceDateKey))
     );
     const visibleItems = (query.includeHidden ? dashboardItems : dashboardItems.filter(itemVisibleByDefault))
-      .sort(compareDashboardItems)
-      .slice(0, query.limit);
+      .sort(compareDashboardItems);
+    const pageItems = visibleItems.slice(0, query.limit);
+    const hasMore = items.length > query.limit;
     return {
       date: referenceDateKey,
       timezone: query.timezone,
-      items: visibleItems
+      limit: query.limit,
+      offset: query.offset,
+      hasMore,
+      ...(hasMore ? { nextOffset: query.offset + query.limit } : {}),
+      items: pageItems
     };
   });
 

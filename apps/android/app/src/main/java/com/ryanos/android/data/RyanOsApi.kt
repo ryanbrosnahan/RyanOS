@@ -150,6 +150,55 @@ object RyanOsApi {
   }
 
   @Throws(IOException::class)
+  fun fetchTaskListPayload(settings: RyanOsSettings, offset: Int = 0, limit: Int = 100): TaskListPayloadResult {
+    val date = todayDateKey(settings.timezone)
+    val query = mapOf(
+      "timezone" to settings.timezone,
+      "date" to date,
+      "status" to "open,active,waiting",
+      "includeDoneToday" to "true",
+      "limit" to limit.coerceIn(1, 100).toString(),
+      "offset" to offset.coerceAtLeast(0).toString()
+    ).toQueryString()
+    val rawJson = request(
+      settings = settings,
+      method = "GET",
+      url = "${settings.normalizedBaseUrl}/v1/items?$query"
+    )
+    val syncedAt = Instant.now().toString()
+    return TaskListPayloadResult(
+      rawJson = rawJson,
+      snapshot = parseTaskListSnapshot(
+        rawJson = rawJson,
+        lastSyncedAt = syncedAt,
+        configured = true
+      )
+    )
+  }
+
+  @Throws(IOException::class)
+  fun fetchItemDetailsPayload(settings: RyanOsSettings, itemId: String): ItemDetailsPayloadResult {
+    val query = mapOf(
+      "timezone" to settings.timezone,
+      "date" to todayDateKey(settings.timezone)
+    ).toQueryString()
+    val rawJson = request(
+      settings = settings,
+      method = "GET",
+      url = "${settings.normalizedBaseUrl}/v1/items/${itemId.urlEncode()}/details?$query"
+    )
+    val syncedAt = Instant.now().toString()
+    return ItemDetailsPayloadResult(
+      rawJson = rawJson,
+      snapshot = parseItemDetailsSnapshot(
+        rawJson = rawJson,
+        lastSyncedAt = syncedAt,
+        configured = true
+      )
+    )
+  }
+
+  @Throws(IOException::class)
   fun fetchMessagesPayload(settings: RyanOsSettings, limit: Int = 30): MessagePayloadResult {
     val query = mapOf(
       "provider" to "web",
@@ -169,6 +218,62 @@ object RyanOsApi {
         lastSyncedAt = syncedAt,
         configured = true
       )
+    )
+  }
+
+  @Throws(IOException::class)
+  fun fetchInboxPayload(settings: RyanOsSettings, limit: Int = 50): InboxPayloadResult {
+    val proposalQuery = mapOf(
+      "status" to "proposed",
+      "limit" to limit.coerceIn(1, 100).toString()
+    ).toQueryString()
+    val emailRawJson = request(
+      settings = settings,
+      method = "GET",
+      url = "${settings.normalizedBaseUrl}/v1/email/proposals?$proposalQuery"
+    )
+    val opportunityRawJson = request(
+      settings = settings,
+      method = "GET",
+      url = "${settings.normalizedBaseUrl}/v1/opportunity-proposals?$proposalQuery"
+    )
+    val codexStatusRawJson = request(
+      settings = settings,
+      method = "GET",
+      url = "${settings.normalizedBaseUrl}/v1/integrations/codex-rfp"
+    )
+    val syncedAt = Instant.now().toString()
+    return InboxPayloadResult(
+      emailRawJson = emailRawJson,
+      opportunityRawJson = opportunityRawJson,
+      codexStatusRawJson = codexStatusRawJson,
+      snapshot = parseInboxSnapshot(
+        emailRawJson = emailRawJson,
+        opportunityRawJson = opportunityRawJson,
+        codexStatusRawJson = codexStatusRawJson,
+        lastSyncedAt = syncedAt,
+        configured = true
+      )
+    )
+  }
+
+  @Throws(IOException::class)
+  fun actOnEmailProposal(settings: RyanOsSettings, proposalId: String, action: String) {
+    request(
+      settings = settings,
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/email/proposals/${proposalId.urlEncode()}/${action.urlEncode()}",
+      body = JSONObject().put("userId", settings.userId)
+    )
+  }
+
+  @Throws(IOException::class)
+  fun actOnOpportunityProposal(settings: RyanOsSettings, proposalId: String, action: String) {
+    request(
+      settings = settings,
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/opportunity-proposals/${proposalId.urlEncode()}/${action.urlEncode()}",
+      body = JSONObject().put("userId", settings.userId)
     )
   }
 
@@ -226,6 +331,113 @@ object RyanOsApi {
       url = "${settings.normalizedBaseUrl}/v1/items/${itemId.urlEncode()}",
       body = body
     )
+  }
+
+  @Throws(IOException::class)
+  fun addProgressNote(settings: RyanOsSettings, itemId: String, bodyText: String): ItemDetailsPayloadResult {
+    val body = JSONObject()
+      .put("timezone", settings.timezone)
+      .put("body", bodyText)
+    val rawJson = request(
+      settings = settings,
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/items/${itemId.urlEncode()}/progress-notes",
+      body = body
+    )
+    return parseItemDetailsResult(rawJson)
+  }
+
+  @Throws(IOException::class)
+  fun updateProgressNote(settings: RyanOsSettings, itemId: String, noteId: String, bodyText: String): ItemDetailsPayloadResult {
+    val body = JSONObject()
+      .put("timezone", settings.timezone)
+      .put("body", bodyText)
+    val rawJson = request(
+      settings = settings,
+      method = "PATCH",
+      url = "${settings.normalizedBaseUrl}/v1/items/${itemId.urlEncode()}/progress-notes/${noteId.urlEncode()}",
+      body = body
+    )
+    return parseItemDetailsResult(rawJson)
+  }
+
+  @Throws(IOException::class)
+  fun deleteProgressNote(settings: RyanOsSettings, itemId: String, noteId: String): ItemDetailsPayloadResult {
+    val body = JSONObject()
+      .put("timezone", settings.timezone)
+    val rawJson = request(
+      settings = settings,
+      method = "DELETE",
+      url = "${settings.normalizedBaseUrl}/v1/items/${itemId.urlEncode()}/progress-notes/${noteId.urlEncode()}",
+      body = body
+    )
+    return parseItemDetailsResult(rawJson)
+  }
+
+  @Throws(IOException::class)
+  fun updateItemSummary(settings: RyanOsSettings, itemId: String, bodyText: String): ItemDetailsPayloadResult {
+    val body = JSONObject()
+      .put(
+        "input",
+        JSONObject()
+          .put("itemRef", itemId)
+          .put("patch", JSONObject().put("body", bodyText))
+      )
+    request(
+      settings = settings,
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/tools/item.update/invoke",
+      body = body
+    )
+    return fetchItemDetailsPayload(settings, itemId)
+  }
+
+  @Throws(IOException::class)
+  fun addChecklistItem(settings: RyanOsSettings, itemId: String, title: String): ItemDetailsPayloadResult {
+    val body = JSONObject()
+      .put("timezone", settings.timezone)
+      .put("title", title)
+    val rawJson = request(
+      settings = settings,
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/items/${itemId.urlEncode()}/checklist-items",
+      body = body
+    )
+    return parseItemDetailsResult(rawJson)
+  }
+
+  @Throws(IOException::class)
+  fun updateChecklistItem(
+    settings: RyanOsSettings,
+    itemId: String,
+    checklistItemId: String,
+    title: String? = null,
+    checked: Boolean? = null
+  ): ItemDetailsPayloadResult {
+    val body = JSONObject()
+      .put("timezone", settings.timezone)
+    if (!title.isNullOrBlank()) body.put("title", title)
+    if (checked != null) body.put("checked", checked)
+    val rawJson = request(
+      settings = settings,
+      method = "PATCH",
+      url = "${settings.normalizedBaseUrl}/v1/items/${itemId.urlEncode()}/checklist-items/${checklistItemId.urlEncode()}",
+      body = body
+    )
+    return parseItemDetailsResult(rawJson)
+  }
+
+  @Throws(IOException::class)
+  fun deleteChecklistItem(settings: RyanOsSettings, itemId: String, checklistItemId: String): ItemDetailsPayloadResult {
+    val body = JSONObject()
+      .put("timezone", settings.timezone)
+    val rawJson = request(
+      settings = settings,
+      method = "DELETE",
+      url = "${settings.normalizedBaseUrl}/v1/items/${itemId.urlEncode()}/checklist-items/${checklistItemId.urlEncode()}",
+      body = body
+    )
+    return parseItemDetailsResult(rawJson)
   }
 
   @Throws(IOException::class)
@@ -585,6 +797,30 @@ object RyanOsApi {
     return root.toString()
   }
 
+  fun appendTaskListPayload(currentRawJson: String?, nextRawJson: String): String {
+    if (currentRawJson.isNullOrBlank()) return nextRawJson
+    return runCatching {
+      val current = JSONObject(currentRawJson)
+      val next = JSONObject(nextRawJson)
+      val currentItems = current.optJSONArray("items") ?: JSONArray().also { current.put("items", it) }
+      val nextItems = next.optJSONArray("items")
+      if (nextItems != null) {
+        for (index in 0 until nextItems.length()) {
+          currentItems.put(nextItems.get(index))
+        }
+      }
+      current.put("limit", next.optInt("limit", current.optInt("limit", 100)))
+      current.put("offset", 0)
+      current.put("hasMore", next.optBoolean("hasMore", false))
+      if (next.has("nextOffset") && !next.isNull("nextOffset")) {
+        current.put("nextOffset", next.optInt("nextOffset"))
+      } else {
+        current.remove("nextOffset")
+      }
+      current.toString()
+    }.getOrElse { nextRawJson }
+  }
+
   fun parseSnapshot(
     rawJson: String?,
     lastSyncedAt: String? = null,
@@ -792,6 +1028,87 @@ object RyanOsApi {
     }
   }
 
+  fun parseTaskListSnapshot(
+    rawJson: String?,
+    lastSyncedAt: String? = null,
+    configured: Boolean = true,
+    error: String? = null
+  ): TaskListSnapshot {
+    if (!configured) {
+      return TaskListSnapshot(
+        configured = false,
+        readOnly = true,
+        error = error
+      )
+    }
+    if (rawJson.isNullOrBlank()) {
+      return TaskListSnapshot(
+        configured = true,
+        readOnly = error != null,
+        lastSyncedAt = lastSyncedAt,
+        error = error
+      )
+    }
+
+    return runCatching {
+      val root = JSONObject(rawJson)
+      TaskListSnapshot(
+        date = root.optStringOrNull("date") ?: "",
+        timezone = root.optStringOrNull("timezone") ?: defaultTimezone(),
+        lastSyncedAt = lastSyncedAt,
+        configured = true,
+        readOnly = error != null,
+        error = error,
+        limit = root.optInt("limit", 100),
+        offset = root.optInt("offset", 0),
+        hasMore = root.optBoolean("hasMore", false),
+        nextOffset = root.optNullableInt("nextOffset"),
+        items = parseFocusItems(root.optJSONArray("items"))
+      )
+    }.getOrElse { parseError ->
+      TaskListSnapshot(
+        configured = true,
+        readOnly = true,
+        lastSyncedAt = lastSyncedAt,
+        error = error ?: "Could not read tasks: ${parseError.message ?: parseError.javaClass.simpleName}"
+      )
+    }
+  }
+
+  fun parseItemDetailsSnapshot(
+    rawJson: String?,
+    lastSyncedAt: String? = null,
+    configured: Boolean = true,
+    error: String? = null
+  ): ItemDetailsSnapshot {
+    if (!configured) {
+      return ItemDetailsSnapshot(configured = false, readOnly = true, error = error)
+    }
+    if (rawJson.isNullOrBlank()) {
+      return ItemDetailsSnapshot(configured = true, readOnly = error != null, lastSyncedAt = lastSyncedAt, error = error)
+    }
+
+    return runCatching {
+      val root = JSONObject(rawJson)
+      ItemDetailsSnapshot(
+        item = parseFocusItem(root.optJSONObject("item")),
+        progressNotes = parseProgressNotes(root.optJSONArray("progressNotes")),
+        checklistItems = parseChecklistItems(root.optJSONArray("checklistItems")),
+        lastSyncedAt = lastSyncedAt,
+        configured = true,
+        readOnly = error != null,
+        error = error
+      )
+    }.getOrElse { parseError ->
+      ItemDetailsSnapshot(
+        configured = true,
+        readOnly = true,
+        lastSyncedAt = lastSyncedAt,
+        error = error ?: "Could not read task details: ${parseError.message ?: parseError.javaClass.simpleName}"
+      )
+    }
+  }
+
   fun parseVocabularySnapshot(
     rawJson: String?,
     lastSyncedAt: String? = null,
@@ -897,6 +1214,43 @@ object RyanOsApi {
     }
   }
 
+  fun parseInboxSnapshot(
+    emailRawJson: String?,
+    opportunityRawJson: String?,
+    codexStatusRawJson: String?,
+    lastSyncedAt: String? = null,
+    configured: Boolean = true,
+    error: String? = null
+  ): InboxSnapshot {
+    if (!configured) return InboxSnapshot(configured = false, readOnly = true, error = error)
+    return runCatching {
+      InboxSnapshot(
+        lastSyncedAt = lastSyncedAt,
+        configured = true,
+        readOnly = error != null,
+        error = error,
+        emailProposals = parseEmailProposals(emailRawJson),
+        opportunityProposals = parseOpportunityProposals(opportunityRawJson),
+        codexStatus = parseCodexAutomationStatus(codexStatusRawJson)
+      )
+    }.getOrElse { parseError ->
+      InboxSnapshot(
+        lastSyncedAt = lastSyncedAt,
+        configured = true,
+        readOnly = true,
+        error = error ?: "Could not read inbox: ${parseError.message ?: parseError.javaClass.simpleName}"
+      )
+    }
+  }
+
+  private fun parseItemDetailsResult(rawJson: String): ItemDetailsPayloadResult {
+    val syncedAt = Instant.now().toString()
+    return ItemDetailsPayloadResult(
+      rawJson = rawJson,
+      snapshot = parseItemDetailsSnapshot(rawJson = rawJson, lastSyncedAt = syncedAt, configured = true)
+    )
+  }
+
   private fun parseDailyPlanSummary(plan: JSONObject?): DailyPlanSummary {
     if (plan == null) return DailyPlanSummary()
     return DailyPlanSummary(
@@ -914,40 +1268,44 @@ object RyanOsApi {
       if (items == null) return@buildList
       for (index in 0 until items.length()) {
         val item = items.optJSONObject(index) ?: continue
-        val id = item.optString("id")
-        val title = item.optString("title")
-        if (id.isBlank() || title.isBlank()) continue
-        val signals = item.optJSONArray("prioritySignals")
-        add(
-          FocusItem(
-            id = id,
-            title = title,
-            kind = item.optString("kind", "task"),
-            status = item.optString("status", "open"),
-            starred = item.optBoolean("starred", false),
-            starredAt = item.optStringOrNull("starredAt"),
-            priority = item.optString("priority", "normal"),
-            priorityScore = item.optInt("priorityScore", 0),
-            prioritySignals = buildList {
-              if (signals != null) {
-                for (signalIndex in 0 until signals.length()) {
-                  val signal = signals.optString(signalIndex)
-                  if (signal.isNotBlank()) add(signal)
-                }
-              }
-            },
-            hiddenUntil = item.optStringOrNull("hiddenUntil"),
-            dueAt = item.optStringOrNull("dueAt"),
-            completedAt = item.optStringOrNull("completedAt"),
-            completion = parseFocusCompletion(item.optJSONObject("completion")),
-            progress = parseProgress(item.optJSONObject("progress")),
-            checklist = parseChecklist(item.optJSONObject("checklist")),
-            recurrence = parseFocusRecurrence(item.optJSONObject("recurrence")),
-            scope = parseScope(item.optJSONObject("scope"))
-          )
-        )
+        parseFocusItem(item)?.let { add(it) }
       }
     }
+
+  private fun parseFocusItem(item: JSONObject?): FocusItem? {
+    if (item == null) return null
+    val id = item.optString("id")
+    val title = item.optString("title")
+    if (id.isBlank() || title.isBlank()) return null
+    val signals = item.optJSONArray("prioritySignals")
+    return FocusItem(
+      id = id,
+      title = title,
+      body = item.optStringOrNull("body"),
+      kind = item.optString("kind", "task"),
+      status = item.optString("status", "open"),
+      starred = item.optBoolean("starred", false),
+      starredAt = item.optStringOrNull("starredAt"),
+      priority = item.optString("priority", "normal"),
+      priorityScore = item.optInt("priorityScore", 0),
+      prioritySignals = buildList {
+        if (signals != null) {
+          for (signalIndex in 0 until signals.length()) {
+            val signal = signals.optString(signalIndex)
+            if (signal.isNotBlank()) add(signal)
+          }
+        }
+      },
+      hiddenUntil = item.optStringOrNull("hiddenUntil"),
+      dueAt = item.optStringOrNull("dueAt"),
+      completedAt = item.optStringOrNull("completedAt"),
+      completion = parseFocusCompletion(item.optJSONObject("completion")),
+      progress = parseProgress(item.optJSONObject("progress")),
+      checklist = parseChecklist(item.optJSONObject("checklist")),
+      recurrence = parseFocusRecurrence(item.optJSONObject("recurrence")),
+      scope = parseScope(item.optJSONObject("scope"))
+    )
+  }
 
   private fun parseFocusCompletion(completion: JSONObject?): FocusCompletion =
     FocusCompletion(
@@ -1139,6 +1497,94 @@ object RyanOsApi {
     return result
   }
 
+  private fun parseEmailProposals(rawJson: String?): List<EmailProposal> {
+    if (rawJson.isNullOrBlank()) return emptyList()
+    val proposals = JSONObject(rawJson).optJSONArray("proposals") ?: return emptyList()
+    return buildList {
+      for (index in 0 until proposals.length()) {
+        val proposal = proposals.optJSONObject(index) ?: continue
+        val id = proposal.optString("id")
+        val title = proposal.optString("title")
+        if (id.isBlank() || title.isBlank()) continue
+        val account = proposal.optJSONObject("account")
+        val source = proposal.optJSONObject("source")
+        val gmail = source?.optJSONObject("metadata")?.optJSONObject("gmail")
+        add(
+          EmailProposal(
+            id = id,
+            actionType = proposal.optStringOrNull("actionType") ?: "task",
+            status = proposal.optStringOrNull("status") ?: "proposed",
+            title = title,
+            body = proposal.optStringOrNull("body"),
+            priority = proposal.optStringOrNull("priority") ?: "normal",
+            dueAt = proposal.optStringOrNull("dueAt"),
+            draftReplyText = proposal.optStringOrNull("draftReplyText"),
+            rationale = proposal.optStringOrNull("rationale"),
+            confidence = proposal.optNullableInt("confidence"),
+            accountLabel = account?.optStringOrNull("displayName") ?: account?.optStringOrNull("email"),
+            sender = gmail?.optStringOrNull("from") ?: account?.optStringOrNull("email"),
+            subject = gmail?.optStringOrNull("subject") ?: source?.optStringOrNull("title"),
+            sourceSummary = source?.optStringOrNull("summary"),
+            sourceUrl = source?.optStringOrNull("url"),
+            occurredAt = source?.optStringOrNull("occurredAt")
+          )
+        )
+      }
+    }
+  }
+
+  private fun parseOpportunityProposals(rawJson: String?): List<OpportunityProposal> {
+    if (rawJson.isNullOrBlank()) return emptyList()
+    val proposals = JSONObject(rawJson).optJSONArray("proposals") ?: return emptyList()
+    return buildList {
+      for (index in 0 until proposals.length()) {
+        val proposal = proposals.optJSONObject(index) ?: continue
+        val id = proposal.optString("id")
+        val title = proposal.optString("title")
+        if (id.isBlank() || title.isBlank()) continue
+        val source = proposal.optJSONObject("source")
+        add(
+          OpportunityProposal(
+            id = id,
+            status = proposal.optStringOrNull("status") ?: "proposed",
+            projectSlug = proposal.optStringOrNull("projectSlug") ?: "",
+            title = title,
+            summary = proposal.optStringOrNull("summary"),
+            rating = proposal.optNullableDouble("rating"),
+            fit = proposal.optStringOrNull("fit") ?: "unknown",
+            priority = proposal.optStringOrNull("priority") ?: "normal",
+            dueAt = proposal.optStringOrNull("dueAt"),
+            decisionBy = proposal.optStringOrNull("decisionBy"),
+            valueEstimate = proposal.optStringOrNull("valueEstimate"),
+            recommendedAction = proposal.optStringOrNull("recommendedAction"),
+            rationale = proposal.optStringOrNull("rationale"),
+            sourceUrls = parseStringArray(proposal.optJSONArray("sourceUrls")),
+            sourceTitle = source?.optStringOrNull("title"),
+            sourceSummary = source?.optStringOrNull("summary"),
+            sourceUrl = source?.optStringOrNull("url"),
+            occurredAt = source?.optStringOrNull("occurredAt")
+          )
+        )
+      }
+    }
+  }
+
+  private fun parseCodexAutomationStatus(rawJson: String?): CodexAutomationStatus? {
+    if (rawJson.isNullOrBlank()) return null
+    val root = JSONObject(rawJson)
+    val setup = root.optJSONObject("setup")
+    val account = root.optJSONObject("account")
+    val counts = root.optJSONObject("counts")
+    return CodexAutomationStatus(
+      configured = setup?.optBoolean("configured", false) ?: false,
+      ready = setup?.optBoolean("ready", false) ?: false,
+      enabled = root.optBoolean("enabled", false),
+      lastIngestAt = account?.optStringOrNull("lastIngestAt"),
+      proposedCount = counts?.optInt("proposed", 0) ?: 0,
+      warnings = parseStringArray(setup?.optJSONArray("warnings"))
+    )
+  }
+
   private fun parseStringArray(items: JSONArray?): List<String> =
     buildList {
       if (items == null) return@buildList
@@ -1150,61 +1596,63 @@ object RyanOsApi {
 
   private fun parseProgress(progress: JSONObject?): WidgetProgress {
     if (progress == null) return WidgetProgress()
-    val latest = progress.optJSONArray("latest")
     return WidgetProgress(
       count = progress.optInt("count", 0),
-      latest = buildList {
-        if (latest != null) {
-          for (index in 0 until latest.length()) {
-            val note = latest.optJSONObject(index) ?: continue
-            val id = note.optString("id")
-            val body = note.optString("body")
-            if (id.isBlank() || body.isBlank()) continue
-            add(
-              WidgetProgressNote(
-                id = id,
-                body = body,
-                occurredAt = note.optStringOrNull("occurredAt") ?: "",
-                createdAt = note.optStringOrNull("createdAt") ?: "",
-                updatedAt = note.optStringOrNull("updatedAt") ?: ""
-              )
-            )
-          }
-        }
-      }
+      latest = parseProgressNotes(progress.optJSONArray("latest"))
     )
   }
 
   private fun parseChecklist(checklist: JSONObject?): WidgetChecklist {
     if (checklist == null) return WidgetChecklist()
-    val items = checklist.optJSONArray("items")
     return WidgetChecklist(
       total = checklist.optInt("total", 0),
       completed = checklist.optInt("completed", 0),
       moreCount = checklist.optInt("moreCount", 0),
-      items = buildList {
-        if (items != null) {
-          for (index in 0 until items.length()) {
-            val item = items.optJSONObject(index) ?: continue
-            val id = item.optString("id")
-            val title = item.optString("title")
-            if (id.isBlank() || title.isBlank()) continue
-            add(
-              WidgetChecklistItem(
-                id = id,
-                title = title,
-                checked = item.optBoolean("checked", false),
-                checkedAt = item.optStringOrNull("checkedAt"),
-                sortOrder = item.optInt("sortOrder", index),
-                createdAt = item.optStringOrNull("createdAt") ?: "",
-                updatedAt = item.optStringOrNull("updatedAt") ?: ""
-              )
-            )
-          }
-        }
-      }
+      items = parseChecklistItems(checklist.optJSONArray("items"))
     )
   }
+
+  private fun parseProgressNotes(notes: JSONArray?): List<WidgetProgressNote> =
+    buildList {
+      if (notes == null) return@buildList
+      for (index in 0 until notes.length()) {
+        val note = notes.optJSONObject(index) ?: continue
+        val id = note.optString("id")
+        val body = note.optString("body")
+        if (id.isBlank() || body.isBlank()) continue
+        add(
+          WidgetProgressNote(
+            id = id,
+            body = body,
+            occurredAt = note.optStringOrNull("occurredAt") ?: "",
+            createdAt = note.optStringOrNull("createdAt") ?: "",
+            updatedAt = note.optStringOrNull("updatedAt") ?: ""
+          )
+        )
+      }
+    }
+
+  private fun parseChecklistItems(items: JSONArray?): List<WidgetChecklistItem> =
+    buildList {
+      if (items == null) return@buildList
+      for (index in 0 until items.length()) {
+        val item = items.optJSONObject(index) ?: continue
+        val id = item.optString("id")
+        val title = item.optString("title")
+        if (id.isBlank() || title.isBlank()) continue
+        add(
+          WidgetChecklistItem(
+            id = id,
+            title = title,
+            checked = item.optBoolean("checked", false),
+            checkedAt = item.optStringOrNull("checkedAt"),
+            sortOrder = item.optInt("sortOrder", index),
+            createdAt = item.optStringOrNull("createdAt") ?: "",
+            updatedAt = item.optStringOrNull("updatedAt") ?: ""
+          )
+        )
+      }
+    }
 
   private fun parseRecurrence(recurrence: JSONObject?): WidgetRecurrence? {
     if (recurrence == null) return null
@@ -1459,6 +1907,11 @@ object RyanOsApi {
   private fun JSONObject?.optNullableInt(name: String): Int? {
     if (this == null || isNull(name)) return null
     return optInt(name)
+  }
+
+  private fun JSONObject?.optNullableDouble(name: String): Double? {
+    if (this == null || isNull(name)) return null
+    return optDouble(name)
   }
 
   private fun JSONObject?.optStringOrNull(name: String): String? {

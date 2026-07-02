@@ -180,6 +180,7 @@ data class DailyPlanSummary(
 data class FocusItem(
   val id: String,
   val title: String,
+  val body: String?,
   val kind: String,
   val status: String,
   val starred: Boolean,
@@ -201,6 +202,40 @@ data class FocusItem(
       recurrence?.week?.days?.any { it.date == dateKey && it.status == "completed" } == true ||
       status == "done"
 }
+
+data class TaskListPayloadResult(
+  val rawJson: String,
+  val snapshot: TaskListSnapshot
+)
+
+data class TaskListSnapshot(
+  val date: String = "",
+  val timezone: String = defaultTimezone(),
+  val lastSyncedAt: String? = null,
+  val configured: Boolean = false,
+  val readOnly: Boolean = false,
+  val error: String? = null,
+  val limit: Int = 100,
+  val offset: Int = 0,
+  val hasMore: Boolean = false,
+  val nextOffset: Int? = null,
+  val items: List<FocusItem> = emptyList()
+)
+
+data class ItemDetailsPayloadResult(
+  val rawJson: String,
+  val snapshot: ItemDetailsSnapshot
+)
+
+data class ItemDetailsSnapshot(
+  val item: FocusItem? = null,
+  val progressNotes: List<WidgetProgressNote> = emptyList(),
+  val checklistItems: List<WidgetChecklistItem> = emptyList(),
+  val lastSyncedAt: String? = null,
+  val configured: Boolean = false,
+  val readOnly: Boolean = false,
+  val error: String? = null
+)
 
 data class FocusCompletion(
   val completedToday: Boolean = false,
@@ -355,6 +390,72 @@ data class MessageTurn(
   val text: String,
   val occurredAt: String,
   val pending: Boolean = false
+)
+
+data class InboxPayloadResult(
+  val emailRawJson: String,
+  val opportunityRawJson: String,
+  val codexStatusRawJson: String,
+  val snapshot: InboxSnapshot
+)
+
+data class InboxSnapshot(
+  val lastSyncedAt: String? = null,
+  val configured: Boolean = false,
+  val readOnly: Boolean = false,
+  val error: String? = null,
+  val emailProposals: List<EmailProposal> = emptyList(),
+  val opportunityProposals: List<OpportunityProposal> = emptyList(),
+  val codexStatus: CodexAutomationStatus? = null
+)
+
+data class EmailProposal(
+  val id: String,
+  val actionType: String,
+  val status: String,
+  val title: String,
+  val body: String?,
+  val priority: String,
+  val dueAt: String?,
+  val draftReplyText: String?,
+  val rationale: String?,
+  val confidence: Int?,
+  val accountLabel: String?,
+  val sender: String?,
+  val subject: String?,
+  val sourceSummary: String?,
+  val sourceUrl: String?,
+  val occurredAt: String?
+)
+
+data class OpportunityProposal(
+  val id: String,
+  val status: String,
+  val projectSlug: String,
+  val title: String,
+  val summary: String?,
+  val rating: Double?,
+  val fit: String,
+  val priority: String,
+  val dueAt: String?,
+  val decisionBy: String?,
+  val valueEstimate: String?,
+  val recommendedAction: String?,
+  val rationale: String?,
+  val sourceUrls: List<String>,
+  val sourceTitle: String?,
+  val sourceSummary: String?,
+  val sourceUrl: String?,
+  val occurredAt: String?
+)
+
+data class CodexAutomationStatus(
+  val configured: Boolean = false,
+  val ready: Boolean = false,
+  val enabled: Boolean = false,
+  val lastIngestAt: String? = null,
+  val proposedCount: Int = 0,
+  val warnings: List<String> = emptyList()
 )
 
 data class ShoppingItemPatch(

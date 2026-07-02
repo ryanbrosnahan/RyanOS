@@ -23,7 +23,9 @@ class MainActivity : ComponentActivity() {
 
   companion object {
     const val EXTRA_INITIAL_SCREEN = "initial_screen"
-    const val SCREEN_TODAY = "today"
+    const val SCREEN_TASKS = "tasks"
+    const val SCREEN_TODAY = "tasks"
+    const val SCREEN_INBOX = "inbox"
     const val SCREEN_SHOPPING = "shopping"
     const val SCREEN_VOCABULARY = "vocabulary"
     const val SCREEN_CHAT = "chat"

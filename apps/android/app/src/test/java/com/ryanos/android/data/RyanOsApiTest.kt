@@ -260,6 +260,218 @@ class RyanOsApiTest {
   }
 
   @Test
+  fun parsesTaskListPayloadWithPaginationAndDetails() {
+    val snapshot = RyanOsApi.parseTaskListSnapshot(
+      rawJson = """
+        {
+          "date": "2026-06-30",
+          "timezone": "America/Chicago",
+          "limit": 2,
+          "offset": 0,
+          "hasMore": true,
+          "nextOffset": 2,
+          "items": [
+            {
+              "id": "item-1",
+              "title": "Reserve tuxedos",
+              "body": "Coordinate groomsman tuxedos with rental company.",
+              "kind": "task",
+              "status": "open",
+              "starred": true,
+              "starredAt": "2026-06-30T12:00:00.000Z",
+              "priority": "high",
+              "priorityScore": 80,
+              "prioritySignals": ["starred"],
+              "completion": { "completedToday": false },
+              "progress": {
+                "count": 1,
+                "latest": [
+                  {
+                    "id": "note-1",
+                    "body": "emailed tux company",
+                    "occurredAt": "2026-06-30T13:00:00.000Z",
+                    "createdAt": "2026-06-30T13:00:00.000Z",
+                    "updatedAt": "2026-06-30T13:00:00.000Z"
+                  }
+                ]
+              },
+              "checklist": {
+                "total": 2,
+                "completed": 1,
+                "items": [
+                  {
+                    "id": "step-1",
+                    "title": "Email rental place",
+                    "checked": true,
+                    "checkedAt": "2026-06-30T13:00:00.000Z",
+                    "sortOrder": 0,
+                    "createdAt": "2026-06-30T12:00:00.000Z",
+                    "updatedAt": "2026-06-30T13:00:00.000Z"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      """.trimIndent(),
+      lastSyncedAt = "sync"
+    )
+
+    assertTrue(snapshot.configured)
+    assertEquals("sync", snapshot.lastSyncedAt)
+    assertEquals(2, snapshot.limit)
+    assertEquals(0, snapshot.offset)
+    assertTrue(snapshot.hasMore)
+    assertEquals(2, snapshot.nextOffset)
+    assertEquals("Reserve tuxedos", snapshot.items[0].title)
+    assertEquals("Coordinate groomsman tuxedos with rental company.", snapshot.items[0].body)
+    assertTrue(snapshot.items[0].starred)
+    assertEquals("emailed tux company", snapshot.items[0].progress.latest[0].body)
+    assertEquals(2, snapshot.items[0].checklist.total)
+    assertTrue(snapshot.items[0].checklist.items[0].checked)
+  }
+
+  @Test
+  fun parsesItemDetailsPayload() {
+    val details = RyanOsApi.parseItemDetailsSnapshot(
+      rawJson = """
+        {
+          "item": {
+            "id": "item-1",
+            "title": "Reserve tuxedos",
+            "body": "Coordinate groomsman tuxedos with rental company.",
+            "kind": "task",
+            "status": "open",
+            "priority": "high",
+            "priorityScore": 80,
+            "prioritySignals": [],
+            "completion": { "completedToday": false }
+          },
+          "progressNotes": [
+            {
+              "id": "note-1",
+              "body": "emailed tux company",
+              "occurredAt": "2026-06-30T13:00:00.000Z",
+              "createdAt": "2026-06-30T13:00:00.000Z",
+              "updatedAt": "2026-06-30T13:00:00.000Z"
+            }
+          ],
+          "checklistItems": [
+            {
+              "id": "step-1",
+              "title": "Email rental place",
+              "checked": true,
+              "checkedAt": "2026-06-30T13:00:00.000Z",
+              "sortOrder": 0,
+              "createdAt": "2026-06-30T12:00:00.000Z",
+              "updatedAt": "2026-06-30T13:00:00.000Z"
+            }
+          ]
+        }
+      """.trimIndent(),
+      lastSyncedAt = "sync"
+    )
+
+    assertTrue(details.configured)
+    assertEquals("Reserve tuxedos", details.item?.title)
+    assertEquals("Coordinate groomsman tuxedos with rental company.", details.item?.body)
+    assertEquals("emailed tux company", details.progressNotes[0].body)
+    assertEquals("Email rental place", details.checklistItems[0].title)
+    assertTrue(details.checklistItems[0].checked)
+  }
+
+  @Test
+  fun parsesInboxPayload() {
+    val snapshot = RyanOsApi.parseInboxSnapshot(
+      emailRawJson = """
+        {
+          "proposals": [
+            {
+              "id": "email-proposal-1",
+              "actionType": "reply",
+              "status": "proposed",
+              "title": "Reply to sender about Friday",
+              "body": "Confirm Friday works.",
+              "priority": "normal",
+              "draftReplyText": "Friday works for me.",
+              "rationale": "Sender asked for confirmation.",
+              "confidence": 91,
+              "account": { "email": "ryan@example.com", "displayName": "Personal Gmail" },
+              "source": {
+                "title": "Friday meeting",
+                "summary": "Asked whether Friday works.",
+                "url": "https://mail.google.com/mail/u/0/#inbox/msg-1",
+                "occurredAt": "2026-06-30T12:00:00.000Z",
+                "metadata": {
+                  "gmail": {
+                    "from": "sender@example.com",
+                    "subject": "Friday meeting"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      """.trimIndent(),
+      opportunityRawJson = """
+        {
+          "proposals": [
+            {
+              "id": "opportunity-proposal-1",
+              "status": "proposed",
+              "projectSlug": "court-nox",
+              "title": "Review county software opportunity",
+              "summary": "Potential case management opportunity.",
+              "rating": 8.5,
+              "fit": "high",
+              "priority": "high",
+              "recommendedAction": "Review bid package",
+              "sourceUrls": ["https://example.com/bid"],
+              "source": {
+                "title": "County bid",
+                "summary": "Bid details.",
+                "url": "https://example.com/bid",
+                "occurredAt": "2026-06-30T13:00:00.000Z"
+              }
+            }
+          ]
+        }
+      """.trimIndent(),
+      codexStatusRawJson = """
+        {
+          "enabled": true,
+          "setup": {
+            "configured": true,
+            "ready": true,
+            "warnings": []
+          },
+          "account": {
+            "lastIngestAt": "2026-06-30T13:00:00.000Z"
+          },
+          "counts": {
+            "proposed": 1
+          }
+        }
+      """.trimIndent(),
+      lastSyncedAt = "sync"
+    )
+
+    assertTrue(snapshot.configured)
+    assertEquals("sync", snapshot.lastSyncedAt)
+    assertEquals(1, snapshot.emailProposals.size)
+    assertEquals("Personal Gmail", snapshot.emailProposals[0].accountLabel)
+    assertEquals("sender@example.com", snapshot.emailProposals[0].sender)
+    assertEquals("Friday meeting", snapshot.emailProposals[0].subject)
+    assertEquals(91, snapshot.emailProposals[0].confidence)
+    assertEquals(1, snapshot.opportunityProposals.size)
+    assertEquals("court-nox", snapshot.opportunityProposals[0].projectSlug)
+    assertEquals(8.5, snapshot.opportunityProposals[0].rating ?: 0.0, 0.0)
+    assertEquals("Review bid package", snapshot.opportunityProposals[0].recommendedAction)
+    assertTrue(snapshot.codexStatus?.ready == true)
+    assertEquals(1, snapshot.codexStatus?.proposedCount)
+  }
+
+  @Test
   fun optimisticToggleUpdatesOneOffTask() {
     val rawJson = """
       {

@@ -930,7 +930,8 @@ export class PostgresRyanStore implements RyanStore {
         asc(schema.items.dueAt),
         desc(schema.items.createdAt)
       )
-      .limit(Math.min(Math.max(filters.limit ?? 30, 1), 100));
+      .limit(Math.min(Math.max(filters.limit ?? 30, 1), 200))
+      .offset(Math.max(filters.offset ?? 0, 0));
 
     return rows.map(itemFromRow);
   }

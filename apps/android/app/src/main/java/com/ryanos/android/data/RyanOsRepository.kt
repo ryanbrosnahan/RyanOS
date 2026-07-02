@@ -129,6 +129,26 @@ class RyanOsRepository private constructor(context: Context) {
       )
     }
 
+  val taskListSnapshotFlow: Flow<TaskListSnapshot> = dataStore.data
+    .map { preferences ->
+      val settings = preferences.toSettings()
+      RyanOsApi.parseTaskListSnapshot(
+        rawJson = preferences[CACHED_TASK_LIST_PAYLOAD],
+        lastSyncedAt = preferences[TASK_LIST_LAST_SYNCED_AT],
+        configured = settings.isConfigured,
+        error = preferences[TASK_LIST_LAST_ERROR]
+      )
+    }
+    .catch {
+      emit(
+        TaskListSnapshot(
+          configured = false,
+          readOnly = true,
+          error = it.message ?: "Could not read task settings."
+        )
+      )
+    }
+
   val messageSnapshotFlow: Flow<MessageSnapshot> = dataStore.data
     .map { preferences ->
       val settings = preferences.toSettings()
@@ -149,6 +169,28 @@ class RyanOsRepository private constructor(context: Context) {
       )
     }
 
+  val inboxSnapshotFlow: Flow<InboxSnapshot> = dataStore.data
+    .map { preferences ->
+      val settings = preferences.toSettings()
+      RyanOsApi.parseInboxSnapshot(
+        emailRawJson = preferences[CACHED_EMAIL_PROPOSALS_PAYLOAD],
+        opportunityRawJson = preferences[CACHED_OPPORTUNITY_PROPOSALS_PAYLOAD],
+        codexStatusRawJson = preferences[CACHED_CODEX_STATUS_PAYLOAD],
+        lastSyncedAt = preferences[INBOX_LAST_SYNCED_AT],
+        configured = settings.isConfigured,
+        error = preferences[INBOX_LAST_ERROR]
+      )
+    }
+    .catch {
+      emit(
+        InboxSnapshot(
+          configured = false,
+          readOnly = true,
+          error = it.message ?: "Could not read inbox settings."
+        )
+      )
+    }
+
   suspend fun saveSettings(settings: RyanOsSettings) {
     dataStore.edit { preferences ->
       preferences[API_BASE_URL] = normalizeApiBaseUrl(settings.apiBaseUrl)
@@ -163,6 +205,8 @@ class RyanOsRepository private constructor(context: Context) {
       preferences.remove(VOCABULARY_LAST_ERROR)
       preferences.remove(DAILY_PLAN_LAST_ERROR)
       preferences.remove(MESSAGES_LAST_ERROR)
+      preferences.remove(TASK_LIST_LAST_ERROR)
+      preferences.remove(INBOX_LAST_ERROR)
     }
   }
 
@@ -422,6 +466,167 @@ class RyanOsRepository private constructor(context: Context) {
         preferences[DAILY_PLAN_LAST_ERROR] = error.userFacingMessage()
       }
       dailyPlanSnapshotFlow.first()
+    }
+  }
+
+  suspend fun refreshTaskList(loadMore: Boolean = false): TaskListSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) {
+      dataStore.edit { preferences ->
+        preferences.remove(CACHED_TASK_LIST_PAYLOAD)
+        preferences.remove(TASK_LIST_LAST_SYNCED_AT)
+        preferences[TASK_LIST_LAST_ERROR] = "Connect RyanOS to load tasks."
+      }
+      return@withContext taskListSnapshotFlow.first()
+    }
+
+    runCatching {
+      val current = taskListSnapshotFlow.first()
+      val offset = if (loadMore) current.nextOffset ?: return@runCatching current else 0
+      val result = RyanOsApi.fetchTaskListPayload(settings, offset = offset)
+      dataStore.edit { preferences ->
+        val rawJson = if (loadMore) {
+          RyanOsApi.appendTaskListPayload(preferences[CACHED_TASK_LIST_PAYLOAD], result.rawJson)
+        } else {
+          result.rawJson
+        }
+        preferences[CACHED_TASK_LIST_PAYLOAD] = rawJson
+        preferences[TASK_LIST_LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()
+        preferences.remove(TASK_LIST_LAST_ERROR)
+      }
+      taskListSnapshotFlow.first()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[TASK_LIST_LAST_ERROR] = error.userFacingMessage()
+      }
+      taskListSnapshotFlow.first()
+    }
+  }
+
+  suspend fun refreshInbox(): InboxSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) {
+      dataStore.edit { preferences ->
+        preferences.remove(CACHED_EMAIL_PROPOSALS_PAYLOAD)
+        preferences.remove(CACHED_OPPORTUNITY_PROPOSALS_PAYLOAD)
+        preferences.remove(CACHED_CODEX_STATUS_PAYLOAD)
+        preferences.remove(INBOX_LAST_SYNCED_AT)
+        preferences[INBOX_LAST_ERROR] = "Connect RyanOS to load inbox."
+      }
+      return@withContext inboxSnapshotFlow.first()
+    }
+
+    runCatching {
+      val result = RyanOsApi.fetchInboxPayload(settings)
+      dataStore.edit { preferences ->
+        preferences[CACHED_EMAIL_PROPOSALS_PAYLOAD] = result.emailRawJson
+        preferences[CACHED_OPPORTUNITY_PROPOSALS_PAYLOAD] = result.opportunityRawJson
+        preferences[CACHED_CODEX_STATUS_PAYLOAD] = result.codexStatusRawJson
+        preferences[INBOX_LAST_SYNCED_AT] = result.snapshot.lastSyncedAt ?: Instant.now().toString()
+        preferences.remove(INBOX_LAST_ERROR)
+      }
+      inboxSnapshotFlow.first()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[INBOX_LAST_ERROR] = error.userFacingMessage()
+      }
+      inboxSnapshotFlow.first()
+    }
+  }
+
+  suspend fun actOnEmailProposal(proposalId: String, action: String): InboxSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext refreshInbox()
+    runCatching {
+      RyanOsApi.actOnEmailProposal(settings, proposalId, action)
+      if (action == "accept") refreshTaskList()
+      refreshInbox()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[INBOX_LAST_ERROR] = error.userFacingMessage()
+      }
+      inboxSnapshotFlow.first()
+    }
+  }
+
+  suspend fun actOnOpportunityProposal(proposalId: String, action: String): InboxSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext refreshInbox()
+    runCatching {
+      RyanOsApi.actOnOpportunityProposal(settings, proposalId, action)
+      if (action == "accept") refreshTaskList()
+      refreshInbox()
+    }.getOrElse { error ->
+      dataStore.edit { preferences ->
+        preferences[INBOX_LAST_ERROR] = error.userFacingMessage()
+      }
+      inboxSnapshotFlow.first()
+    }
+  }
+
+  suspend fun fetchItemDetails(itemId: String): ItemDetailsSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) {
+      return@withContext ItemDetailsSnapshot(
+        configured = false,
+        readOnly = true,
+        error = "Connect RyanOS to load task details."
+      )
+    }
+    runCatching {
+      RyanOsApi.fetchItemDetailsPayload(settings, itemId).snapshot
+    }.getOrElse { error ->
+      ItemDetailsSnapshot(
+        configured = true,
+        readOnly = true,
+        error = error.userFacingMessage()
+      )
+    }
+  }
+
+  suspend fun addProgressNote(itemId: String, body: String): ItemDetailsSnapshot =
+    mutateItemDetails { settings -> RyanOsApi.addProgressNote(settings, itemId, body.trim()).snapshot }
+
+  suspend fun updateItemSummary(itemId: String, body: String): ItemDetailsSnapshot =
+    mutateItemDetails { settings -> RyanOsApi.updateItemSummary(settings, itemId, body.trim()).snapshot }
+
+  suspend fun updateProgressNote(itemId: String, noteId: String, body: String): ItemDetailsSnapshot =
+    mutateItemDetails { settings -> RyanOsApi.updateProgressNote(settings, itemId, noteId, body.trim()).snapshot }
+
+  suspend fun deleteProgressNote(itemId: String, noteId: String): ItemDetailsSnapshot =
+    mutateItemDetails { settings -> RyanOsApi.deleteProgressNote(settings, itemId, noteId).snapshot }
+
+  suspend fun addChecklistItem(itemId: String, title: String): ItemDetailsSnapshot =
+    mutateItemDetails { settings -> RyanOsApi.addChecklistItem(settings, itemId, title.trim()).snapshot }
+
+  suspend fun updateChecklistItem(itemId: String, checklistItemId: String, title: String): ItemDetailsSnapshot =
+    mutateItemDetails { settings -> RyanOsApi.updateChecklistItem(settings, itemId, checklistItemId, title = title.trim()).snapshot }
+
+  suspend fun checkChecklistItem(itemId: String, checklistItemId: String, checked: Boolean): ItemDetailsSnapshot =
+    mutateItemDetails { settings -> RyanOsApi.updateChecklistItem(settings, itemId, checklistItemId, checked = checked).snapshot }
+
+  suspend fun deleteChecklistItem(itemId: String, checklistItemId: String): ItemDetailsSnapshot =
+    mutateItemDetails { settings -> RyanOsApi.deleteChecklistItem(settings, itemId, checklistItemId).snapshot }
+
+  private suspend fun mutateItemDetails(
+    call: suspend (RyanOsSettings) -> ItemDetailsSnapshot
+  ): ItemDetailsSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) {
+      return@withContext ItemDetailsSnapshot(
+        configured = false,
+        readOnly = true,
+        error = "Connect RyanOS to update task details."
+      )
+    }
+    runCatching {
+      call(settings)
+    }.getOrElse { error ->
+      ItemDetailsSnapshot(
+        configured = true,
+        readOnly = true,
+        error = error.userFacingMessage()
+      )
     }
   }
 
@@ -1070,9 +1275,17 @@ class RyanOsRepository private constructor(context: Context) {
     private val CACHED_DAILY_PLAN_PAYLOAD = stringPreferencesKey("cached_daily_plan_payload")
     private val DAILY_PLAN_LAST_SYNCED_AT = stringPreferencesKey("daily_plan_last_synced_at")
     private val DAILY_PLAN_LAST_ERROR = stringPreferencesKey("daily_plan_last_error")
+    private val CACHED_TASK_LIST_PAYLOAD = stringPreferencesKey("cached_task_list_payload")
+    private val TASK_LIST_LAST_SYNCED_AT = stringPreferencesKey("task_list_last_synced_at")
+    private val TASK_LIST_LAST_ERROR = stringPreferencesKey("task_list_last_error")
     private val CACHED_MESSAGES_PAYLOAD = stringPreferencesKey("cached_messages_payload")
     private val MESSAGES_LAST_SYNCED_AT = stringPreferencesKey("messages_last_synced_at")
     private val MESSAGES_LAST_ERROR = stringPreferencesKey("messages_last_error")
+    private val CACHED_EMAIL_PROPOSALS_PAYLOAD = stringPreferencesKey("cached_email_proposals_payload")
+    private val CACHED_OPPORTUNITY_PROPOSALS_PAYLOAD = stringPreferencesKey("cached_opportunity_proposals_payload")
+    private val CACHED_CODEX_STATUS_PAYLOAD = stringPreferencesKey("cached_codex_status_payload")
+    private val INBOX_LAST_SYNCED_AT = stringPreferencesKey("inbox_last_synced_at")
+    private val INBOX_LAST_ERROR = stringPreferencesKey("inbox_last_error")
 
     @Volatile
     private var instance: RyanOsRepository? = null

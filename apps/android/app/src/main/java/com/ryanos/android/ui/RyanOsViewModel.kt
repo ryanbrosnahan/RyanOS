@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.ryanos.android.BuildConfig
 import com.ryanos.android.data.AndroidUpdateStatus
 import com.ryanos.android.data.FocusItem
+import com.ryanos.android.data.ItemDetailsSnapshot
 import com.ryanos.android.data.RyanOsRepository
 import com.ryanos.android.data.RyanOsSettings
 import com.ryanos.android.data.RyanOsWidgetKind
@@ -27,15 +28,19 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
   val settingsFlow = repository.settingsFlow
   val todoFlow = repository.snapshotFlow
   val dailyPlanFlow = repository.dailyPlanSnapshotFlow
+  val taskListFlow = repository.taskListSnapshotFlow
   val shoppingFlow = repository.shoppingSnapshotFlow
   val vocabularyFlow = repository.vocabularySnapshotFlow
   val messageFlow = repository.messageSnapshotFlow
+  val inboxFlow = repository.inboxSnapshotFlow
 
   var busyLabel by mutableStateOf<String?>(null)
     private set
   var statusText by mutableStateOf("")
     private set
   var androidUpdateStatus by mutableStateOf<AndroidUpdateStatus?>(null)
+    private set
+  var itemDetails by mutableStateOf<Map<String, ItemDetailsSnapshot>>(emptyMap())
     private set
 
   val busy: Boolean
@@ -48,10 +53,12 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
   fun refreshInitial() {
     launchWork("Refreshing") {
       repository.refreshDailyPlan()
+      repository.refreshTaskList()
       repository.refresh()
       repository.refreshShopping()
       repository.refreshVocabulary()
       repository.refreshMessages()
+      repository.refreshInbox()
       updateWidgets()
       statusText = "Refreshed"
     }
@@ -60,9 +67,27 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
   fun refreshToday() {
     launchWork("Refreshing today") {
       repository.refreshDailyPlan()
+      repository.refreshTaskList()
       repository.refresh()
       updateWidgets()
       statusText = "Today refreshed"
+    }
+  }
+
+  fun refreshTasks() {
+    launchWork("Refreshing tasks") {
+      repository.refreshDailyPlan()
+      repository.refreshTaskList()
+      repository.refresh()
+      updateWidgets()
+      statusText = "Tasks refreshed"
+    }
+  }
+
+  fun loadMoreTasks() {
+    launchWork("Loading tasks") {
+      repository.refreshTaskList(loadMore = true)
+      statusText = "Loaded more tasks"
     }
   }
 
@@ -71,6 +96,7 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
     if (cleanTitle.isBlank()) return
     launchWork("Adding task") {
       repository.createItemAndRefreshToday(cleanTitle)
+      repository.refreshTaskList()
       repository.refresh()
       updateWidgets()
       statusText = "Task added"
@@ -84,6 +110,7 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
       val sent = repository.sendToggleDailyItem(item, targetCompleted, date)
       if (sent) {
         repository.refreshDailyPlan()
+        repository.refreshTaskList()
         repository.refresh()
       }
       updateWidgets()
@@ -97,6 +124,7 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
       val sent = repository.sendToggleDailyItem(item, completed, dateKey)
       if (sent) {
         repository.refreshDailyPlan()
+        repository.refreshTaskList()
         repository.refresh()
       }
       updateWidgets()
@@ -111,6 +139,7 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
       val sent = repository.sendToggleStar(item.id, targetStarred)
       if (sent) {
         repository.refreshDailyPlan()
+        repository.refreshTaskList()
         repository.refresh()
       }
       updateWidgets()
@@ -121,6 +150,7 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
   fun deleteTask(item: FocusItem) {
     launchWork("Deleting task") {
       repository.deleteItemAndRefreshToday(item.id)
+      repository.refreshTaskList()
       repository.refresh()
       updateWidgets()
       statusText = "Task deleted"
@@ -206,15 +236,157 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
     }
   }
 
+  fun refreshInbox() {
+    launchWork("Refreshing inbox") {
+      repository.refreshInbox()
+      statusText = "Inbox refreshed"
+    }
+  }
+
+  fun loadItemDetails(itemId: String) {
+    launchWork("Loading task") {
+      val details = repository.fetchItemDetails(itemId)
+      itemDetails = itemDetails + (itemId to details)
+      statusText = if (details.error == null) "Task details loaded" else details.error
+    }
+  }
+
+  fun addProgressNote(itemId: String, body: String) {
+    if (body.trim().isBlank()) return
+    launchWork("Adding note") {
+      val details = repository.addProgressNote(itemId, body)
+      itemDetails = itemDetails + (itemId to details)
+      repository.refreshTaskList()
+      repository.refreshDailyPlan()
+      repository.refresh()
+      updateWidgets()
+      statusText = "Note added"
+    }
+  }
+
+  fun updateItemSummary(itemId: String, body: String) {
+    if (body.trim().isBlank()) return
+    launchWork("Saving summary") {
+      val details = repository.updateItemSummary(itemId, body)
+      itemDetails = itemDetails + (itemId to details)
+      repository.refreshTaskList()
+      repository.refreshDailyPlan()
+      repository.refresh()
+      updateWidgets()
+      statusText = "Summary saved"
+    }
+  }
+
+  fun updateProgressNote(itemId: String, noteId: String, body: String) {
+    if (body.trim().isBlank()) return
+    launchWork("Saving note") {
+      val details = repository.updateProgressNote(itemId, noteId, body)
+      itemDetails = itemDetails + (itemId to details)
+      repository.refreshTaskList()
+      repository.refreshDailyPlan()
+      repository.refresh()
+      updateWidgets()
+      statusText = "Note saved"
+    }
+  }
+
+  fun deleteProgressNote(itemId: String, noteId: String) {
+    launchWork("Deleting note") {
+      val details = repository.deleteProgressNote(itemId, noteId)
+      itemDetails = itemDetails + (itemId to details)
+      repository.refreshTaskList()
+      repository.refreshDailyPlan()
+      repository.refresh()
+      updateWidgets()
+      statusText = "Note deleted"
+    }
+  }
+
+  fun addChecklistItem(itemId: String, title: String) {
+    if (title.trim().isBlank()) return
+    launchWork("Adding checklist item") {
+      val details = repository.addChecklistItem(itemId, title)
+      itemDetails = itemDetails + (itemId to details)
+      repository.refreshTaskList()
+      repository.refreshDailyPlan()
+      repository.refresh()
+      updateWidgets()
+      statusText = "Checklist item added"
+    }
+  }
+
+  fun updateChecklistItem(itemId: String, checklistItemId: String, title: String) {
+    if (title.trim().isBlank()) return
+    launchWork("Saving checklist item") {
+      val details = repository.updateChecklistItem(itemId, checklistItemId, title)
+      itemDetails = itemDetails + (itemId to details)
+      repository.refreshTaskList()
+      repository.refreshDailyPlan()
+      repository.refresh()
+      updateWidgets()
+      statusText = "Checklist item saved"
+    }
+  }
+
+  fun checkChecklistItem(itemId: String, checklistItemId: String, checked: Boolean) {
+    launchWork(if (checked) "Checking step" else "Undoing step") {
+      val details = repository.checkChecklistItem(itemId, checklistItemId, checked)
+      itemDetails = itemDetails + (itemId to details)
+      repository.refreshTaskList()
+      repository.refreshDailyPlan()
+      repository.refresh()
+      updateWidgets()
+      statusText = if (checked) "Step checked" else "Step unchecked"
+    }
+  }
+
+  fun deleteChecklistItem(itemId: String, checklistItemId: String) {
+    launchWork("Deleting step") {
+      val details = repository.deleteChecklistItem(itemId, checklistItemId)
+      itemDetails = itemDetails + (itemId to details)
+      repository.refreshTaskList()
+      repository.refreshDailyPlan()
+      repository.refresh()
+      updateWidgets()
+      statusText = "Checklist item deleted"
+    }
+  }
+
+  fun actOnEmailProposal(proposalId: String, action: String) {
+    launchWork(if (action == "accept") "Accepting email task" else "Rejecting email task") {
+      repository.actOnEmailProposal(proposalId, action)
+      if (action == "accept") {
+        repository.refreshDailyPlan()
+        repository.refresh()
+        updateWidgets()
+      }
+      statusText = if (action == "accept") "Email task accepted" else "Email task rejected"
+    }
+  }
+
+  fun actOnOpportunityProposal(proposalId: String, action: String) {
+    launchWork(if (action == "accept") "Accepting automation task" else "Rejecting automation task") {
+      repository.actOnOpportunityProposal(proposalId, action)
+      if (action == "accept") {
+        repository.refreshDailyPlan()
+        repository.refresh()
+        updateWidgets()
+      }
+      statusText = if (action == "accept") "Automation task accepted" else "Automation task rejected"
+    }
+  }
+
   fun sendChat(text: String) {
     val cleanText = text.trim()
     if (cleanText.isBlank()) return
     launchWork("Sending") {
       repository.sendChatMessage(cleanText)
       repository.refreshDailyPlan()
+      repository.refreshTaskList()
       repository.refresh()
       repository.refreshShopping()
       repository.refreshVocabulary()
+      repository.refreshInbox()
       updateWidgets()
       statusText = "Message sent"
     }
@@ -224,10 +396,12 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
     launchWork("Saving settings") {
       repository.saveSettings(settings)
       repository.refreshDailyPlan()
+      repository.refreshTaskList()
       repository.refresh()
       repository.refreshShopping()
       repository.refreshVocabulary()
       repository.refreshMessages()
+      repository.refreshInbox()
       updateWidgets()
       statusText = "Settings saved"
     }
@@ -238,10 +412,12 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
     launchWork("Signing in") {
       repository.signIn(apiBaseUrl, email, password)
       repository.refreshDailyPlan()
+      repository.refreshTaskList()
       repository.refresh()
       repository.refreshShopping()
       repository.refreshVocabulary()
       repository.refreshMessages()
+      repository.refreshInbox()
       updateWidgets()
       statusText = "Signed in"
     }

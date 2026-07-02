@@ -1156,6 +1156,76 @@ describe("setup status", () => {
     await app.close();
   });
 
+  it("paginates item lists while preserving starred-first ordering", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const app = buildApp({ store });
+    const userId = "pagination-user";
+    const alpha = await store.createItem({
+      userId,
+      title: "Alpha task",
+      kind: "task",
+      priority: "normal",
+      dueAt: "2026-07-03T12:00:00.000Z"
+    });
+    const beta = await store.createItem({
+      userId,
+      title: "Beta task",
+      kind: "task",
+      priority: "normal",
+      dueAt: "2026-07-02T12:00:00.000Z"
+    });
+    const gamma = await store.createItem({
+      userId,
+      title: "Gamma starred task",
+      kind: "task",
+      priority: "normal",
+      dueAt: "2026-07-04T12:00:00.000Z"
+    });
+    const starred = await app.inject({
+      method: "POST",
+      url: `/v1/items/${gamma.id}/star`,
+      payload: {
+        userId,
+        starred: true,
+        starredAt: "2026-07-01T12:00:00.000Z",
+        timezone: "UTC"
+      }
+    });
+
+    const firstPage = await app.inject({
+      method: "GET",
+      url: `/v1/items?userId=${userId}&date=2026-07-01&timezone=UTC&limit=2&offset=0`
+    });
+    const secondPage = await app.inject({
+      method: "GET",
+      url: `/v1/items?userId=${userId}&date=2026-07-01&timezone=UTC&limit=2&offset=2`
+    });
+    await app.close();
+
+    expect(starred.statusCode).toBe(200);
+    expect(firstPage.statusCode).toBe(200);
+    expect(firstPage.json()).toMatchObject({
+      limit: 2,
+      offset: 0,
+      hasMore: true,
+      nextOffset: 2
+    });
+    expect(firstPage.json().items.map((item: { id: string }) => item.id)).toEqual([
+      gamma.id,
+      beta.id
+    ]);
+    expect(secondPage.statusCode).toBe(200);
+    expect(secondPage.json()).toMatchObject({
+      limit: 2,
+      offset: 2,
+      hasMore: false
+    });
+    expect(secondPage.json().items.map((item: { id: string }) => item.id)).toEqual([
+      alpha.id
+    ]);
+  });
+
   it("returns compact mobile widget items and toggles normal tasks", async () => {
     vi.stubEnv("DATABASE_URL", "");
 
