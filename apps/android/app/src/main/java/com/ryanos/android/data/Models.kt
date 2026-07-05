@@ -434,6 +434,7 @@ data class OpportunityProposal(
   val projectSlug: String,
   val title: String,
   val summary: String?,
+  val descriptionMarkdown: String?,
   val rating: Double?,
   val fit: String,
   val priority: String,
@@ -443,10 +444,26 @@ data class OpportunityProposal(
   val recommendedAction: String?,
   val rationale: String?,
   val sourceUrls: List<String>,
+  val sourceLinks: List<ProposalSourceLink>,
+  val automationSource: AutomationSourceSummary?,
   val sourceTitle: String?,
   val sourceSummary: String?,
   val sourceUrl: String?,
   val occurredAt: String?
+)
+
+data class ProposalSourceLink(
+  val label: String?,
+  val url: String,
+  val type: String?
+)
+
+data class AutomationSourceSummary(
+  val id: String?,
+  val name: String?,
+  val sourceSlug: String?,
+  val platform: String?,
+  val projectSlug: String?
 )
 
 data class CodexAutomationStatus(
@@ -455,6 +472,7 @@ data class CodexAutomationStatus(
   val enabled: Boolean = false,
   val lastIngestAt: String? = null,
   val proposedCount: Int = 0,
+  val sourceCount: Int = 0,
   val warnings: List<String> = emptyList()
 )
 

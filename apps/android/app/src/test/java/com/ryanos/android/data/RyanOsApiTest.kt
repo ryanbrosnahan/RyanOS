@@ -422,11 +422,22 @@ class RyanOsApiTest {
               "projectSlug": "court-nox",
               "title": "Review county software opportunity",
               "summary": "Potential case management opportunity.",
+              "descriptionMarkdown": "## Summary\nPotential case management opportunity.\n\n- Review source package",
               "rating": 8.5,
               "fit": "high",
               "priority": "high",
               "recommendedAction": "Review bid package",
               "sourceUrls": ["https://example.com/bid"],
+              "sourceLinks": [
+                { "label": "Bid page", "url": "https://example.com/bid", "type": "rfp" }
+              ],
+              "automationSource": {
+                "id": "source-1",
+                "name": "CourtNox source",
+                "sourceSlug": "court-nox-source",
+                "platform": "codex",
+                "projectSlug": "court-nox"
+              },
               "source": {
                 "title": "County bid",
                 "summary": "Bid details.",
@@ -450,7 +461,8 @@ class RyanOsApiTest {
           },
           "counts": {
             "proposed": 1
-          }
+          },
+          "sources": [{ "id": "source-1" }]
         }
       """.trimIndent(),
       lastSyncedAt = "sync"
@@ -467,8 +479,12 @@ class RyanOsApiTest {
     assertEquals("court-nox", snapshot.opportunityProposals[0].projectSlug)
     assertEquals(8.5, snapshot.opportunityProposals[0].rating ?: 0.0, 0.0)
     assertEquals("Review bid package", snapshot.opportunityProposals[0].recommendedAction)
+    assertEquals("CourtNox source", snapshot.opportunityProposals[0].automationSource?.name)
+    assertEquals("Bid page", snapshot.opportunityProposals[0].sourceLinks[0].label)
+    assertEquals("## Summary\nPotential case management opportunity.\n\n- Review source package", snapshot.opportunityProposals[0].descriptionMarkdown)
     assertTrue(snapshot.codexStatus?.ready == true)
     assertEquals(1, snapshot.codexStatus?.proposedCount)
+    assertEquals(1, snapshot.codexStatus?.sourceCount)
   }
 
   @Test

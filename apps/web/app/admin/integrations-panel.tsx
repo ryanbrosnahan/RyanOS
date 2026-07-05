@@ -3,13 +3,13 @@
 import {
   Bot,
   Brain,
-  CheckCircle2,
   ChevronDown,
   Copy,
   Download,
   KeyRound,
   Mail,
   Play,
+  Plus,
   RefreshCw,
   RotateCcw,
   Search,
@@ -54,6 +54,36 @@ type LinkedTelegramAccount = {
   linkedAt?: string;
 };
 
+type AutomationSource = {
+  id: string;
+  name: string;
+  sourceSlug: string;
+  platform: "codex" | "api" | "mcp" | "other" | string;
+  projectSlug?: string;
+  description?: string;
+  instructions?: string;
+  status: string;
+  enabled: boolean;
+  tokenPreview?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastIngestAt?: string;
+  lastReportRunAt?: string;
+  lastAutomationIds: string[];
+  lastProjectSlugs: string[];
+  lastResult?: {
+    candidatesSeen?: number;
+    proposalsCreatedOrUpdated?: number;
+    proposalsSkippedByThreshold?: number;
+  };
+  proposalCounts: {
+    proposed: number;
+    accepted: number;
+    rejected: number;
+    total: number;
+  };
+};
+
 type Integration = {
   id: "ai" | "telegram" | "gmail" | "codex_rfp";
   name: string;
@@ -73,6 +103,7 @@ type Integration = {
     total?: number;
   };
   endpointPath?: string;
+  legacyEndpointPaths?: string[];
   account?: {
     id: string;
     status: string;
@@ -89,6 +120,7 @@ type Integration = {
       proposalsSkippedByThreshold?: number;
     };
   };
+  sources?: AutomationSource[];
   config?: {
     query: string;
     maxPerAccount: number;
@@ -180,6 +212,66 @@ function absoluteEndpoint(path: string | undefined): string {
   return new URL(path, window.location.origin).toString();
 }
 
+function automationSetupSnippet(source: AutomationSource, endpoint: string, token: string | undefined): string {
+  return [
+    `RyanOS automation source: ${source.name}`,
+    `Platform: ${source.platform}`,
+    source.projectSlug ? `Default projectSlug: ${source.projectSlug}` : "Default projectSlug: set by RyanOS for this source",
+    "",
+    "Paste these instructions into any automation that can identify useful proposed tasks from files, web research, email, calendars, repositories, scripts, or another data source.",
+    "When the automation finds concrete work for RyanOS to review, send it to the endpoint below. Do not include userId; RyanOS resolves ownership from this source token.",
+    "",
+    `POST ${endpoint}`,
+    `Authorization: Bearer ${token ?? "<rotate-token-for-this-source>"}`,
+    "Content-Type: application/json",
+    "",
+    "Expected JSON:",
+    "{",
+    '  "automationId": "optional-run-or-automation-id",',
+    '  "runAt": "ISO timestamp",',
+    '  "candidates": [',
+    "    {",
+    '      "title": "Short proposed task title",',
+    '      "rating": 8.2,',
+    '      "fit": "high",',
+    '      "summary": "Plain one-to-three sentence summary.",',
+    '      "descriptionMarkdown": "Markdown detail with useful context, dates, source notes, and next steps.",',
+    '      "sourceLinks": [{ "label": "Source page", "url": "https://example.com/source", "type": "source" }],',
+    '      "recommendedAction": "Specific action to create if accepted",',
+    '      "initialProgressNote": "Only include progress that has already happened",',
+    '      "checklistItems": ["Concrete substep one", "Concrete substep two"],',
+    '      "promoteToRyanOS": true',
+    "    }",
+    "  ]",
+    "}",
+    "",
+    "Candidate guidance:",
+    "- Use title for the short task name.",
+    "- Use summary for a plain one-to-three sentence overview.",
+    "- Use descriptionMarkdown for rich source-backed details, context, dates, decisions, and next steps.",
+    "- Include sourceLinks whenever URLs, files, tickets, emails, or documents are available.",
+    "- Include checklistItems only when there are concrete substeps.",
+    "- Include initialProgressNote only for progress that has already happened.",
+    "- Set promoteToRyanOS to true only for items worth showing to the user.",
+    "",
+    "curl example:",
+    automationCurlSnippet(source, endpoint, token)
+  ].filter(Boolean).join("\n");
+}
+
+function automationCurlSnippet(source: AutomationSource, endpoint: string, token: string | undefined): string {
+  return [
+    `RYANOS_AUTOMATION_INGEST_URL="${endpoint}"`,
+    `RYANOS_AUTOMATION_INGEST_TOKEN="${token ?? "<rotate-token-for-this-source>"}"`,
+    `RYANOS_AUTOMATION_REPORT_PATH="./ryanos-${source.sourceSlug}-report.json"`,
+    "curl -fsS \\",
+    "  -H \"content-type: application/json\" \\",
+    "  -H \"authorization: Bearer $RYANOS_AUTOMATION_INGEST_TOKEN\" \\",
+    "  --data-binary @\"$RYANOS_AUTOMATION_REPORT_PATH\" \\",
+    "  \"$RYANOS_AUTOMATION_INGEST_URL\""
+  ].join("\n");
+}
+
 function Toggle({
   checked,
   disabled,
@@ -267,7 +359,14 @@ export function AdminOperationsPanel() {
   const [gmailRedirectUrl, setGmailRedirectUrl] = useState("");
   const [telegramToken, setTelegramToken] = useState("");
   const [telegramLink, setTelegramLink] = useState<LinkCodeResponse | null>(null);
-  const [codexToken, setCodexToken] = useState<string | null>(null);
+  const [automationSourceTokens, setAutomationSourceTokens] = useState<Record<string, string>>({});
+  const [automationSourceForm, setAutomationSourceForm] = useState({
+    name: "",
+    platform: "codex",
+    projectSlug: "",
+    description: ""
+  });
+  const [showAutomationSourceForm, setShowAutomationSourceForm] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
 
   async function load(options?: { background?: boolean }) {
@@ -459,20 +558,27 @@ export function AdminOperationsPanel() {
     }
   }
 
-  async function rotateCodexToken() {
-    setBusy("codex_rfp:token");
+  async function createAutomationSource(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy("automation-source:create");
     setError(null);
     try {
-      const response = await apiFetch(apiPath("/v1/integrations/codex-rfp/token"), {
+      const response = await apiFetch(apiPath("/v1/integrations/automations/sources"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({})
+        body: JSON.stringify(automationSourceForm)
       });
       if (!response.ok) throw new Error(await readResponseMessage(response));
-      const result = (await response.json()) as IntegrationsResponse["integrations"][number] & {
+      const result = (await response.json()) as {
+        source: AutomationSource;
         token: string;
       };
-      setCodexToken(result.token);
+      setAutomationSourceTokens((current) => ({
+        ...current,
+        [result.source.id]: result.token
+      }));
+      setAutomationSourceForm({ name: "", platform: "codex", projectSlug: "", description: "" });
+      setShowAutomationSourceForm(false);
       await load({ background: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -481,10 +587,81 @@ export function AdminOperationsPanel() {
     }
   }
 
-  async function copyText(key: string, text: string) {
-    await navigator.clipboard.writeText(text);
-    setCopied(key);
-    window.setTimeout(() => setCopied(null), 1800);
+  async function requestAutomationSourceToken(source: AutomationSource): Promise<{
+    source: AutomationSource;
+    token: string;
+  }> {
+    const response = await apiFetch(apiPath(`/v1/integrations/automations/sources/${encodeURIComponent(source.id)}/token`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    if (!response.ok) throw new Error(await readResponseMessage(response));
+    return (await response.json()) as {
+      source: AutomationSource;
+      token: string;
+    };
+  }
+
+  async function rotateAutomationSourceToken(source: AutomationSource) {
+    setBusy(`automation-source:${source.id}:token`);
+    setError(null);
+    try {
+      const result = await requestAutomationSourceToken(source);
+      setAutomationSourceTokens((current) => ({
+        ...current,
+        [result.source.id]: result.token
+      }));
+      await load({ background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function copyAutomationSourceSetup(source: AutomationSource, endpoint: string) {
+    setBusy(`automation-source:${source.id}:copy`);
+    setError(null);
+    try {
+      let token = automationSourceTokens[source.id];
+      let snippetSource = source;
+      if (!token) {
+        const result = await requestAutomationSourceToken(source);
+        token = result.token;
+        snippetSource = result.source;
+        setAutomationSourceTokens((current) => ({
+          ...current,
+          [result.source.id]: result.token
+        }));
+      }
+      await navigator.clipboard.writeText(automationSetupSnippet(snippetSource, endpoint, token));
+      setCopied(`automation-source:${source.id}:setup`);
+      window.setTimeout(() => setCopied(null), 1800);
+      await load({ background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function toggleAutomationSource(source: AutomationSource) {
+    setBusy(`automation-source:${source.id}:toggle`);
+    setError(null);
+    try {
+      const response = await apiFetch(apiPath(`/v1/integrations/automations/sources/${encodeURIComponent(source.id)}`), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !source.enabled })
+      });
+      if (!response.ok) throw new Error(await readResponseMessage(response));
+      await load({ background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   const summaryCards = [
@@ -504,7 +681,7 @@ export function AdminOperationsPanel() {
       icon: Mail
     },
     {
-      label: "Codex automations",
+      label: "Automation sources",
       value: integrationById.get("codex_rfp") ? statusLabel(integrationById.get("codex_rfp")!) : "Loading",
       icon: Search
     },
@@ -595,20 +772,7 @@ export function AdminOperationsPanel() {
           {integrations.map((integration) => {
             const Icon = iconByIntegration[integration.id];
             const open = expanded === integration.id;
-            const codexEndpoint = integration.id === "codex_rfp" ? absoluteEndpoint(integration.endpointPath) : "";
-            const codexSnippet = [
-              `CODEX_AUTOMATION_INGEST_URL="${codexEndpoint}"`,
-              `CODEX_AUTOMATION_INGEST_TOKEN="${codexToken ?? "<rotate-token-in-ryanos-admin>"}"`,
-              'CODEX_AUTOMATION_REPORT_PATH="<path-to-report-json>"',
-              "# Report JSON: { automationId, projectSlug, runAt, candidates: [...] }",
-              "# Candidate fields can include title, sourceUrl/sourceUrls, rating, dueAt, summary, rationale, recommendedAction, initialProgressNote, checklistItems, promoteToRyanOS.",
-              "# Use initialProgressNote only for progress already done; use checklistItems only for concrete substeps.",
-              "curl -fsS \\",
-              "  -H \"content-type: application/json\" \\",
-              "  -H \"authorization: Bearer $CODEX_AUTOMATION_INGEST_TOKEN\" \\",
-              "  --data-binary @\"$CODEX_AUTOMATION_REPORT_PATH\" \\",
-              "  \"$CODEX_AUTOMATION_INGEST_URL\""
-            ].join("\n");
+            const automationEndpoint = integration.id === "codex_rfp" ? absoluteEndpoint(integration.endpointPath) : "";
             return (
               <div key={integration.id} className="py-4 first:pt-0 last:pb-0">
                 <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
@@ -622,7 +786,7 @@ export function AdminOperationsPanel() {
                           : integration.id === "telegram"
                             ? `${integration.linkedAccounts?.length ?? 0} linked`
                             : integration.id === "codex_rfp"
-                              ? `${integration.counts?.proposed ?? 0} proposed leads`
+                              ? `${integration.sources?.length ?? 0} sources / ${integration.counts?.proposed ?? 0} proposed`
                               : "Assistant bridge"}
                       </p>
                     </div>
@@ -759,7 +923,11 @@ export function AdminOperationsPanel() {
 
                     {integration.id === "codex_rfp" ? (
                       <div className="mt-4 space-y-4">
-                        <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                        <div className="grid gap-2 text-sm sm:grid-cols-3">
+                          <div className="rounded-md bg-stone-50 px-3 py-2">
+                            <p className="text-xs font-medium uppercase text-stone-500">Sources</p>
+                            <p className="mt-1 font-medium text-stone-950">{integration.sources?.length ?? 0}</p>
+                          </div>
                           <div className="rounded-md bg-stone-50 px-3 py-2">
                             <p className="text-xs font-medium uppercase text-stone-500">Last ingest</p>
                             <p className="mt-1 font-medium text-stone-950">
@@ -767,87 +935,196 @@ export function AdminOperationsPanel() {
                             </p>
                           </div>
                           <div className="rounded-md bg-stone-50 px-3 py-2">
-                            <p className="text-xs font-medium uppercase text-stone-500">Last report</p>
-                            <p className="mt-1 font-medium text-stone-950">
-                              {formatDate(integration.account?.lastReportRunAt)}
-                            </p>
-                          </div>
-                          <div className="rounded-md bg-stone-50 px-3 py-2">
-                            <p className="text-xs font-medium uppercase text-stone-500">Proposed leads</p>
+                            <p className="text-xs font-medium uppercase text-stone-500">Proposals</p>
                             <p className="mt-1 font-medium text-stone-950">{integration.counts?.proposed ?? 0}</p>
                           </div>
-                          <div className="rounded-md bg-stone-50 px-3 py-2">
-                            <p className="text-xs font-medium uppercase text-stone-500">Credential</p>
-                            <p className="mt-1 font-medium text-stone-950">
-                              {integration.account?.tokenPreview ? "configured" : "none"}
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-stone-950">Automation source list</p>
+                            <p className="mt-0.5 text-sm leading-6 text-stone-600">
+                              Add one source per workflow, project, inbox, script, or agent. Copy setup includes the endpoint, token, and generic payload contract.
+                              If RyanOS no longer has the plaintext token, Copy setup generates a fresh one for that source.
                             </p>
                           </div>
-                        </div>
-
-                        <div className="flex flex-wrap gap-2">
                           <button
                             type="button"
-                            onClick={() => void rotateCodexToken()}
-                            disabled={busy !== null}
-                            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-stone-950 px-3 text-sm font-medium text-white hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
+                            onClick={() => setShowAutomationSourceForm((current) => !current)}
+                            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-stone-300 px-3 text-sm font-medium text-stone-700 hover:bg-stone-100"
+                            aria-expanded={showAutomationSourceForm}
                           >
-                            {integration.configured ? (
-                              <RotateCcw className={`h-4 w-4 ${busy === "codex_rfp:token" ? "animate-spin" : ""}`} aria-hidden="true" />
-                            ) : (
-                              <KeyRound className="h-4 w-4" aria-hidden="true" />
-                            )}
-                            {integration.configured ? "Rotate token" : "Generate token"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void copyText("codex-endpoint", codexEndpoint)}
-                            disabled={!codexEndpoint}
-                            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-stone-300 px-3 text-sm font-medium text-stone-700 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            <Copy className="h-4 w-4" aria-hidden="true" />
-                            {copied === "codex-endpoint" ? "Copied" : "Copy endpoint"}
+                            <Plus className={`h-4 w-4 transition ${showAutomationSourceForm ? "rotate-45" : ""}`} aria-hidden="true" />
+                            {showAutomationSourceForm ? "Close" : "Add source"}
                           </button>
                         </div>
 
-                        {codexToken ? (
-                          <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-900">
-                            This token is shown once. Rotate it if you lose it.
-                          </p>
+                        {showAutomationSourceForm ? (
+                          <form
+                            onSubmit={createAutomationSource}
+                            className="grid gap-3 rounded-md border border-stone-200 bg-stone-50 p-3 md:grid-cols-[minmax(0,1fr)_140px_minmax(0,1fr)]"
+                          >
+                            <label className="block text-sm font-medium text-stone-700">
+                              Source name
+                              <input
+                                type="text"
+                                value={automationSourceForm.name}
+                                onChange={(event) =>
+                                  setAutomationSourceForm((current) => ({ ...current, name: event.target.value }))
+                                }
+                                placeholder="Project monitor"
+                                className="mt-1 h-10 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none focus:border-sky-500"
+                                required
+                              />
+                            </label>
+                            <label className="block text-sm font-medium text-stone-700">
+                              Platform
+                              <select
+                                value={automationSourceForm.platform}
+                                onChange={(event) =>
+                                  setAutomationSourceForm((current) => ({ ...current, platform: event.target.value }))
+                                }
+                                className="mt-1 h-10 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none focus:border-sky-500"
+                              >
+                                <option value="codex">Codex</option>
+                                <option value="api">API</option>
+                                <option value="mcp">MCP</option>
+                                <option value="other">Other</option>
+                              </select>
+                            </label>
+                            <label className="block text-sm font-medium text-stone-700">
+                              Project slug
+                              <input
+                                type="text"
+                                value={automationSourceForm.projectSlug}
+                                onChange={(event) =>
+                                  setAutomationSourceForm((current) => ({ ...current, projectSlug: event.target.value }))
+                                }
+                                placeholder="project-slug"
+                                className="mt-1 h-10 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none focus:border-sky-500"
+                                required
+                              />
+                            </label>
+                            <label className="block text-sm font-medium text-stone-700 md:col-span-2">
+                              Description
+                              <input
+                                type="text"
+                                value={automationSourceForm.description}
+                                onChange={(event) =>
+                                  setAutomationSourceForm((current) => ({ ...current, description: event.target.value }))
+                                }
+                                placeholder="Optional internal context for this source"
+                                className="mt-1 h-10 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none focus:border-sky-500"
+                              />
+                            </label>
+                            <div className="flex items-end justify-end gap-2 md:col-span-3">
+                              <button
+                                type="button"
+                                onClick={() => setShowAutomationSourceForm(false)}
+                                className="inline-flex h-10 items-center justify-center rounded-md border border-stone-300 bg-white px-3 text-sm font-medium text-stone-700 hover:bg-stone-100"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="submit"
+                                disabled={
+                                  busy !== null ||
+                                  automationSourceForm.name.trim().length === 0 ||
+                                  automationSourceForm.projectSlug.trim().length === 0
+                                }
+                                className="inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-stone-950 px-3 text-sm font-medium text-white hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                <Plus className="h-4 w-4" aria-hidden="true" />
+                                Add source
+                              </button>
+                            </div>
+                          </form>
                         ) : null}
 
-                        <div className="rounded-md border border-stone-200 bg-stone-50">
-                          <div className="flex items-center justify-between gap-3 border-b border-stone-200 px-3 py-2">
-                            <p className="text-sm font-semibold text-stone-950">Automation upload snippet</p>
-                            <button
-                              type="button"
-                              onClick={() => void copyText("codex-snippet", codexSnippet)}
-                              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2 text-sm font-medium text-stone-700 hover:bg-stone-100"
-                            >
-                              <Copy className="h-4 w-4" aria-hidden="true" />
-                              {copied === "codex-snippet" ? "Copied" : "Copy"}
-                            </button>
-                          </div>
-                          <pre className="overflow-x-auto p-3 text-xs leading-5 text-stone-900">{codexSnippet}</pre>
-                        </div>
+                        {(integration.sources ?? []).length === 0 ? (
+                          <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-900">
+                            No automation sources yet. Use the plus button to add one source per workflow or project.
+                          </p>
+                        ) : (
+                          <div className="overflow-hidden rounded-md border border-stone-200 bg-white">
+                            {(integration.sources ?? []).map((source) => {
+                              const sourceToken = automationSourceTokens[source.id];
+                              const copyKey = `automation-source:${source.id}:setup`;
+                              return (
+                                <div
+                                  key={source.id}
+                                  className="grid min-w-0 gap-3 border-t border-stone-200 px-3 py-3 first:border-t-0 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_auto] lg:items-center"
+                                >
+                                  <div className="min-w-0">
+                                    <p className="truncate text-sm font-semibold text-stone-950">{source.name}</p>
+                                    <p className="mt-0.5 truncate text-xs text-stone-500">
+                                      {source.platform} / {source.projectSlug ?? "project from report"} / {source.enabled ? "enabled" : "disabled"}
+                                    </p>
+                                    {source.description ? (
+                                      <p className="mt-1 line-clamp-2 text-sm leading-5 text-stone-600">{source.description}</p>
+                                    ) : null}
+                                  </div>
 
-                        <div className="flex flex-wrap gap-2 text-xs text-stone-600">
-                          {(integration.account?.lastAutomationIds ?? []).map((automationId) => (
-                            <span key={automationId} className="rounded-md bg-stone-100 px-2 py-1">
-                              {automationId}
-                            </span>
-                          ))}
-                          {(integration.account?.lastProjectSlugs ?? []).map((projectSlug) => (
-                            <span key={projectSlug} className="rounded-md bg-sky-50 px-2 py-1 text-sky-800">
-                              {projectSlug}
-                            </span>
-                          ))}
-                          {integration.account?.lastResult ? (
-                            <span className="rounded-md bg-stone-100 px-2 py-1">
-                              {integration.account.lastResult.candidatesSeen ?? 0} seen,{" "}
-                              {integration.account.lastResult.proposalsCreatedOrUpdated ?? 0} updated
-                            </span>
-                          ) : null}
-                        </div>
+                                  <div className="grid min-w-0 grid-cols-2 gap-x-4 gap-y-1 text-xs text-stone-600 sm:grid-cols-4 lg:grid-cols-2">
+                                    <p className="min-w-0">
+                                      <span className="block font-medium text-stone-500">Last ingest</span>
+                                      <span className="block truncate text-stone-900">{formatDate(source.lastIngestAt)}</span>
+                                    </p>
+                                    <p>
+                                      <span className="block font-medium text-stone-500">Proposed</span>
+                                      <span className="block text-stone-900">{source.proposalCounts.proposed}</span>
+                                    </p>
+                                    <p>
+                                      <span className="block font-medium text-stone-500">Accepted</span>
+                                      <span className="block text-stone-900">{source.proposalCounts.accepted}</span>
+                                    </p>
+                                    <p className="min-w-0">
+                                      <span className="block font-medium text-stone-500">Token</span>
+                                      <span className="block truncate text-stone-900">
+                                        {sourceToken ? "ready to copy" : source.tokenPreview ?? "not created"}
+                                      </span>
+                                    </p>
+                                  </div>
+
+                                  <div className="flex flex-wrap gap-2 lg:justify-end">
+                                    <button
+                                      type="button"
+                                      onClick={() => void copyAutomationSourceSetup(source, automationEndpoint)}
+                                      disabled={busy !== null || !automationEndpoint}
+                                      className="inline-flex h-8 items-center gap-1.5 rounded-md bg-stone-950 px-2 text-sm font-medium text-white hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
+                                      title={sourceToken ? "Copy setup instructions" : "Generate a fresh token and copy setup instructions"}
+                                    >
+                                      <Copy className={`h-4 w-4 ${busy === `automation-source:${source.id}:copy` ? "animate-pulse" : ""}`} aria-hidden="true" />
+                                      {copied === copyKey ? "Copied" : "Copy setup"}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void rotateAutomationSourceToken(source)}
+                                      disabled={busy !== null}
+                                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-300 px-2 text-sm font-medium text-stone-700 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                      title="Rotate token"
+                                    >
+                                      {source.tokenPreview ? (
+                                        <RotateCcw className={`h-4 w-4 ${busy === `automation-source:${source.id}:token` ? "animate-spin" : ""}`} aria-hidden="true" />
+                                      ) : (
+                                        <KeyRound className="h-4 w-4" aria-hidden="true" />
+                                      )}
+                                      Token
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void toggleAutomationSource(source)}
+                                      disabled={busy !== null}
+                                      className="inline-flex h-8 items-center rounded-md border border-stone-300 px-2 text-sm font-medium text-stone-700 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      {source.enabled ? "Disable" : "Enable"}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     ) : null}
 

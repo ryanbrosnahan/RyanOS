@@ -3,6 +3,13 @@
 import { Check, ExternalLink, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { apiFetch, apiPath } from "./api-client";
+import { MarkdownContent } from "./markdown-content";
+
+type SourceLink = {
+  label?: string;
+  url: string;
+  type?: string;
+};
 
 type OpportunityProposal = {
   id: string;
@@ -13,12 +20,21 @@ type OpportunityProposal = {
   rating?: number;
   fit: "unknown" | "low" | "medium" | "high";
   priority: "low" | "normal" | "high" | "urgent";
+  descriptionMarkdown?: string;
   dueAt?: string;
   decisionBy?: string;
   valueEstimate?: string;
   recommendedAction?: string;
   rationale?: string;
   sourceUrls: string[];
+  sourceLinks: SourceLink[];
+  automationSource?: {
+    id?: string;
+    name?: string;
+    sourceSlug?: string;
+    platform?: string;
+    projectSlug?: string;
+  };
   reportPath?: string;
   source?: {
     title?: string;
@@ -50,6 +66,9 @@ type CodexRfpStatus = {
     lastIngestAt?: string;
     lastReportRunAt?: string;
   };
+  sources?: Array<{
+    lastIngestAt?: string;
+  }>;
 };
 
 function formatDate(value: string | undefined): string | undefined {
@@ -86,15 +105,28 @@ function proposalTone(priority: string): string {
   }
 }
 
-function uniqueLinks(proposal: OpportunityProposal): string[] {
+function uniqueLinks(proposal: OpportunityProposal): SourceLink[] {
   const seen = new Set<string>();
-  const links: string[] = [];
+  const links: SourceLink[] = [];
+  for (const link of proposal.sourceLinks ?? []) {
+    if (!link.url || seen.has(link.url)) continue;
+    seen.add(link.url);
+    links.push(link);
+  }
   for (const url of [proposal.source?.url, ...proposal.sourceUrls]) {
     if (!url || seen.has(url)) continue;
     seen.add(url);
-    links.push(url);
+    links.push({ url, label: links.length === 0 ? "Primary source" : `Source ${links.length + 1}` });
   }
   return links;
+}
+
+function proposalSourceLabel(proposal: OpportunityProposal): string {
+  return proposal.automationSource?.name ?? projectLabel(proposal.automationSource?.projectSlug ?? proposal.projectSlug);
+}
+
+function lastIngestAt(status: CodexRfpStatus): string | undefined {
+  return status.sources?.find((source) => source.lastIngestAt)?.lastIngestAt ?? status.account?.lastIngestAt;
 }
 
 export function OpportunityProposalsPanel() {
@@ -121,7 +153,7 @@ export function OpportunityProposalsPanel() {
         apiFetch(apiPath(`/v1/opportunity-proposals?${params.toString()}`), {
           cache: "no-store"
         }),
-        apiFetch(apiPath("/v1/integrations/codex-rfp"), {
+        apiFetch(apiPath("/v1/integrations/automations"), {
           cache: "no-store"
         })
       ]);
@@ -180,7 +212,7 @@ export function OpportunityProposalsPanel() {
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Search className="h-5 w-5 text-emerald-700" aria-hidden="true" />
-          <h2 className="text-lg font-semibold text-stone-950">Proposed opportunity leads</h2>
+          <h2 className="text-lg font-semibold text-stone-950">Proposed tasks</h2>
         </div>
         <button
           type="button"
@@ -205,13 +237,13 @@ export function OpportunityProposalsPanel() {
             }`}
           >
             {codexStatus.enabled && codexStatus.setup.ready
-              ? "Codex automations ready"
+              ? "Automation sources ready"
               : codexStatus.setup.configured
-                ? "Codex automations need attention"
-                : "Codex automations not set up"}
+                ? "Automation sources need attention"
+                : "Automation sources not set up"}
           </span>
           <span className="rounded-md bg-stone-100 px-2 py-1 font-medium text-stone-700">
-            Last ingest {formatDate(codexStatus.account?.lastIngestAt) ?? "never"}
+            Last ingest {formatDate(lastIngestAt(codexStatus)) ?? "never"}
           </span>
           <span className="rounded-md bg-stone-100 px-2 py-1 font-medium text-stone-700">
             {codexStatus.counts.proposed} proposed
@@ -220,16 +252,16 @@ export function OpportunityProposalsPanel() {
       ) : null}
 
       {!error && loading && proposals.length === 0 ? (
-        <p className="mt-3 text-sm leading-6 text-stone-600">Loading opportunity proposals...</p>
+        <p className="mt-3 text-sm leading-6 text-stone-600">Loading proposed tasks...</p>
       ) : null}
 
       {!error && !loading && proposals.length === 0 ? (
         <p className="mt-3 text-sm leading-6 text-stone-600">
           {codexStatus && !codexStatus.setup.configured
-            ? "No proposed opportunity leads because Codex automation ingest is not set up yet."
+            ? "No proposed tasks because automation sources are not set up yet."
             : codexStatus && !codexStatus.setup.ready
-              ? "No proposed opportunity leads; Codex automation ingest needs attention in Admin."
-              : "No proposed opportunity leads."}
+              ? "No proposed tasks; automation sources need attention in Admin."
+              : "No proposed tasks."}
         </p>
       ) : null}
 
@@ -242,7 +274,10 @@ export function OpportunityProposalsPanel() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500">
-                      <span className="font-medium text-stone-600">{projectLabel(proposal.projectSlug)}</span>
+                      <span className="font-medium text-stone-600">{proposalSourceLabel(proposal)}</span>
+                      {proposal.automationSource?.name ? (
+                        <span>{projectLabel(proposal.automationSource.projectSlug ?? proposal.projectSlug)}</span>
+                      ) : null}
                       <span>{ratingLabel(proposal.rating)}</span>
                       <span>{proposal.fit} fit</span>
                       {proposal.dueAt ? <span>Due {formatDate(proposal.dueAt)}</span> : null}
@@ -254,10 +289,13 @@ export function OpportunityProposalsPanel() {
                   </span>
                 </div>
 
-                {proposal.rationale ?? proposal.summary ? (
-                  <p className="mt-2 text-sm leading-5 text-stone-700">
-                    {proposal.rationale ?? proposal.summary}
-                  </p>
+                {proposal.descriptionMarkdown ? (
+                  <MarkdownContent
+                    value={proposal.descriptionMarkdown}
+                    className="mt-2 text-sm leading-6 text-stone-700"
+                  />
+                ) : proposal.rationale ?? proposal.summary ? (
+                  <p className="mt-2 text-sm leading-5 text-stone-700">{proposal.rationale ?? proposal.summary}</p>
                 ) : null}
 
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-stone-500">
@@ -268,16 +306,16 @@ export function OpportunityProposalsPanel() {
 
                 {links.length > 0 || proposal.reportPath ? (
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                    {links.slice(0, 3).map((url, index) => (
+                    {links.slice(0, 4).map((link, index) => (
                       <a
-                        key={url}
-                        href={url}
+                        key={link.url}
+                        href={link.url}
                         target="_blank"
                         rel="noreferrer"
                         className="inline-flex items-center gap-1 text-emerald-800 hover:text-emerald-950"
                       >
                         <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                        Source {index + 1}
+                        {link.label ?? `Source ${index + 1}`}
                       </a>
                     ))}
                     {proposal.reportPath ? <span className="truncate text-stone-500">{proposal.reportPath}</span> : null}

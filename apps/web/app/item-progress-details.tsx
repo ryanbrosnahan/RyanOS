@@ -3,6 +3,7 @@
 import { Check, Circle, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch, apiPath } from "./api-client";
+import { MarkdownContent } from "./markdown-content";
 
 export type ItemProgressSummary = {
   progress?: {
@@ -401,9 +402,10 @@ export function ItemProgressDetails<TItem extends DetailItem>({
                   </div>
                 </div>
               ) : (
-                <p className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words text-sm leading-6 text-stone-800">
-                  {summary}
-                </p>
+                <MarkdownContent
+                  value={summary}
+                  className="mt-1 max-h-40 overflow-auto break-words text-sm leading-6 text-stone-800"
+                />
               )}
             </section>
           ) : null}

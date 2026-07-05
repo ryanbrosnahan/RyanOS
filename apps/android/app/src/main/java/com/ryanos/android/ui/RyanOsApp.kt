@@ -96,6 +96,7 @@ import com.ryanos.android.data.InboxSnapshot
 import com.ryanos.android.data.ItemDetailsSnapshot
 import com.ryanos.android.data.MessageSnapshot
 import com.ryanos.android.data.OpportunityProposal
+import com.ryanos.android.data.ProposalSourceLink
 import com.ryanos.android.data.RyanOsSettings
 import com.ryanos.android.data.RyanOsWidgetKind
 import com.ryanos.android.data.ShoppingItem
@@ -749,13 +750,13 @@ private fun InboxScreen(
         }
       }
       item {
-        SectionTitle("Codex automation proposals", snapshot.opportunityProposals.size.takeIf { it > 0 }?.toString())
+        SectionTitle("Automation proposals", snapshot.opportunityProposals.size.takeIf { it > 0 }?.toString())
       }
       if (snapshot.opportunityProposals.isEmpty()) {
         item {
           EmptyText(
             if (snapshot.codexStatus?.ready == false) {
-              "Codex automations are not set up yet."
+              "Automation sources are not set up yet."
             } else {
               "No proposed automation tasks."
             }
@@ -792,7 +793,7 @@ private fun CodexAutomationCard(
       ) {
         Column(modifier = Modifier.weight(1f)) {
           Text(
-            text = "Codex automations",
+            text = "Automation sources",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold
           )
@@ -817,6 +818,7 @@ private fun CodexAutomationCard(
       if (status != null) {
         val meta = listOfNotNull(
           "${status.proposedCount} proposed",
+          status.sourceCount.takeIf { it > 0 }?.let { "$it sources" },
           shortDateTime(status.lastIngestAt)?.let { "last ingest $it" }
         ).joinToString(" / ")
         if (meta.isNotBlank()) {
@@ -936,7 +938,9 @@ private fun OpportunityProposalRow(
           )
           Text(
             text = listOfNotNull(
-              projectLabel(proposal.projectSlug).takeIf { it.isNotBlank() },
+              proposal.automationSource?.name?.takeIf { it.isNotBlank() },
+              projectLabel(proposal.automationSource?.projectSlug ?: proposal.projectSlug).takeIf { it.isNotBlank() },
+              proposal.automationSource?.platform?.takeIf { it.isNotBlank() },
               proposal.fit.takeIf { it.isNotBlank() },
               proposal.priority.takeIf { it.isNotBlank() },
               proposal.rating?.let { "rating ${"%.1f".format(it)}" },
@@ -958,7 +962,8 @@ private fun OpportunityProposalRow(
         )
       }
       ProposalBodyText(
-        proposal.recommendedAction
+        proposal.descriptionMarkdown
+          ?: proposal.recommendedAction
           ?: proposal.summary
           ?: proposal.sourceSummary
           ?: proposal.rationale
@@ -967,14 +972,35 @@ private fun OpportunityProposalRow(
         primary = proposal.sourceTitle,
         secondary = listOfNotNull(proposal.valueEstimate, shortDateTime(proposal.occurredAt)).joinToString(" / ")
       )
-      val sourceUrl = proposal.sourceUrl ?: proposal.sourceUrls.firstOrNull()
-      if (sourceUrl != null) {
-        TextButton(onClick = { uriHandler.openUri(sourceUrl) }) {
-          Text("Open source")
+      val sourceLinks = proposalLinks(proposal)
+      if (sourceLinks.isNotEmpty()) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+          sourceLinks.take(3).forEachIndexed { index, link ->
+            TextButton(onClick = { uriHandler.openUri(link.url) }) {
+              Text(link.label?.takeIf { it.isNotBlank() } ?: "Source ${index + 1}")
+            }
+          }
         }
       }
     }
   }
+}
+
+private fun proposalLinks(proposal: OpportunityProposal): List<ProposalSourceLink> {
+  val seen = linkedSetOf<String>()
+  val links = mutableListOf<ProposalSourceLink>()
+  proposal.sourceLinks.forEach { link ->
+    if (link.url.isNotBlank() && seen.add(link.url)) links.add(link)
+  }
+  buildList {
+    proposal.sourceUrl?.let { add(it) }
+    addAll(proposal.sourceUrls)
+  }.forEach { url ->
+    if (url.isNotBlank() && seen.add(url)) {
+      links.add(ProposalSourceLink(label = if (links.isEmpty()) "Primary source" else "Source ${links.size + 1}", url = url, type = null))
+    }
+  }
+  return links
 }
 
 @Composable

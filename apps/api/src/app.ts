@@ -61,7 +61,8 @@ import {
   ingestOpportunityReport,
   opportunityProposalView,
   parseOpportunityReportIngestBody,
-  rejectOpportunityProposal
+  rejectOpportunityProposal,
+  type OpportunityAutomationSourceContext
 } from "./opportunity-proposals.js";
 import { sendTelegramMessage } from "./telegram-client.js";
 import { resolveTelegramBotToken } from "./telegram-credentials.js";
@@ -331,6 +332,29 @@ const integrationParamsSchema = z.object({
 const integrationSettingsBodySchema = z.object({
   userId: z.string().default("local-owner"),
   enabled: z.boolean()
+});
+
+const automationPlatformSchema = z.enum(["codex", "api", "mcp", "other"]);
+
+const automationSourceCreateBodySchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  platform: automationPlatformSchema.default("codex"),
+  projectSlug: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(1000).optional(),
+  instructions: z.string().trim().max(4000).optional()
+});
+
+const automationSourcePatchBodySchema = z.object({
+  name: z.string().trim().min(1).max(120).optional(),
+  platform: automationPlatformSchema.optional(),
+  projectSlug: z.string().trim().min(1).max(120).optional(),
+  description: z.string().trim().max(1000).optional(),
+  instructions: z.string().trim().max(4000).optional(),
+  enabled: z.boolean().optional()
+});
+
+const automationSourceParamsSchema = z.object({
+  sourceId: z.string().min(1)
 });
 
 const emailAccountParamsSchema = z.object({
@@ -1139,13 +1163,18 @@ const integrationNames: Record<IntegrationId, string> = {
   ai: "AI provider",
   telegram: "Telegram",
   gmail: "Gmail",
-  codex_rfp: "Codex automations"
+  codex_rfp: "Automation sources"
 };
 
 const codexRfpProvider = "codex_rfp_ingest";
 const codexAutomationTokenPrefix = "ryanos_codex";
 const codexLegacyRfpTokenPrefix = "ryanos_rfp";
-const codexRfpEndpointPath = "/api/v1/automation/codex-automations/ingest";
+const automationIngestEndpointPath = "/api/v1/automation/ingest";
+const codexRfpEndpointPath = automationIngestEndpointPath;
+const legacyAutomationIngestEndpointPaths = [
+  "/api/v1/automation/codex-automations/ingest",
+  "/api/v1/automation/rfp-reports/ingest"
+];
 
 function codexRfpMetadata(account: ProviderAccount | undefined): Record<string, unknown> {
   return asRecord(account?.metadata) ?? {};
@@ -1200,6 +1229,16 @@ function codexRfpTokenFromRequest(request: FastifyRequest): string | undefined {
   }
   const header = request.headers["x-ryanos-ingest-token"];
   return Array.isArray(header) ? header[0] : header;
+}
+
+function automationSlugFromName(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return slug || "automation-source";
 }
 
 function validateTelegramBotToken(token: string): string {
@@ -1445,63 +1484,151 @@ export function buildApp(options: {
     };
   }
 
-  async function codexRfpAccountForUser(userId: UUID): Promise<ProviderAccount | undefined> {
+  async function automationSourcesForUser(userId: UUID): Promise<ProviderAccount[]> {
     const accounts = await store.listProviderAccounts({
       userId,
       provider: codexRfpProvider,
-      limit: 20
+      limit: 200
     });
-    return accounts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    return accounts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
-  async function codexRfpProposalCounts(userId: UUID) {
+  async function codexRfpAccountForUser(userId: UUID): Promise<ProviderAccount | undefined> {
+    return (await automationSourcesForUser(userId))[0];
+  }
+
+  function automationSourceContext(account: ProviderAccount): OpportunityAutomationSourceContext {
+    const metadata = codexRfpMetadata(account);
+    const context: OpportunityAutomationSourceContext = {
+      id: account.id,
+      sourceSlug:
+        typeof metadata.sourceSlug === "string"
+          ? metadata.sourceSlug
+          : automationSlugFromName(account.displayName ?? account.externalAccountId ?? account.id),
+      platform: typeof metadata.platform === "string" ? metadata.platform : "codex"
+    };
+    const name = account.displayName ?? (typeof metadata.name === "string" ? metadata.name : undefined);
+    if (name !== undefined) context.name = name;
+    if (typeof metadata.projectSlug === "string") context.projectSlug = metadata.projectSlug;
+    return context;
+  }
+
+  function proposalAutomationSourceId(proposal: { metadata: JsonObject }): string | undefined {
+    const metadata = asRecord(proposal.metadata) ?? {};
+    if (typeof metadata.automationSourceId === "string") return metadata.automationSourceId;
+    const source = asRecord(metadata.automationSource);
+    return typeof source?.id === "string" ? source.id : undefined;
+  }
+
+  async function codexRfpProposalCounts(userId: UUID, sourceId?: UUID) {
     const [proposed, accepted, rejected] = await Promise.all([
       store.listOpportunityProposals({ userId, status: "proposed", limit: 200 }),
       store.listOpportunityProposals({ userId, status: "accepted", limit: 200 }),
       store.listOpportunityProposals({ userId, status: "rejected", limit: 200 })
     ]);
+    const filterBySource = <T extends { metadata: JsonObject }>(proposals: T[]) =>
+      sourceId === undefined
+        ? proposals
+        : proposals.filter((proposal) => proposalAutomationSourceId(proposal) === sourceId);
+    const sourceProposed = filterBySource(proposed);
+    const sourceAccepted = filterBySource(accepted);
+    const sourceRejected = filterBySource(rejected);
     return {
-      proposed: proposed.length,
-      accepted: accepted.length,
-      rejected: rejected.length,
-      total: proposed.length + accepted.length + rejected.length
+      proposed: sourceProposed.length,
+      accepted: sourceAccepted.length,
+      rejected: sourceRejected.length,
+      total: sourceProposed.length + sourceAccepted.length + sourceRejected.length
+    };
+  }
+
+  async function automationSourceView(account: ProviderAccount) {
+    const metadata = codexRfpMetadata(account);
+    const context = automationSourceContext(account);
+    return {
+      id: account.id,
+      name: account.displayName ?? context.name ?? "Automation source",
+      sourceSlug: context.sourceSlug,
+      platform: context.platform,
+      projectSlug: context.projectSlug,
+      description: typeof metadata.description === "string" ? metadata.description : undefined,
+      instructions: typeof metadata.instructions === "string" ? metadata.instructions : undefined,
+      status: account.status,
+      enabled: account.status === "active",
+      tokenId: account.externalAccountId,
+      tokenPreview: metadata.tokenPreview,
+      createdAt: account.createdAt,
+      updatedAt: account.updatedAt,
+      lastIngestAt: metadata.lastIngestAt,
+      lastReportRunAt: metadata.lastReportRunAt,
+      lastAutomationIds: Array.isArray(metadata.lastAutomationIds)
+        ? metadata.lastAutomationIds.filter((value): value is string => typeof value === "string")
+        : [],
+      lastProjectSlugs: Array.isArray(metadata.lastProjectSlugs)
+        ? metadata.lastProjectSlugs.filter((value): value is string => typeof value === "string")
+        : [],
+      lastResult: asRecord(metadata.lastResult) ?? undefined,
+      proposalCounts: await codexRfpProposalCounts(account.userId, account.id)
+    };
+  }
+
+  function legacyAccountPayload(account: ProviderAccount | undefined) {
+    if (!account) return undefined;
+    const metadata = codexRfpMetadata(account);
+    return {
+      id: account.id,
+      status: account.status,
+      displayName: account.displayName,
+      tokenId: account.externalAccountId,
+      tokenPreview: metadata.tokenPreview,
+      createdAt: account.createdAt,
+      updatedAt: account.updatedAt,
+      lastIngestAt: metadata.lastIngestAt,
+      lastReportRunAt: metadata.lastReportRunAt,
+      lastAutomationIds: Array.isArray(metadata.lastAutomationIds)
+        ? metadata.lastAutomationIds.filter((value): value is string => typeof value === "string")
+        : [],
+      lastProjectSlugs: Array.isArray(metadata.lastProjectSlugs)
+        ? metadata.lastProjectSlugs.filter((value): value is string => typeof value === "string")
+        : [],
+      lastResult: asRecord(metadata.lastResult) ?? undefined
     };
   }
 
   async function codexRfpSetupStatus(userId: UUID): Promise<SetupStatus> {
-    const account = await codexRfpAccountForUser(userId);
+    const sources = await automationSourcesForUser(userId);
     const enabled = await integrationEnabled(userId, "codex_rfp");
-    const metadata = codexRfpMetadata(account);
-    const hasTokenHash = typeof metadata.secretHash === "string" && metadata.secretHash.length > 0;
-    const configured = Boolean(account && hasTokenHash);
-    const ready = configured && account?.status === "active" && enabled;
+    const configured = sources.some((account) => {
+      const metadata = codexRfpMetadata(account);
+      return typeof metadata.secretHash === "string" && metadata.secretHash.length > 0;
+    });
+    const ready = configured && sources.some((account) => account.status === "active") && enabled;
     const setupActions: SetupStatus["setupActions"] = [];
     const warnings: string[] = [];
 
     if (!configured) {
       setupActions.push({
-        id: "codex-rfp-token",
-        title: "Create Codex automation ingest token",
+        id: "automation-source-token",
+        title: "Create an automation source",
         blocking: true,
         instructions: [
-          "Open RyanOS Admin and generate a Codex automation token.",
-          "Add the generated endpoint and token to each local Codex automation."
+          "Open RyanOS Admin and create one automation source per project or workflow.",
+          "Copy that source's prompt add-on or curl snippet into the automation that will report proposed tasks."
         ]
       });
     }
-    if (configured && account?.status !== "active") {
+    if (configured && !sources.some((account) => account.status === "active")) {
       setupActions.push({
-        id: "codex-rfp-token-disabled",
-        title: "Enable or rotate Codex automation token",
+        id: "automation-source-token-disabled",
+        title: "Enable or rotate an automation source token",
         blocking: true,
         instructions: [
-          "The stored Codex automation ingest token is disabled.",
-          "Enable the integration or rotate the token from RyanOS Admin."
+          "All automation source tokens are disabled.",
+          "Enable a source or rotate its token from RyanOS Admin."
         ]
       });
     }
     if (configured && !enabled) {
-      warnings.push("Codex automation ingest is disabled for this user.");
+      warnings.push("Automation source ingest is disabled for this user.");
     }
 
     return {
@@ -1516,78 +1643,128 @@ export function buildApp(options: {
   }
 
   async function codexRfpStatusPayload(userId: UUID) {
-    const [account, setting, counts] = await Promise.all([
-      codexRfpAccountForUser(userId),
+    const [accounts, setting, counts] = await Promise.all([
+      automationSourcesForUser(userId),
       store.getUserIntegrationSetting(userId, "codex_rfp"),
       codexRfpProposalCounts(userId)
     ]);
     const setup = await codexRfpSetupStatus(userId);
-    const metadata = codexRfpMetadata(account);
+    const account = accounts[0];
+    const sources = await Promise.all(accounts.map((candidate) => automationSourceView(candidate)));
     return {
       setup,
       endpointPath: codexRfpEndpointPath,
+      legacyEndpointPaths: legacyAutomationIngestEndpointPaths,
       enabled: setting?.enabled ?? true,
       counts,
-      account: account
-        ? {
-            id: account.id,
-            status: account.status,
-            displayName: account.displayName,
-            tokenId: account.externalAccountId,
-            tokenPreview: metadata.tokenPreview,
-            createdAt: account.createdAt,
-            updatedAt: account.updatedAt,
-            lastIngestAt: metadata.lastIngestAt,
-            lastReportRunAt: metadata.lastReportRunAt,
-            lastAutomationIds: Array.isArray(metadata.lastAutomationIds)
-              ? metadata.lastAutomationIds.filter((value): value is string => typeof value === "string")
-              : [],
-            lastProjectSlugs: Array.isArray(metadata.lastProjectSlugs)
-              ? metadata.lastProjectSlugs.filter((value): value is string => typeof value === "string")
-              : [],
-            lastResult: asRecord(metadata.lastResult) ?? undefined
-          }
-        : undefined
+      account: legacyAccountPayload(account),
+      sources
     };
   }
 
-  async function rotateCodexRfpToken(userId: UUID): Promise<{ token: string; status: "created" | "rotated" }> {
-    const existing = await codexRfpAccountForUser(userId);
+  async function createAutomationSourceAccount(input: {
+    userId: UUID;
+    name: string;
+    platform: z.infer<typeof automationPlatformSchema>;
+    projectSlug?: string;
+    description?: string;
+    instructions?: string;
+    sourceSlug?: string;
+  }): Promise<{ account: ProviderAccount; token: string }> {
     const next = createCodexRfpToken();
     const metadata = asJsonObject({
-      ...codexRfpMetadata(existing),
       credentialStorage: "hashed-db",
-      tokenKind: "rfp_report_ingest",
+      tokenKind: "automation_source_ingest",
+      secretHash: next.secretHash,
+      tokenPreview: next.tokenPreview,
+      rotatedAt: nowIso(),
+      sourceSlug: input.sourceSlug ?? automationSlugFromName(input.name),
+      platform: input.platform,
+      projectSlug: input.projectSlug,
+      description: input.description,
+      instructions: input.instructions
+    });
+    const account = await store.upsertProviderAccount({
+      userId: input.userId,
+      provider: codexRfpProvider,
+      externalAccountId: next.tokenId,
+      displayName: input.name,
+      status: "active",
+      scopes: ["automation:ingest", "rfp_report:ingest"],
+      metadata
+    });
+    await store.upsertUserIntegrationSetting({
+      userId: input.userId,
+      integrationId: "codex_rfp",
+      enabled: true
+    });
+    return { account, token: next.token };
+  }
+
+  async function automationSourceForUser(userId: UUID, sourceId: UUID): Promise<ProviderAccount> {
+    const account = await store.getProviderAccount(sourceId);
+    if (!account || account.userId !== userId || account.provider !== codexRfpProvider || account.deletedAt) {
+      throw new Error(`Automation source not found: ${sourceId}`);
+    }
+    return account;
+  }
+
+  async function createAutomationSource(
+    userId: UUID,
+    input: z.infer<typeof automationSourceCreateBodySchema>
+  ): Promise<{ source: Awaited<ReturnType<typeof automationSourceView>>; token: string }> {
+    const sourceInput: Parameters<typeof createAutomationSourceAccount>[0] = {
+      userId,
+      name: input.name,
+      platform: input.platform,
+      projectSlug: input.projectSlug
+    };
+    if (input.description !== undefined) sourceInput.description = input.description;
+    if (input.instructions !== undefined) sourceInput.instructions = input.instructions;
+    const { account, token } = await createAutomationSourceAccount(sourceInput);
+    return { source: await automationSourceView(account), token };
+  }
+
+  async function patchAutomationSource(
+    userId: UUID,
+    sourceId: UUID,
+    input: z.infer<typeof automationSourcePatchBodySchema>
+  ): Promise<Awaited<ReturnType<typeof automationSourceView>>> {
+    const account = await automationSourceForUser(userId, sourceId);
+    const metadata = asJsonObject({
+      ...codexRfpMetadata(account),
+      ...(input.platform !== undefined ? { platform: input.platform } : {}),
+      ...(input.projectSlug !== undefined ? { projectSlug: input.projectSlug } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.instructions !== undefined ? { instructions: input.instructions } : {})
+    });
+    const updated = await store.updateProviderAccount(account.id, {
+      ...(input.name !== undefined ? { displayName: input.name } : {}),
+      ...(input.enabled !== undefined ? { status: input.enabled ? "active" : "disabled" } : {}),
+      metadata
+    });
+    return automationSourceView(updated);
+  }
+
+  async function rotateAutomationSourceToken(
+    userId: UUID,
+    sourceId: UUID
+  ): Promise<{ source: Awaited<ReturnType<typeof automationSourceView>>; token: string }> {
+    const account = await automationSourceForUser(userId, sourceId);
+    const next = createCodexRfpToken();
+    const metadata = asJsonObject({
+      ...codexRfpMetadata(account),
+      credentialStorage: "hashed-db",
+      tokenKind: "automation_source_ingest",
       secretHash: next.secretHash,
       tokenPreview: next.tokenPreview,
       rotatedAt: nowIso()
     });
-    if (!existing) {
-      await store.upsertProviderAccount({
-        userId,
-        provider: codexRfpProvider,
-        externalAccountId: next.tokenId,
-        displayName: "Codex automation ingest token",
-        status: "active",
-        scopes: ["rfp_report:ingest"],
-        metadata
-      });
-      await store.upsertUserIntegrationSetting({
-        userId,
-        integrationId: "codex_rfp",
-        enabled: true
-      });
-      return {
-        token: next.token,
-        status: "created"
-      };
-    }
-
-    await store.updateProviderAccount(existing.id, {
+    const updated = await store.updateProviderAccount(account.id, {
       externalAccountId: next.tokenId,
-      displayName: existing.displayName ?? "Codex automation ingest token",
+      displayName: account.displayName ?? "Automation source",
       status: "active",
-      scopes: existing.scopes.length > 0 ? existing.scopes : ["rfp_report:ingest"],
+      scopes: account.scopes.length > 0 ? account.scopes : ["automation:ingest", "rfp_report:ingest"],
       metadata
     });
     await store.upsertUserIntegrationSetting({
@@ -1595,8 +1772,26 @@ export function buildApp(options: {
       integrationId: "codex_rfp",
       enabled: true
     });
+    return { source: await automationSourceView(updated), token: next.token };
+  }
+
+  async function rotateCodexRfpToken(userId: UUID): Promise<{ token: string; status: "created" | "rotated" }> {
+    const existing = await codexRfpAccountForUser(userId);
+    if (!existing) {
+      const result = await createAutomationSourceAccount({
+        userId,
+        name: "Default automation source",
+        platform: "codex",
+        sourceSlug: "default"
+      });
+      return {
+        token: result.token,
+        status: "created"
+      };
+    }
+    const result = await rotateAutomationSourceToken(userId, existing.id);
     return {
-      token: next.token,
+      token: result.token,
       status: "rotated"
     };
   }
@@ -1608,7 +1803,7 @@ export function buildApp(options: {
     const parsed = parseCodexRfpToken(codexRfpTokenFromRequest(request));
     if (!parsed) {
       reply.code(401);
-      void reply.send({ error: "Missing or invalid Codex automation ingest token." });
+      void reply.send({ error: "Missing or invalid automation source ingest token." });
       return undefined;
     }
     const account = await store.findProviderAccountByExternalId(codexRfpProvider, parsed.tokenId);
@@ -1617,17 +1812,17 @@ export function buildApp(options: {
     const actualHash = hashCodexRfpSecret(parsed.tokenId, parsed.secret);
     if (!account || !expectedHash || !secureStringEqual(expectedHash, actualHash)) {
       reply.code(401);
-      void reply.send({ error: "Missing or invalid Codex automation ingest token." });
+      void reply.send({ error: "Missing or invalid automation source ingest token." });
       return undefined;
     }
     if (account.status !== "active") {
       reply.code(403);
-      void reply.send({ error: "Codex automation ingest token is disabled." });
+      void reply.send({ error: "Automation source ingest token is disabled." });
       return undefined;
     }
     if (!(await integrationEnabled(account.userId, "codex_rfp"))) {
       reply.code(403);
-      void reply.send({ error: "Codex automation ingest is disabled for this user." });
+      void reply.send({ error: "Automation source ingest is disabled for this user." });
       return undefined;
     }
     return account;
@@ -1744,6 +1939,7 @@ export function buildApp(options: {
       path.startsWith("/auth/") ||
       path === "/v1/webhooks/telegram" ||
       path === "/v1/inbound/telegram" ||
+      path === "/v1/automation/ingest" ||
       path === "/v1/automation/codex-automations/ingest" ||
       path === "/v1/automation/rfp-reports/ingest"
     );
@@ -2029,8 +2225,10 @@ export function buildApp(options: {
         }),
         integrationView("codex_rfp", codexRfpSetup, {
           endpointPath: codexRfpStatus.endpointPath,
+          legacyEndpointPaths: codexRfpStatus.legacyEndpointPaths,
           counts: codexRfpStatus.counts,
-          account: codexRfpStatus.account
+          account: codexRfpStatus.account,
+          sources: codexRfpStatus.sources
         })
       ]
     };
@@ -2053,6 +2251,59 @@ export function buildApp(options: {
     return codexRfpStatusPayload(currentUserId(request) as UUID);
   });
 
+  app.get("/v1/integrations/automations", async (request: RyanOsRequest) => {
+    return codexRfpStatusPayload(currentUserId(request) as UUID);
+  });
+
+  app.post("/v1/integrations/automations/sources", async (request: RyanOsRequest, reply) => {
+    try {
+      const body = automationSourceCreateBodySchema.parse(request.body ?? {});
+      const result = await createAutomationSource(currentUserId(request) as UUID, body);
+      return {
+        ...result,
+        ...(await codexRfpStatusPayload(currentUserId(request) as UUID))
+      };
+    } catch (err) {
+      reply.code(400);
+      return {
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
+  });
+
+  app.patch("/v1/integrations/automations/sources/:sourceId", async (request: RyanOsRequest, reply) => {
+    try {
+      const params = automationSourceParamsSchema.parse(request.params);
+      const body = automationSourcePatchBodySchema.parse(request.body ?? {});
+      const source = await patchAutomationSource(currentUserId(request) as UUID, params.sourceId as UUID, body);
+      return {
+        source,
+        ...(await codexRfpStatusPayload(currentUserId(request) as UUID))
+      };
+    } catch (err) {
+      reply.code(400);
+      return {
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
+  });
+
+  app.post("/v1/integrations/automations/sources/:sourceId/token", async (request: RyanOsRequest, reply) => {
+    try {
+      const params = automationSourceParamsSchema.parse(request.params);
+      const result = await rotateAutomationSourceToken(currentUserId(request) as UUID, params.sourceId as UUID);
+      return {
+        ...result,
+        ...(await codexRfpStatusPayload(currentUserId(request) as UUID))
+      };
+    } catch (err) {
+      reply.code(400);
+      return {
+        error: err instanceof Error ? err.message : String(err)
+      };
+    }
+  });
+
   app.post("/v1/integrations/codex-rfp/token", async (request: RyanOsRequest) => {
     const userId = currentUserId(request) as UUID;
     const result = await rotateCodexRfpToken(userId);
@@ -2071,18 +2322,19 @@ export function buildApp(options: {
       const result = await ingestOpportunityReport({
         store,
         userId: account.userId,
-        report: body.report
+        report: body.report,
+        automationSource: automationSourceContext(account)
       });
       const latestAccount = await store.getProviderAccount(account.id);
       const metadata = codexRfpMetadata(latestAccount ?? account);
       const automationIds = [
-        body.report.automationId,
+        result.automationId,
         ...(Array.isArray(metadata.lastAutomationIds)
           ? metadata.lastAutomationIds.filter((value): value is string => typeof value === "string")
           : [])
       ].filter((value, index, all) => all.indexOf(value) === index).slice(0, 10);
       const projectSlugs = [
-        body.report.projectSlug,
+        result.projectSlug,
         ...(Array.isArray(metadata.lastProjectSlugs)
           ? metadata.lastProjectSlugs.filter((value): value is string => typeof value === "string")
           : [])
@@ -2108,6 +2360,7 @@ export function buildApp(options: {
     }
   }
 
+  app.post("/v1/automation/ingest", codexAutomationIngestHandler);
   app.post("/v1/automation/codex-automations/ingest", codexAutomationIngestHandler);
   app.post("/v1/automation/rfp-reports/ingest", codexAutomationIngestHandler);
 

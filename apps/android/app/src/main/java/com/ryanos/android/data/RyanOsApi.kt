@@ -240,7 +240,7 @@ object RyanOsApi {
     val codexStatusRawJson = request(
       settings = settings,
       method = "GET",
-      url = "${settings.normalizedBaseUrl}/v1/integrations/codex-rfp"
+      url = "${settings.normalizedBaseUrl}/v1/integrations/automations"
     )
     val syncedAt = Instant.now().toString()
     return InboxPayloadResult(
@@ -1543,6 +1543,7 @@ object RyanOsApi {
         val title = proposal.optString("title")
         if (id.isBlank() || title.isBlank()) continue
         val source = proposal.optJSONObject("source")
+        val automationSource = proposal.optJSONObject("automationSource")
         add(
           OpportunityProposal(
             id = id,
@@ -1550,6 +1551,7 @@ object RyanOsApi {
             projectSlug = proposal.optStringOrNull("projectSlug") ?: "",
             title = title,
             summary = proposal.optStringOrNull("summary"),
+            descriptionMarkdown = proposal.optStringOrNull("descriptionMarkdown"),
             rating = proposal.optNullableDouble("rating"),
             fit = proposal.optStringOrNull("fit") ?: "unknown",
             priority = proposal.optStringOrNull("priority") ?: "normal",
@@ -1559,6 +1561,16 @@ object RyanOsApi {
             recommendedAction = proposal.optStringOrNull("recommendedAction"),
             rationale = proposal.optStringOrNull("rationale"),
             sourceUrls = parseStringArray(proposal.optJSONArray("sourceUrls")),
+            sourceLinks = parseProposalSourceLinks(proposal.optJSONArray("sourceLinks")),
+            automationSource = automationSource?.let {
+              AutomationSourceSummary(
+                id = it.optStringOrNull("id"),
+                name = it.optStringOrNull("name"),
+                sourceSlug = it.optStringOrNull("sourceSlug"),
+                platform = it.optStringOrNull("platform"),
+                projectSlug = it.optStringOrNull("projectSlug")
+              )
+            },
             sourceTitle = source?.optStringOrNull("title"),
             sourceSummary = source?.optStringOrNull("summary"),
             sourceUrl = source?.optStringOrNull("url"),
@@ -1575,15 +1587,34 @@ object RyanOsApi {
     val setup = root.optJSONObject("setup")
     val account = root.optJSONObject("account")
     val counts = root.optJSONObject("counts")
+    val sources = root.optJSONArray("sources")
     return CodexAutomationStatus(
       configured = setup?.optBoolean("configured", false) ?: false,
       ready = setup?.optBoolean("ready", false) ?: false,
       enabled = root.optBoolean("enabled", false),
       lastIngestAt = account?.optStringOrNull("lastIngestAt"),
       proposedCount = counts?.optInt("proposed", 0) ?: 0,
+      sourceCount = sources?.length() ?: 0,
       warnings = parseStringArray(setup?.optJSONArray("warnings"))
     )
   }
+
+  private fun parseProposalSourceLinks(items: JSONArray?): List<ProposalSourceLink> =
+    buildList {
+      if (items == null) return@buildList
+      for (index in 0 until items.length()) {
+        val item = items.optJSONObject(index) ?: continue
+        val url = item.optStringOrNull("url") ?: continue
+        if (url.isBlank()) continue
+        add(
+          ProposalSourceLink(
+            label = item.optStringOrNull("label"),
+            url = url,
+            type = item.optStringOrNull("type")
+          )
+        )
+      }
+    }
 
   private fun parseStringArray(items: JSONArray?): List<String> =
     buildList {

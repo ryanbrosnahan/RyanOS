@@ -20,6 +20,14 @@ function sidecar() {
         dueAt: "2026-07-06",
         fit: "high",
         summary: "RFI for case management software.",
+        descriptionMarkdown: "## Opportunity\nRFI for case management software.\n\n- Review fit\n- Confirm deadline",
+        sourceLinks: [
+          {
+            label: "RFI PDF",
+            url: "https://www.jamescitycountyva.gov/DocumentCenter/View/42989",
+            type: "rfp"
+          }
+        ],
         rationale: "Good shaping opportunity for CourtNox workflows.",
         recommendedAction: "Decide whether to submit the James City RFI.",
         initialProgressNote: "Automation found and screened this opportunity.",
@@ -31,6 +39,25 @@ function sidecar() {
         sourceUrls: ["https://example.com/closed"],
         rating: 4,
         summary: "Closed and low fit."
+      }
+    ]
+  };
+}
+
+function sourceReport(title: string, url: string, projectSlug?: string) {
+  return {
+    runAt: "2026-06-24T15:00:00Z",
+    ...(projectSlug ? { projectSlug } : {}),
+    candidates: [
+      {
+        title,
+        sourceLinks: [{ label: "Source page", url, type: "rfp" }],
+        rating: 8,
+        fit: "high",
+        summary: `${title} summary.`,
+        descriptionMarkdown: `## ${title}\n\nSource-backed description.\n\n- Check scope\n- Decide next step`,
+        recommendedAction: `Review ${title}`,
+        promoteToRyanOS: true
       }
     ]
   };
@@ -128,6 +155,161 @@ describe("opportunity proposal API", () => {
     expect(legacyIngest.statusCode).toBe(200);
     expect(ownerProposals.json().proposals).toHaveLength(1);
     expect(otherProposals.json().proposals).toHaveLength(0);
+  });
+
+  it("ingests reports through separate automation sources with source-owned project attribution", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const app = buildApp({ store });
+
+    const courtSourceResponse = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/automations/sources",
+      payload: {
+        name: "CourtNox source",
+        platform: "codex",
+        projectSlug: "court-nox"
+      }
+    });
+    const fileSourceResponse = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/automations/sources",
+      payload: {
+        name: "FileMyTRO source",
+        platform: "codex",
+        projectSlug: "filemytro"
+      }
+    });
+    const courtToken = courtSourceResponse.json().token as string;
+    const fileToken = fileSourceResponse.json().token as string;
+
+    const courtIngest = await app.inject({
+      method: "POST",
+      url: "/v1/automation/ingest",
+      headers: { authorization: `Bearer ${courtToken}` },
+      payload: {
+        userId: "other-user",
+        report: sourceReport("CourtNox county opportunity", "https://example.com/court", "malicious-project")
+      }
+    });
+    const fileIngest = await app.inject({
+      method: "POST",
+      url: "/v1/automation/ingest",
+      headers: { authorization: `Bearer ${fileToken}` },
+      payload: sourceReport("FileMyTRO filing opportunity", "https://example.com/file")
+    });
+    const proposals = await app.inject({
+      method: "GET",
+      url: "/v1/opportunity-proposals?userId=local-owner&status=proposed"
+    });
+    await app.close();
+
+    expect(courtSourceResponse.statusCode).toBe(200);
+    expect(fileSourceResponse.statusCode).toBe(200);
+    expect(courtIngest.statusCode).toBe(200);
+    expect(courtIngest.json().result).toMatchObject({
+      automationId: "courtnox-source",
+      projectSlug: "court-nox",
+      proposalsCreatedOrUpdated: 1
+    });
+    expect(fileIngest.statusCode).toBe(200);
+    expect(fileIngest.json().result).toMatchObject({
+      automationId: "filemytro-source",
+      projectSlug: "filemytro",
+      proposalsCreatedOrUpdated: 1
+    });
+    expect(proposals.json().proposals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          projectSlug: "court-nox",
+          automationSource: expect.objectContaining({ name: "CourtNox source" }),
+          descriptionMarkdown: expect.stringContaining("Source-backed description."),
+          sourceLinks: [expect.objectContaining({ label: "Source page", url: "https://example.com/court" })]
+        }),
+        expect.objectContaining({
+          projectSlug: "filemytro",
+          automationSource: expect.objectContaining({ name: "FileMyTRO source" })
+        })
+      ])
+    );
+  });
+
+  it("rotates one automation source token without invalidating another source", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const app = buildApp({ store });
+
+    const firstSource = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/automations/sources",
+      payload: { name: "First source", platform: "codex", projectSlug: "first" }
+    });
+    const secondSource = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/automations/sources",
+      payload: { name: "Second source", platform: "codex", projectSlug: "second" }
+    });
+    const firstToken = firstSource.json().token as string;
+    const secondToken = secondSource.json().token as string;
+    const firstSourceId = firstSource.json().source.id as string;
+    const rotated = await app.inject({
+      method: "POST",
+      url: `/v1/integrations/automations/sources/${firstSourceId}/token`
+    });
+    const rotatedToken = rotated.json().token as string;
+
+    const oldFirst = await app.inject({
+      method: "POST",
+      url: "/v1/automation/ingest",
+      headers: { authorization: `Bearer ${firstToken}` },
+      payload: sourceReport("Old first token", "https://example.com/old-first")
+    });
+    const newFirst = await app.inject({
+      method: "POST",
+      url: "/v1/automation/ingest",
+      headers: { authorization: `Bearer ${rotatedToken}` },
+      payload: sourceReport("New first token", "https://example.com/new-first")
+    });
+    const stillSecond = await app.inject({
+      method: "POST",
+      url: "/v1/automation/ingest",
+      headers: { authorization: `Bearer ${secondToken}` },
+      payload: sourceReport("Still second token", "https://example.com/still-second")
+    });
+    await app.close();
+
+    expect(rotated.statusCode).toBe(200);
+    expect(oldFirst.statusCode).toBe(401);
+    expect(newFirst.statusCode).toBe(200);
+    expect(stillSecond.statusCode).toBe(200);
+  });
+
+  it("returns 403 for disabled automation sources", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const app = buildApp({ store });
+
+    const sourceResponse = await app.inject({
+      method: "POST",
+      url: "/v1/integrations/automations/sources",
+      payload: { name: "Disabled source", platform: "codex", projectSlug: "disabled" }
+    });
+    const sourceId = sourceResponse.json().source.id as string;
+    const token = sourceResponse.json().token as string;
+    await app.inject({
+      method: "PATCH",
+      url: `/v1/integrations/automations/sources/${sourceId}`,
+      payload: { enabled: false }
+    });
+    const ingest = await app.inject({
+      method: "POST",
+      url: "/v1/automation/ingest",
+      headers: { authorization: `Bearer ${token}` },
+      payload: sourceReport("Disabled source proposal", "https://example.com/disabled")
+    });
+    await app.close();
+
+    expect(ingest.statusCode).toBe(403);
   });
 
   it("rejects missing or invalid Codex automation ingest tokens", async () => {
@@ -302,7 +484,9 @@ describe("opportunity proposal API", () => {
     expect(accepted.statusCode).toBe(200);
     expect(accepted.json()).toMatchObject({
       proposal: {
-        status: "accepted"
+        status: "accepted",
+        descriptionMarkdown: expect.stringContaining("## Opportunity"),
+        sourceLinks: [expect.objectContaining({ label: "RFI PDF" })]
       },
       opportunity: {
         title: "James City County Commonwealth Attorney Case Management Software",
@@ -316,6 +500,8 @@ describe("opportunity proposal API", () => {
     });
     expect(store.opportunities.size).toBe(1);
     expect(store.items.size).toBe(1);
+    expect([...store.items.values()][0]?.body).toContain("## Opportunity");
+    expect([...store.items.values()][0]?.body).toContain("[RFI PDF](https://www.jamescitycountyva.gov/DocumentCenter/View/42989)");
     expect([...store.itemProgressNotes.values()]).toEqual([
       expect.objectContaining({
         body: "Automation found and screened this opportunity."
