@@ -170,6 +170,19 @@ const iconByIntegration = {
   codex_rfp: Search
 } satisfies Record<Integration["id"], typeof Brain>;
 
+const adminExpandedIntegrationStorageKey = "ryanos.admin.expandedIntegration";
+const integrationIds = ["ai", "telegram", "gmail", "codex_rfp"] as const satisfies readonly Integration["id"][];
+
+function isIntegrationId(value: string | null): value is Integration["id"] {
+  return integrationIds.includes(value as Integration["id"]);
+}
+
+function initialExpandedIntegration(): Integration["id"] | null {
+  if (typeof window === "undefined") return null;
+  const stored = window.localStorage.getItem(adminExpandedIntegrationStorageKey);
+  return isIntegrationId(stored) ? stored : null;
+}
+
 async function readResponseMessage(response: Response): Promise<string> {
   const text = await response.text();
   if (!text) return `${response.status} ${response.statusText}`.trim();
@@ -350,7 +363,7 @@ function SetupActions({ actions, warnings }: { actions: SetupAction[]; warnings:
 export function AdminOperationsPanel() {
   const [payload, setPayload] = useState<IntegrationsResponse | null>(null);
   const [androidManifest, setAndroidManifest] = useState<AndroidManifest | null>(null);
-  const [expanded, setExpanded] = useState<Integration["id"] | null>("gmail");
+  const [expanded, setExpanded] = useState<Integration["id"] | null>(() => initialExpandedIntegration());
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -421,6 +434,16 @@ export function AdminOperationsPanel() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(null);
+    }
+  }
+
+  function updateExpandedIntegration(nextExpanded: Integration["id"] | null) {
+    setExpanded(nextExpanded);
+    if (typeof window === "undefined") return;
+    if (nextExpanded) {
+      window.localStorage.setItem(adminExpandedIntegrationStorageKey, nextExpanded);
+    } else {
+      window.localStorage.removeItem(adminExpandedIntegrationStorageKey);
     }
   }
 
@@ -803,7 +826,7 @@ export function AdminOperationsPanel() {
                     />
                     <button
                       type="button"
-                      onClick={() => setExpanded(open ? null : integration.id)}
+                      onClick={() => updateExpandedIntegration(open ? null : integration.id)}
                       className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-300 px-2 text-sm font-medium text-stone-700 hover:bg-stone-100"
                     >
                       Settings
