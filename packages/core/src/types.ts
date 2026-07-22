@@ -370,9 +370,67 @@ export type EmailActionProposal = {
   draftReplyText?: string;
   rationale?: string;
   confidence?: number;
+  triageDecisionId?: UUID;
   acceptedItemId?: UUID;
   acceptedAt?: ISODateString;
   rejectedAt?: ISODateString;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type EmailScanRunTrigger = "scheduled" | "manual" | "backfill";
+export type EmailScanRunStatus = "running" | "succeeded" | "failed";
+
+export type EmailScanRun = {
+  id: UUID;
+  userId: UUID;
+  trigger: EmailScanRunTrigger;
+  status: EmailScanRunStatus;
+  classifierVersion: string;
+  startedAt: ISODateString;
+  completedAt?: ISODateString;
+  leaseExpiresAt: ISODateString;
+  counts: JsonObject;
+  errors: JsonObject;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+};
+
+export type EmailTriageOutcome = "actionable" | "maybe" | "no_action" | "error";
+
+export type EmailTriageDecision = {
+  id: UUID;
+  userId: UUID;
+  sourceId: UUID;
+  providerAccountId: UUID;
+  gmailMessageId: string;
+  gmailThreadId: string;
+  contentFingerprint: string;
+  classifierVersion: string;
+  outcome: EmailTriageOutcome;
+  reasonCode?: string;
+  reason?: string;
+  confidence?: number;
+  senderAddress?: string;
+  retryCount: number;
+  nextRetryAt?: ISODateString;
+  evaluatedAt: ISODateString;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type EmailSenderPreference = {
+  id: UUID;
+  userId: UUID;
+  matchType: "address" | "domain";
+  value: string;
+  disposition: "never" | "likely";
+  originatingProposalId?: UUID;
   metadata: JsonObject;
   createdAt: ISODateString;
   updatedAt: ISODateString;

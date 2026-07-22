@@ -8,6 +8,16 @@ import type {
   EmailActionProposalListFilters,
   EmailActionProposalPatch,
   EmailActionProposalUpsertData,
+  EmailScanRun,
+  EmailScanRunCreateData,
+  EmailScanRunPatch,
+  EmailSenderPreference,
+  EmailSenderPreferencePatch,
+  EmailSenderPreferenceUpsertData,
+  EmailTriageDecision,
+  EmailTriageDecisionListFilters,
+  EmailTriageDecisionPatch,
+  EmailTriageDecisionUpsertData,
   ExternalSource,
   ExternalSourceUpsertData,
   Item,
@@ -527,6 +537,7 @@ function emailActionProposalFromRow(
   if (row.draftReplyText !== null) proposal.draftReplyText = row.draftReplyText;
   if (row.rationale !== null) proposal.rationale = row.rationale;
   if (row.confidence !== null) proposal.confidence = row.confidence;
+  if (row.triageDecisionId !== null) proposal.triageDecisionId = row.triageDecisionId;
   if (row.acceptedItemId !== null) proposal.acceptedItemId = row.acceptedItemId;
   const acceptedAt = toIso(row.acceptedAt);
   if (acceptedAt !== undefined) proposal.acceptedAt = acceptedAt;
@@ -535,6 +546,75 @@ function emailActionProposalFromRow(
   const deletedAt = toIso(row.deletedAt);
   if (deletedAt !== undefined) proposal.deletedAt = deletedAt;
   return proposal;
+}
+
+function emailScanRunFromRow(row: typeof schema.emailScanRuns.$inferSelect): EmailScanRun {
+  const run: EmailScanRun = {
+    id: row.id,
+    userId: row.userId,
+    trigger: row.trigger as EmailScanRun["trigger"],
+    status: row.status as EmailScanRun["status"],
+    classifierVersion: row.classifierVersion,
+    startedAt: row.startedAt.toISOString(),
+    leaseExpiresAt: row.leaseExpiresAt.toISOString(),
+    counts: asJsonObject(row.counts),
+    errors: asJsonObject(row.errors),
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  const completedAt = toIso(row.completedAt);
+  if (completedAt !== undefined) run.completedAt = completedAt;
+  return run;
+}
+
+function emailTriageDecisionFromRow(
+  row: typeof schema.emailTriageDecisions.$inferSelect
+): EmailTriageDecision {
+  const decision: EmailTriageDecision = {
+    id: row.id,
+    userId: row.userId,
+    sourceId: row.sourceId,
+    providerAccountId: row.providerAccountId,
+    gmailMessageId: row.gmailMessageId,
+    gmailThreadId: row.gmailThreadId,
+    contentFingerprint: row.contentFingerprint,
+    classifierVersion: row.classifierVersion,
+    outcome: row.outcome as EmailTriageDecision["outcome"],
+    retryCount: row.retryCount,
+    evaluatedAt: row.evaluatedAt.toISOString(),
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.reasonCode !== null) decision.reasonCode = row.reasonCode;
+  if (row.reason !== null) decision.reason = row.reason;
+  if (row.confidence !== null) decision.confidence = row.confidence;
+  if (row.senderAddress !== null) decision.senderAddress = row.senderAddress;
+  const nextRetryAt = toIso(row.nextRetryAt);
+  if (nextRetryAt !== undefined) decision.nextRetryAt = nextRetryAt;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) decision.deletedAt = deletedAt;
+  return decision;
+}
+
+function emailSenderPreferenceFromRow(
+  row: typeof schema.emailSenderPreferences.$inferSelect
+): EmailSenderPreference {
+  const preference: EmailSenderPreference = {
+    id: row.id,
+    userId: row.userId,
+    matchType: row.matchType as EmailSenderPreference["matchType"],
+    value: row.value,
+    disposition: row.disposition as EmailSenderPreference["disposition"],
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.originatingProposalId !== null) preference.originatingProposalId = row.originatingProposalId;
+  const deletedAt = toIso(row.deletedAt);
+  if (deletedAt !== undefined) preference.deletedAt = deletedAt;
+  return preference;
 }
 
 function opportunityFromRow(row: typeof schema.opportunities.$inferSelect): Opportunity {
@@ -1455,6 +1535,16 @@ export class PostgresRyanStore implements RyanStore {
     return rows.map(providerAccountFromRow);
   }
 
+  async listProviderAccountsForProvider(provider: string, limit = 500): Promise<ProviderAccount[]> {
+    const rows = await this.db
+      .select()
+      .from(schema.providerAccounts)
+      .where(and(eq(schema.providerAccounts.provider, provider), isNull(schema.providerAccounts.deletedAt)))
+      .orderBy(asc(schema.providerAccounts.userId), asc(schema.providerAccounts.email))
+      .limit(Math.min(Math.max(limit, 1), 1000));
+    return rows.map(providerAccountFromRow);
+  }
+
   async getProviderAccount(accountId: UUID): Promise<ProviderAccount | undefined> {
     const row = await this.db.query.providerAccounts.findFirst({
       where: eq(schema.providerAccounts.id, accountId)
@@ -1693,6 +1783,7 @@ export class PostgresRyanStore implements RyanStore {
       draftReplyText: data.draftReplyText ?? existing?.draftReplyText ?? null,
       rationale: data.rationale ?? existing?.rationale ?? null,
       confidence: data.confidence ?? existing?.confidence ?? null,
+      triageDecisionId: data.triageDecisionId ?? existing?.triageDecisionId ?? null,
       acceptedItemId: data.acceptedItemId ?? existing?.acceptedItemId ?? null,
       acceptedAt: data.acceptedAt !== undefined ? toDate(data.acceptedAt) : existing?.acceptedAt ?? null,
       rejectedAt: data.rejectedAt !== undefined ? toDate(data.rejectedAt) : existing?.rejectedAt ?? null,
@@ -1770,6 +1861,201 @@ export class PostgresRyanStore implements RyanStore {
       .returning();
     if (!row) throw new Error(`Email action proposal not found: ${proposalId}`);
     return emailActionProposalFromRow(row);
+  }
+
+  async createEmailScanRun(data: EmailScanRunCreateData): Promise<EmailScanRun> {
+    const userId = await this.resolveUserId(data.userId);
+    const values: typeof schema.emailScanRuns.$inferInsert = {
+      userId,
+      trigger: data.trigger,
+      status: data.status,
+      classifierVersion: data.classifierVersion,
+      startedAt: new Date(data.startedAt),
+      leaseExpiresAt: new Date(data.leaseExpiresAt),
+      counts: data.counts,
+      errors: data.errors,
+      metadata: data.metadata
+    };
+    if (data.completedAt !== undefined) values.completedAt = new Date(data.completedAt);
+    const [row] = await this.db.insert(schema.emailScanRuns).values(values).returning();
+    if (!row) throw new Error("Failed to create email scan run");
+    return emailScanRunFromRow(row);
+  }
+
+  async updateEmailScanRun(runId: UUID, patch: EmailScanRunPatch): Promise<EmailScanRun> {
+    const values: Partial<typeof schema.emailScanRuns.$inferInsert> = { updatedAt: new Date() };
+    if (patch.status !== undefined) values.status = patch.status;
+    if (patch.completedAt !== undefined) values.completedAt = new Date(patch.completedAt);
+    if (patch.leaseExpiresAt !== undefined) values.leaseExpiresAt = new Date(patch.leaseExpiresAt);
+    if (patch.counts !== undefined) values.counts = patch.counts;
+    if (patch.errors !== undefined) values.errors = patch.errors;
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    const [row] = await this.db.update(schema.emailScanRuns).set(values)
+      .where(eq(schema.emailScanRuns.id, runId)).returning();
+    if (!row) throw new Error(`Email scan run not found: ${runId}`);
+    return emailScanRunFromRow(row);
+  }
+
+  async listEmailScanRuns(filters: { userId: UUID; limit?: number }): Promise<EmailScanRun[]> {
+    const userId = await this.resolveUserId(filters.userId);
+    const rows = await this.db.select().from(schema.emailScanRuns)
+      .where(eq(schema.emailScanRuns.userId, userId))
+      .orderBy(desc(schema.emailScanRuns.startedAt))
+      .limit(Math.min(Math.max(filters.limit ?? 20, 1), 100));
+    return rows.map(emailScanRunFromRow);
+  }
+
+  async upsertEmailTriageDecision(data: EmailTriageDecisionUpsertData): Promise<EmailTriageDecision> {
+    const userId = await this.resolveUserId(data.userId);
+    const values: typeof schema.emailTriageDecisions.$inferInsert = {
+      userId,
+      sourceId: data.sourceId,
+      providerAccountId: data.providerAccountId,
+      gmailMessageId: data.gmailMessageId,
+      gmailThreadId: data.gmailThreadId,
+      contentFingerprint: data.contentFingerprint,
+      classifierVersion: data.classifierVersion,
+      outcome: data.outcome,
+      reasonCode: data.reasonCode ?? null,
+      reason: data.reason ?? null,
+      confidence: data.confidence ?? null,
+      senderAddress: data.senderAddress ?? null,
+      retryCount: data.retryCount,
+      nextRetryAt: toDate(data.nextRetryAt) ?? null,
+      evaluatedAt: toDate(data.evaluatedAt),
+      metadata: data.metadata,
+      updatedAt: new Date()
+    };
+    const [row] = await this.db.insert(schema.emailTriageDecisions).values(values)
+      .onConflictDoUpdate({
+        target: [
+          schema.emailTriageDecisions.providerAccountId,
+          schema.emailTriageDecisions.gmailMessageId,
+          schema.emailTriageDecisions.contentFingerprint,
+          schema.emailTriageDecisions.classifierVersion
+        ],
+        set: {
+          sourceId: values.sourceId,
+          outcome: values.outcome,
+          reasonCode: values.reasonCode,
+          reason: values.reason,
+          confidence: values.confidence,
+          senderAddress: values.senderAddress,
+          retryCount: values.retryCount,
+          nextRetryAt: values.nextRetryAt,
+          evaluatedAt: values.evaluatedAt,
+          metadata: values.metadata,
+          updatedAt: new Date()
+        }
+      }).returning();
+    if (!row) throw new Error("Failed to upsert email triage decision");
+    return emailTriageDecisionFromRow(row);
+  }
+
+  async updateEmailTriageDecision(decisionId: UUID, patch: EmailTriageDecisionPatch): Promise<EmailTriageDecision> {
+    const values: Partial<typeof schema.emailTriageDecisions.$inferInsert> = { updatedAt: new Date() };
+    if (patch.outcome !== undefined) values.outcome = patch.outcome;
+    if (patch.reasonCode !== undefined) values.reasonCode = patch.reasonCode;
+    if (patch.reason !== undefined) values.reason = patch.reason;
+    if (patch.confidence !== undefined) values.confidence = patch.confidence;
+    if (patch.retryCount !== undefined) values.retryCount = patch.retryCount;
+    if (patch.nextRetryAt !== undefined) values.nextRetryAt = toDate(patch.nextRetryAt);
+    if (patch.evaluatedAt !== undefined) values.evaluatedAt = toDate(patch.evaluatedAt);
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    if (patch.deletedAt !== undefined) values.deletedAt = toDate(patch.deletedAt);
+    const [row] = await this.db.update(schema.emailTriageDecisions).set(values)
+      .where(eq(schema.emailTriageDecisions.id, decisionId)).returning();
+    if (!row) throw new Error(`Email triage decision not found: ${decisionId}`);
+    return emailTriageDecisionFromRow(row);
+  }
+
+  async getEmailTriageDecision(decisionId: UUID): Promise<EmailTriageDecision | undefined> {
+    const row = await this.db.query.emailTriageDecisions.findFirst({
+      where: eq(schema.emailTriageDecisions.id, decisionId)
+    });
+    return row ? emailTriageDecisionFromRow(row) : undefined;
+  }
+
+  async listEmailTriageDecisions(filters: EmailTriageDecisionListFilters): Promise<EmailTriageDecision[]> {
+    const userId = await this.resolveUserId(filters.userId);
+    const conditions = [
+      eq(schema.emailTriageDecisions.userId, userId),
+      isNull(schema.emailTriageDecisions.deletedAt)
+    ];
+    if (filters.providerAccountId !== undefined) {
+      conditions.push(eq(schema.emailTriageDecisions.providerAccountId, filters.providerAccountId));
+    }
+    if (filters.outcome !== undefined) conditions.push(eq(schema.emailTriageDecisions.outcome, filters.outcome));
+    if (filters.gmailThreadId !== undefined) {
+      conditions.push(eq(schema.emailTriageDecisions.gmailThreadId, filters.gmailThreadId));
+    }
+    const rows = await this.db.select().from(schema.emailTriageDecisions)
+      .where(and(...conditions)).orderBy(desc(schema.emailTriageDecisions.evaluatedAt))
+      .limit(Math.min(Math.max(filters.limit ?? 50, 1), 200));
+    return rows.map(emailTriageDecisionFromRow);
+  }
+
+  async upsertEmailSenderPreference(data: EmailSenderPreferenceUpsertData): Promise<EmailSenderPreference> {
+    const userId = await this.resolveUserId(data.userId);
+    const existing = await this.db.query.emailSenderPreferences.findFirst({
+      where: and(
+        eq(schema.emailSenderPreferences.userId, userId),
+        eq(schema.emailSenderPreferences.matchType, data.matchType),
+        eq(schema.emailSenderPreferences.value, data.value),
+        isNull(schema.emailSenderPreferences.deletedAt)
+      )
+    });
+    if (existing) {
+      const [row] = await this.db.update(schema.emailSenderPreferences).set({
+        disposition: data.disposition,
+        originatingProposalId: data.originatingProposalId ?? existing.originatingProposalId,
+        metadata: data.metadata ?? existing.metadata,
+        updatedAt: new Date()
+      }).where(eq(schema.emailSenderPreferences.id, existing.id)).returning();
+      if (!row) throw new Error(`Email sender preference not found: ${existing.id}`);
+      return emailSenderPreferenceFromRow(row);
+    }
+    const [row] = await this.db.insert(schema.emailSenderPreferences).values({
+      userId,
+      matchType: data.matchType,
+      value: data.value,
+      disposition: data.disposition,
+      originatingProposalId: data.originatingProposalId ?? null,
+      metadata: data.metadata ?? {}
+    }).returning();
+    if (!row) throw new Error("Failed to create email sender preference");
+    return emailSenderPreferenceFromRow(row);
+  }
+
+  async updateEmailSenderPreference(
+    preferenceId: UUID,
+    patch: EmailSenderPreferencePatch
+  ): Promise<EmailSenderPreference> {
+    const values: Partial<typeof schema.emailSenderPreferences.$inferInsert> = { updatedAt: new Date() };
+    if (patch.disposition !== undefined) values.disposition = patch.disposition;
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    if (patch.deletedAt !== undefined) values.deletedAt = toDate(patch.deletedAt);
+    const [row] = await this.db.update(schema.emailSenderPreferences).set(values)
+      .where(eq(schema.emailSenderPreferences.id, preferenceId)).returning();
+    if (!row) throw new Error(`Email sender preference not found: ${preferenceId}`);
+    return emailSenderPreferenceFromRow(row);
+  }
+
+  async getEmailSenderPreference(preferenceId: UUID): Promise<EmailSenderPreference | undefined> {
+    const row = await this.db.query.emailSenderPreferences.findFirst({
+      where: eq(schema.emailSenderPreferences.id, preferenceId)
+    });
+    return row ? emailSenderPreferenceFromRow(row) : undefined;
+  }
+
+  async listEmailSenderPreferences(userId: UUID): Promise<EmailSenderPreference[]> {
+    const resolvedUserId = await this.resolveUserId(userId);
+    const rows = await this.db.select().from(schema.emailSenderPreferences)
+      .where(and(
+        eq(schema.emailSenderPreferences.userId, resolvedUserId),
+        isNull(schema.emailSenderPreferences.deletedAt)
+      )).orderBy(asc(schema.emailSenderPreferences.matchType), asc(schema.emailSenderPreferences.value));
+    return rows.map(emailSenderPreferenceFromRow);
   }
 
   async createOpportunity(data: OpportunityCreateData): Promise<Opportunity> {

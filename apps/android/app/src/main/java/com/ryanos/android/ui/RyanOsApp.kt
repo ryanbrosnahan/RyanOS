@@ -328,6 +328,7 @@ fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
               statusText = viewModel.statusText,
               onRefresh = viewModel::refreshInbox,
               onEmailAction = viewModel::actOnEmailProposal,
+              onEmailSenderPreference = viewModel::setEmailSenderPreference,
               onOpportunityAction = viewModel::actOnOpportunityProposal,
               onOpenSettings = {
                 navController.navigate(Destination.SETTINGS.route) {
@@ -700,9 +701,15 @@ private fun InboxScreen(
   statusText: String,
   onRefresh: () -> Unit,
   onEmailAction: (String, String) -> Unit,
+  onEmailSenderPreference: (String, String?) -> Unit,
   onOpportunityAction: (String, String) -> Unit,
   onOpenSettings: () -> Unit
 ) {
+  val actionableEmailProposals = snapshot.emailProposals.filter { it.triageOutcome != "maybe" }
+  val maybeEmailProposals = snapshot.emailProposals
+    .filter { it.triageOutcome == "maybe" }
+    .sortedByDescending { it.confidence ?: 0 }
+  var showMaybeEmail by remember { mutableStateOf(false) }
   LazyColumn(
     modifier = Modifier.fillMaxSize(),
     contentPadding = PaddingValues(16.dp),
@@ -735,18 +742,37 @@ private fun InboxScreen(
         )
       }
       item {
-        SectionTitle("Email proposals", snapshot.emailProposals.size.takeIf { it > 0 }?.toString())
+        SectionTitle("Email proposals", actionableEmailProposals.size.takeIf { it > 0 }?.toString())
       }
-      if (snapshot.emailProposals.isEmpty()) {
+      if (actionableEmailProposals.isEmpty() && maybeEmailProposals.isEmpty()) {
         item { EmptyText("No proposed email tasks.") }
       } else {
-        items(snapshot.emailProposals, key = { it.id }) { proposal ->
+        items(actionableEmailProposals, key = { it.id }) { proposal ->
           EmailProposalRow(
             proposal = proposal,
             busy = busy,
             onAccept = { onEmailAction(proposal.id, "accept") },
-            onReject = { onEmailAction(proposal.id, "reject") }
+            onReject = { onEmailAction(proposal.id, "reject") },
+            onSenderPreference = { disposition -> onEmailSenderPreference(proposal.id, disposition) }
           )
+        }
+        if (maybeEmailProposals.isNotEmpty()) {
+          item {
+            OutlinedButton(onClick = { showMaybeEmail = !showMaybeEmail }, modifier = Modifier.fillMaxWidth()) {
+              Text(if (showMaybeEmail) "Hide maybe actionable" else "Maybe actionable (${maybeEmailProposals.size})")
+            }
+          }
+          if (showMaybeEmail) {
+            items(maybeEmailProposals, key = { "maybe:${it.id}" }) { proposal ->
+              EmailProposalRow(
+                proposal = proposal,
+                busy = busy,
+                onAccept = { onEmailAction(proposal.id, "accept") },
+                onReject = { onEmailAction(proposal.id, "reject") },
+                onSenderPreference = { disposition -> onEmailSenderPreference(proposal.id, disposition) }
+              )
+            }
+          }
         }
       }
       item {
@@ -845,9 +871,11 @@ private fun EmailProposalRow(
   proposal: EmailProposal,
   busy: Boolean,
   onAccept: () -> Unit,
-  onReject: () -> Unit
+  onReject: () -> Unit,
+  onSenderPreference: (String?) -> Unit
 ) {
   val uriHandler = LocalUriHandler.current
+  var confirmNever by remember { mutableStateOf(false) }
   ElevatedCard {
     Column(
       modifier = Modifier.padding(14.dp),
@@ -901,12 +929,56 @@ private fun EmailProposalRow(
           overflow = TextOverflow.Ellipsis
         )
       }
+      proposal.initialProgressNote?.takeIf { it.isNotBlank() }?.let {
+        Text(
+          text = "Progress: $it",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis
+        )
+      }
+      if (proposal.checklistItems.isNotEmpty()) {
+        Text(
+          text = proposal.checklistItems.joinToString("\n") { "- $it" },
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          maxLines = 5,
+          overflow = TextOverflow.Ellipsis
+        )
+      }
+      Column {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+          TextButton(enabled = !busy, onClick = { onSenderPreference("likely") }) {
+            Text("Usually actionable")
+          }
+          TextButton(enabled = !busy, onClick = { confirmNever = true }) {
+            Text("Never suggest")
+          }
+        }
+        if (proposal.senderPreference != null) {
+          TextButton(enabled = !busy, onClick = { onSenderPreference(null) }) {
+            Text("Remove rule")
+          }
+        }
+      }
       proposal.sourceUrl?.let { url ->
         TextButton(onClick = { uriHandler.openUri(url) }) {
           Text("Open source")
         }
       }
     }
+  }
+  if (confirmNever) {
+    AlertDialog(
+      onDismissRequest = { confirmNever = false },
+      title = { Text("Never suggest this sender?") },
+      text = { Text("Future messages from ${proposal.senderAddress ?: proposal.sender ?: "this sender"} will be skipped. This proposal will also be rejected.") },
+      confirmButton = {
+        TextButton(onClick = { confirmNever = false; onSenderPreference("never") }) { Text("Never suggest") }
+      },
+      dismissButton = { TextButton(onClick = { confirmNever = false }) { Text("Cancel") } }
+    )
   }
 }
 

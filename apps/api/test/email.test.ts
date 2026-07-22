@@ -73,8 +73,8 @@ function fakeGmailClient(): GmailClientLike {
         }
       ];
     },
-    async searchMessages() {
-      return [
+    async searchMessagePage() {
+      return { messages: [
         {
           id: "msg-1",
           threadId: "thread-1",
@@ -85,10 +85,10 @@ function fakeGmailClient(): GmailClientLike {
             id: "msg-1"
           }
         }
-      ];
+      ] };
     },
-    async getMessage() {
-      return {
+    async getThread() {
+      return { id: "thread-1", messages: [{
         id: "msg-1",
         threadId: "thread-1",
         subject: "Need your answer",
@@ -100,25 +100,30 @@ function fakeGmailClient(): GmailClientLike {
         raw: {
           id: "msg-1"
         }
-      };
+      }], raw: {} };
     }
   };
 }
 
-function proposalResult(title = "Reply to sender about Friday"): AiProviderResult {
+function proposalResult(title = "Reply to sender about Friday", messageId = "msg-1"): AiProviderResult {
   return {
     text: "Proposal stored.",
     toolCalls: [
       {
-        name: "email.propose_action",
+        name: "email.classify_batch",
         input: {
-          actionType: "reply",
-          title,
-          body: "Confirm whether Friday works.",
-          priority: "high",
-          draftReplyText: "Friday works for me.",
-          rationale: "The sender asked for a direct confirmation.",
-          confidence: 0.91
+          decisions: [{
+            messageId,
+            outcome: "actionable",
+            actionType: "reply",
+            title,
+            body: "Confirm whether Friday works.",
+            priority: "high",
+            draftReplyText: "Friday works for me.",
+            reason: "The sender asked for a direct confirmation.",
+            rationale: "The sender asked for a direct confirmation.",
+            confidence: 0.91
+          }]
         }
       }
     ]
@@ -202,8 +207,8 @@ function mixedInboxGmailClient(): GmailClientLike {
         }
       ];
     },
-    async searchMessages() {
-      return [...messages.values()].map((message) => ({
+    async searchMessagePage() {
+      return { messages: [...messages.values()].map((message) => ({
         id: message.id,
         threadId: message.threadId,
         subject: message.subject,
@@ -212,12 +217,12 @@ function mixedInboxGmailClient(): GmailClientLike {
         raw: {
           id: message.id
         }
-      }));
+      })) };
     },
-    async getMessage({ messageId }) {
-      const message = messages.get(messageId);
-      if (!message) throw new Error(`Unknown message ${messageId}`);
-      return message;
+    async getThread({ threadId }) {
+      const message = [...messages.values()].find((candidate) => candidate.threadId === threadId);
+      if (!message) throw new Error(`Unknown thread ${threadId}`);
+      return { id: threadId, messages: [message], raw: {} };
     }
   };
 }
@@ -351,17 +356,93 @@ describe("email integration API", () => {
     });
     await app.close();
 
-    expect(ai.calls).toBe(2);
+    expect(ai.calls).toBe(1);
     expect(proposals.json().proposals).toHaveLength(1);
     expect(proposals.json().proposals[0]).toMatchObject({
-      title: "Follow up with sender about Friday"
+      title: "Reply to sender about Friday"
     });
   });
 
-  it("skips automated Gmail messages before AI triage", async () => {
+  it("paginates past unchanged threads to drain unseen mail", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const ai = new EmailToolAiProvider((callCount) =>
+      proposalResult(`Handle message ${callCount}`, `msg-${callCount}`)
+    );
+    const threadMessage = (number: number) => ({
+      id: `msg-${number}`,
+      threadId: `thread-${number}`,
+      subject: `Request ${number}`,
+      from: `sender${number}@example.com`,
+      to: "ryan@example.com",
+      date: `2026-06-0${number + 3}T15:00:00.000Z`,
+      bodyText: `Please handle request ${number}.`,
+      raw: {}
+    });
+    const gmail: GmailClientLike = {
+      ...fakeGmailClient(),
+      async searchMessagePage({ pageToken }) {
+        return pageToken
+          ? { messages: [{ id: "thread-2", threadId: "thread-2", raw: {} }] }
+          : { messages: [{ id: "thread-1", threadId: "thread-1", raw: {} }], nextPageToken: "page-2" };
+      },
+      async getThread({ threadId }) {
+        const number = threadId.endsWith("2") ? 2 : 1;
+        return { id: threadId, messages: [threadMessage(number)], raw: {} };
+      }
+    };
+    const app = buildApp({ ai, emailClient: gmail });
+    const first = await app.inject({
+      method: "POST",
+      url: "/v1/email/scan",
+      payload: { maxPerAccount: 1 }
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: "/v1/email/scan",
+      payload: { maxPerAccount: 1 }
+    });
+    const proposals = await app.inject({ method: "GET", url: "/v1/email/proposals?status=proposed" });
+    await app.close();
+
+    expect(first.json().result).toMatchObject({ unseenThreadsEvaluated: 1, backlog: 1 });
+    expect(second.json().result).toMatchObject({ messagesSeen: 2, unchangedDecisions: 1, unseenThreadsEvaluated: 1 });
+    expect(ai.calls).toBe(2);
+    expect(proposals.json().proposals).toHaveLength(2);
+  });
+
+  it("uses automated-email traits as model signals instead of hard filters", async () => {
     vi.stubEnv("DATABASE_URL", "");
     vi.stubEnv("GOG_KEYRING_PASSWORD", "test-password");
-    const ai = proposalAi();
+    const ai = new EmailToolAiProvider({
+      text: "Classified all messages.",
+      toolCalls: [{
+        name: "email.classify_batch",
+        input: {
+          decisions: [
+            {
+              messageId: "human-1",
+              outcome: "actionable",
+              actionType: "reply",
+              title: "Reply about Friday",
+              reason: "A direct response was requested.",
+              confidence: 95
+            },
+            {
+              messageId: "google-security",
+              outcome: "no_action",
+              reason: "Informational security notice.",
+              confidence: 90
+            },
+            {
+              messageId: "chase-1",
+              outcome: "no_action",
+              reason: "Routine statement notice.",
+              confidence: 94
+            }
+          ]
+        }
+      }]
+    });
     const app = buildApp({
       ai,
       emailClient: mixedInboxGmailClient()
@@ -386,15 +467,11 @@ describe("email integration API", () => {
         accountsScanned: 1,
         messagesSeen: 3,
         messagesFetched: 3,
-        messagesSkippedByFilter: 2,
+        messagesSkippedByFilter: 0,
+        noActionDecisions: 2,
         proposalsCreatedOrUpdated: 1
       }
     });
-    expect(scan.json().result.filterReasons).toEqual(
-      expect.objectContaining({
-        automated_sender: expect.any(Number)
-      })
-    );
     expect(ai.calls).toBe(1);
     expect(proposals.json().proposals).toHaveLength(1);
     expect(proposals.json().proposals[0]).toMatchObject({
@@ -402,6 +479,71 @@ describe("email integration API", () => {
         title: "Can you confirm Friday?"
       }
     });
+  });
+
+  it("applies exact likely sender preferences before domain never rules without forcing a proposal", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const ai = new EmailToolAiProvider({
+      text: "No action.",
+      toolCalls: [{
+        name: "email.classify_batch",
+        input: {
+          decisions: [{
+            messageId: "msg-1",
+            outcome: "no_action",
+            reason: "Informational only.",
+            confidence: 88
+          }]
+        }
+      }]
+    });
+    const app = buildApp({ ai, emailClient: fakeGmailClient() });
+    await app.inject({
+      method: "POST",
+      url: "/v1/email/sender-preferences",
+      payload: { matchType: "domain", value: "example.com", disposition: "never" }
+    });
+    await app.inject({
+      method: "POST",
+      url: "/v1/email/sender-preferences",
+      payload: { matchType: "address", value: "sender@example.com", disposition: "likely" }
+    });
+    const scan = await app.inject({ method: "POST", url: "/v1/email/scan", payload: {} });
+    const decisions = await app.inject({
+      method: "GET",
+      url: "/v1/email/triage-decisions?outcome=no_action"
+    });
+    const proposals = await app.inject({ method: "GET", url: "/v1/email/proposals?status=proposed" });
+    await app.close();
+
+    expect(scan.statusCode).toBe(200);
+    expect(ai.calls).toBe(1);
+    expect(proposals.json().proposals).toHaveLength(0);
+    expect(decisions.json().decisions[0]).toMatchObject({
+      reason: "Informational only.",
+      senderPreference: { disposition: "likely" }
+    });
+  });
+
+  it("records a domain never rule as deterministic no-action without calling AI", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const ai = proposalAi();
+    const app = buildApp({ ai, emailClient: fakeGmailClient() });
+    await app.inject({
+      method: "POST",
+      url: "/v1/email/sender-preferences",
+      payload: { matchType: "domain", value: "example.com", disposition: "never" }
+    });
+    const scan = await app.inject({ method: "POST", url: "/v1/email/scan", payload: {} });
+    const decisions = await app.inject({
+      method: "GET",
+      url: "/v1/email/triage-decisions?outcome=no_action"
+    });
+    await app.close();
+
+    expect(ai.calls).toBe(0);
+    expect(scan.json().result).toMatchObject({ senderRuleExclusions: 1, noActionDecisions: 1 });
+    expect(decisions.json().decisions[0]).toMatchObject({ reasonCode: "sender_preference_never" });
   });
 
   it("does not start a duplicate Gmail scan while one is running", async () => {
@@ -414,11 +556,11 @@ describe("email integration API", () => {
       ai: proposalAi(),
       emailClient: {
         ...fakeGmailClient(),
-        async searchMessages() {
+        async searchMessagePage() {
           searchCount += 1;
           started.resolve();
           await release.promise;
-          return [];
+          return { messages: [] };
         }
       }
     });
@@ -444,11 +586,8 @@ describe("email integration API", () => {
 
     expect(secondScan.statusCode).toBe(200);
     expect(secondScan.json()).toMatchObject({
-      result: {
-        alreadyRunning: true,
-        accountsScanned: 0,
-        messagesSeen: 0
-      }
+      alreadyRunning: true,
+      run: { status: "running" }
     });
     expect(firstScanResult.statusCode).toBe(200);
     expect(firstScanResult.json()).toMatchObject({
@@ -688,10 +827,10 @@ describe("email integration API", () => {
         async listAccounts() {
           throw new Error("credentials missing");
         },
-        async searchMessages() {
-          return [];
+        async searchMessagePage() {
+          return { messages: [] };
         },
-        async getMessage() {
+        async getThread() {
           throw new Error("not reached");
         }
       }

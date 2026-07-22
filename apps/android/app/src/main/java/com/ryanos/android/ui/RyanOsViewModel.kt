@@ -364,6 +364,17 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
     }
   }
 
+  fun setEmailSenderPreference(proposalId: String, disposition: String?) {
+    launchWork("Saving sender preference") {
+      repository.setEmailSenderPreference(proposalId, disposition)
+      statusText = when (disposition) {
+        "never" -> "Sender blocked"
+        "likely" -> "Sender marked usually actionable"
+        else -> "Sender preference removed"
+      }
+    }
+  }
+
   fun actOnOpportunityProposal(proposalId: String, action: String) {
     launchWork(if (action == "accept") "Accepting automation task" else "Rejecting automation task") {
       repository.actOnOpportunityProposal(proposalId, action)

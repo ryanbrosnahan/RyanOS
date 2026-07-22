@@ -396,6 +396,11 @@ class RyanOsApiTest {
               "draftReplyText": "Friday works for me.",
               "rationale": "Sender asked for confirmation.",
               "confidence": 91,
+              "triage": { "outcome": "maybe", "reason": "A response may be needed." },
+              "senderAddress": "sender@example.com",
+              "senderPreference": { "id": "preference-1", "disposition": "likely" },
+              "initialProgressNote": "Reviewed the request.",
+              "checklistItems": ["Check calendar", "Reply to sender"],
               "account": { "email": "ryan@example.com", "displayName": "Personal Gmail" },
               "source": {
                 "title": "Friday meeting",
@@ -474,6 +479,11 @@ class RyanOsApiTest {
     assertEquals("Personal Gmail", snapshot.emailProposals[0].accountLabel)
     assertEquals("sender@example.com", snapshot.emailProposals[0].sender)
     assertEquals("Friday meeting", snapshot.emailProposals[0].subject)
+    assertEquals("maybe", snapshot.emailProposals[0].triageOutcome)
+    assertEquals("sender@example.com", snapshot.emailProposals[0].senderAddress)
+    assertEquals("likely", snapshot.emailProposals[0].senderPreference)
+    assertEquals("Reviewed the request.", snapshot.emailProposals[0].initialProgressNote)
+    assertEquals(listOf("Check calendar", "Reply to sender"), snapshot.emailProposals[0].checklistItems)
     assertEquals(91, snapshot.emailProposals[0].confidence)
     assertEquals(1, snapshot.opportunityProposals.size)
     assertEquals("court-nox", snapshot.opportunityProposals[0].projectSlug)

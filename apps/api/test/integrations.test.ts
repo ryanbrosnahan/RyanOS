@@ -53,10 +53,10 @@ function gmailClient(accounts = [{ email: "ryan@example.com", externalAccountId:
         raw: account
       }));
     },
-    async searchMessages() {
-      return [];
+    async searchMessagePage() {
+      return { messages: [] };
     },
-    async getMessage() {
+    async getThread() {
       throw new Error("not used");
     }
   };

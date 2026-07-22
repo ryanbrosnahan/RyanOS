@@ -15,7 +15,8 @@ import {
   Search,
   Settings,
   ShieldCheck,
-  Smartphone
+  Smartphone,
+  Trash2
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { apiFetch, apiPath } from "../api-client";
@@ -37,6 +38,10 @@ type GmailAccount = {
   scopes: string[];
   settings: {
     enabled: boolean;
+    mailboxContext?: string;
+    lastAttemptAt?: string;
+    lastSuccessAt?: string;
+    lastFailureAt?: string;
     lastScanAt?: string;
     lastSyncAt?: string;
   };
@@ -127,6 +132,33 @@ type Integration = {
     cadenceMinutes: number;
     enabled: boolean;
   };
+  scannerHealth?: {
+    status: "not_configured" | "healthy" | "degraded";
+    stale: boolean;
+    cadenceMinutes: number;
+    enabledAccountCount: number;
+    backlog: number;
+    accountFailures: number;
+    modelFailures: number;
+    lastSuccessAt?: string;
+    error?: string;
+    lastRun?: { status: string; startedAt: string; completedAt?: string; counts: Record<string, unknown> };
+  };
+  senderPreferences?: Array<{
+    id: string;
+    matchType: "address" | "domain";
+    value: string;
+    disposition: "never" | "likely";
+  }>;
+  recentDecisions?: Array<{
+    id: string;
+    outcome: "actionable" | "maybe" | "no_action" | "error";
+    reason?: string;
+    reasonCode?: string;
+    senderAddress?: string;
+    evaluatedAt: string;
+    source?: { title?: string; summary?: string; url?: string };
+  }>;
   canManageDeployment?: boolean;
 };
 
@@ -370,6 +402,7 @@ export function AdminOperationsPanel() {
   const [gmailEmail, setGmailEmail] = useState("");
   const [gmailAuthUrl, setGmailAuthUrl] = useState("");
   const [gmailRedirectUrl, setGmailRedirectUrl] = useState("");
+  const [gmailContexts, setGmailContexts] = useState<Record<string, string>>({});
   const [telegramToken, setTelegramToken] = useState("");
   const [telegramLink, setTelegramLink] = useState<LinkCodeResponse | null>(null);
   const [automationSourceTokens, setAutomationSourceTokens] = useState<Record<string, string>>({});
@@ -454,7 +487,67 @@ export function AdminOperationsPanel() {
       const response = await apiFetch(apiPath(`/v1/email/accounts/${encodeURIComponent(account.id)}/settings`), {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: !account.settings.enabled })
+        body: JSON.stringify({
+          enabled: !account.settings.enabled,
+          mailboxContext: gmailContexts[account.id] ?? account.settings.mailboxContext ?? ""
+        })
+      });
+      if (!response.ok) throw new Error(await readResponseMessage(response));
+      await load({ background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveGmailContext(account: GmailAccount) {
+    setBusy(`gmail-context:${account.id}`);
+    setError(null);
+    try {
+      const response = await apiFetch(apiPath(`/v1/email/accounts/${encodeURIComponent(account.id)}/settings`), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: account.settings.enabled,
+          mailboxContext: gmailContexts[account.id] ?? account.settings.mailboxContext ?? ""
+        })
+      });
+      if (!response.ok) throw new Error(await readResponseMessage(response));
+      await load({ background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeSenderPreference(preferenceId: string) {
+    setBusy(`sender-preference:${preferenceId}`);
+    setError(null);
+    try {
+      const response = await apiFetch(apiPath(`/v1/email/sender-preferences/${encodeURIComponent(preferenceId)}`), {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      if (!response.ok) throw new Error(await readResponseMessage(response));
+      await load({ background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function correctNoActionDecision(decisionId: string) {
+    setBusy(`decision:${decisionId}`);
+    setError(null);
+    try {
+      const response = await apiFetch(apiPath(`/v1/email/triage-decisions/${encodeURIComponent(decisionId)}/create-proposal`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
       });
       if (!response.ok) throw new Error(await readResponseMessage(response));
       await load({ background: true });
@@ -854,13 +947,31 @@ export function AdminOperationsPanel() {
                           <button
                             type="button"
                             onClick={() => void scanGmail()}
-                            disabled={busy !== null || !integration.effectiveReady}
+                            disabled={busy !== null || !integration.configured || !integration.enabled}
                             className="inline-flex h-9 items-center gap-1.5 rounded-md bg-stone-950 px-3 text-sm font-medium text-white hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             <Play className="h-4 w-4" aria-hidden="true" />
                             Scan now
                           </button>
                         </div>
+
+                        {integration.scannerHealth ? (
+                          <div className={`rounded-md border px-3 py-2 text-sm ${integration.scannerHealth.status === "degraded" ? "border-amber-300 bg-amber-50 text-amber-900" : "border-stone-200 bg-stone-50 text-stone-700"}`}>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-semibold">
+                                Scanner {integration.scannerHealth.status.replace("_", " ")}
+                              </span>
+                              <span className="text-xs">
+                                Every {integration.scannerHealth.cadenceMinutes} min
+                                {integration.scannerHealth.lastSuccessAt ? ` / last success ${formatDate(integration.scannerHealth.lastSuccessAt)}` : " / no scheduled success"}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-xs leading-5">
+                              Backlog {integration.scannerHealth.backlog}; account failures {integration.scannerHealth.accountFailures ?? 0}; model failures {integration.scannerHealth.modelFailures}.
+                              {integration.scannerHealth.error ? ` ${integration.scannerHealth.error}` : ""}
+                            </p>
+                          </div>
+                        ) : null}
 
                         <form onSubmit={startGmailAuth} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                           <label className="block text-sm font-medium text-stone-700">
@@ -937,9 +1048,79 @@ export function AdminOperationsPanel() {
                                   <span>{account.proposalCounts.accepted} accepted</span>
                                   <span>{account.proposalCounts.rejected} rejected</span>
                                 </div>
+                                <label className="mt-3 block text-xs font-medium text-stone-600">
+                                  Mailbox context
+                                  <textarea
+                                    rows={2}
+                                    value={gmailContexts[account.id] ?? account.settings.mailboxContext ?? ""}
+                                    onChange={(event) => setGmailContexts((current) => ({ ...current, [account.id]: event.target.value }))}
+                                    placeholder="Rental leads and booking problems are actionable."
+                                    className="mt-1 w-full rounded-md border border-stone-300 px-2 py-1.5 text-sm text-stone-900 outline-none focus:border-sky-500"
+                                  />
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={() => void saveGmailContext(account)}
+                                  disabled={busy !== null}
+                                  className="mt-2 h-8 rounded-md border border-stone-300 px-3 text-xs font-medium text-stone-700 hover:bg-stone-100 disabled:opacity-60"
+                                >
+                                  Save context
+                                </button>
                               </div>
                             ))}
                           </div>
+                        ) : null}
+
+                        {integration.senderPreferences && integration.senderPreferences.length > 0 ? (
+                          <div className="border-t border-stone-200 pt-3">
+                            <h4 className="text-sm font-semibold text-stone-950">Sender preferences</h4>
+                            <div className="mt-2 divide-y divide-stone-200">
+                              {integration.senderPreferences.map((preference) => (
+                                <div key={preference.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                                  <div className="min-w-0">
+                                    <p className="truncate font-medium text-stone-900">{preference.value}</p>
+                                    <p className="text-xs text-stone-500">{preference.matchType} / {preference.disposition === "never" ? "never suggest" : "usually actionable"}</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => void removeSenderPreference(preference.id)}
+                                    disabled={busy !== null}
+                                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100 hover:text-rose-700 disabled:opacity-60"
+                                    aria-label={`Remove preference for ${preference.value}`}
+                                    title="Remove preference"
+                                  >
+                                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {integration.recentDecisions?.some((decision) => decision.outcome === "no_action") ? (
+                          <details className="border-t border-stone-200 pt-3">
+                            <summary className="cursor-pointer text-sm font-semibold text-stone-950">Recent no-action decisions</summary>
+                            <div className="mt-2 divide-y divide-stone-200">
+                              {integration.recentDecisions.filter((decision) => decision.outcome === "no_action").map((decision) => (
+                                <div key={decision.id} className="py-2">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <p className="truncate text-sm font-medium text-stone-900">{decision.source?.title ?? decision.senderAddress ?? "Email"}</p>
+                                      <p className="mt-0.5 text-xs leading-5 text-stone-500">{decision.reason ?? decision.reasonCode ?? "No action detected"}</p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => void correctNoActionDecision(decision.id)}
+                                      disabled={busy !== null}
+                                      className="shrink-0 h-8 rounded-md border border-stone-300 px-2 text-xs font-medium text-stone-700 hover:bg-stone-100 disabled:opacity-60"
+                                    >
+                                      This should be a task
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </details>
                         ) : null}
                       </div>
                     ) : null}

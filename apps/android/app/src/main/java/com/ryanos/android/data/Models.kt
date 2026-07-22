@@ -425,7 +425,12 @@ data class EmailProposal(
   val subject: String?,
   val sourceSummary: String?,
   val sourceUrl: String?,
-  val occurredAt: String?
+  val occurredAt: String?,
+  val triageOutcome: String = "actionable",
+  val senderAddress: String? = null,
+  val senderPreference: String? = null,
+  val initialProgressNote: String? = null,
+  val checklistItems: List<String> = emptyList()
 )
 
 data class OpportunityProposal(

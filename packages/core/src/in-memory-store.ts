@@ -4,6 +4,13 @@ import type {
   EmailActionProposalListFilters,
   EmailActionProposalPatch,
   EmailActionProposalUpsertData,
+  EmailScanRunCreateData,
+  EmailScanRunPatch,
+  EmailSenderPreferencePatch,
+  EmailSenderPreferenceUpsertData,
+  EmailTriageDecisionListFilters,
+  EmailTriageDecisionPatch,
+  EmailTriageDecisionUpsertData,
   ExternalSourceUpsertData,
   AreaUpsertData,
   DailyPlanUpsertData,
@@ -43,6 +50,9 @@ import type {
   Area,
   DailyPlan,
   EmailActionProposal,
+  EmailScanRun,
+  EmailSenderPreference,
+  EmailTriageDecision,
   ExternalSource,
   Item,
   ItemChecklistItem,
@@ -86,6 +96,9 @@ export class InMemoryRyanStore implements RyanStore {
   readonly externalSources = new Map<UUID, ExternalSource>();
   readonly sourceLinks: SourceLink[] = [];
   readonly emailActionProposals = new Map<UUID, EmailActionProposal>();
+  readonly emailScanRuns = new Map<UUID, EmailScanRun>();
+  readonly emailTriageDecisions = new Map<UUID, EmailTriageDecision>();
+  readonly emailSenderPreferences = new Map<UUID, EmailSenderPreference>();
   readonly opportunities = new Map<UUID, Opportunity>();
   readonly opportunityProposals = new Map<UUID, OpportunityProposal>();
   readonly shoppingLists = new Map<UUID, ShoppingList>();
@@ -666,6 +679,13 @@ export class InMemoryRyanStore implements RyanStore {
       .slice(0, Math.min(Math.max(filters.limit ?? 100, 1), 200));
   }
 
+  async listProviderAccountsForProvider(provider: string, limit = 500): Promise<ProviderAccount[]> {
+    return [...this.providerAccounts.values()]
+      .filter((account) => account.provider === provider && !account.deletedAt)
+      .sort((a, b) => (a.email ?? a.id).localeCompare(b.email ?? b.id))
+      .slice(0, Math.min(Math.max(limit, 1), 1000));
+  }
+
   async getProviderAccount(accountId: UUID): Promise<ProviderAccount | undefined> {
     return this.providerAccounts.get(accountId);
   }
@@ -862,6 +882,8 @@ export class InMemoryRyanStore implements RyanStore {
     else if (existing?.rationale !== undefined) proposal.rationale = existing.rationale;
     if (data.confidence !== undefined) proposal.confidence = data.confidence;
     else if (existing?.confidence !== undefined) proposal.confidence = existing.confidence;
+    if (data.triageDecisionId !== undefined) proposal.triageDecisionId = data.triageDecisionId;
+    else if (existing?.triageDecisionId !== undefined) proposal.triageDecisionId = existing.triageDecisionId;
     if (data.acceptedItemId !== undefined) proposal.acceptedItemId = data.acceptedItemId;
     else if (existing?.acceptedItemId !== undefined) proposal.acceptedItemId = existing.acceptedItemId;
     if (data.acceptedAt !== undefined) proposal.acceptedAt = data.acceptedAt;
@@ -917,6 +939,136 @@ export class InMemoryRyanStore implements RyanStore {
     }
     this.emailActionProposals.set(proposalId, updated);
     return updated;
+  }
+
+  async createEmailScanRun(data: EmailScanRunCreateData): Promise<EmailScanRun> {
+    if (
+      data.status === "running" &&
+      [...this.emailScanRuns.values()].some((run) => run.userId === data.userId && run.status === "running")
+    ) {
+      throw new Error(`Email scan already running for user: ${data.userId}`);
+    }
+    const timestamp = nowIso();
+    const run: EmailScanRun = {
+      ...data,
+      id: createId("email_scan_run"),
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.emailScanRuns.set(run.id, run);
+    return run;
+  }
+
+  async updateEmailScanRun(runId: UUID, patch: EmailScanRunPatch): Promise<EmailScanRun> {
+    const existing = this.emailScanRuns.get(runId);
+    if (!existing) throw new Error(`Email scan run not found: ${runId}`);
+    const updated: EmailScanRun = { ...existing, ...patch, updatedAt: nowIso() };
+    this.emailScanRuns.set(runId, updated);
+    return updated;
+  }
+
+  async listEmailScanRuns(filters: { userId: UUID; limit?: number }): Promise<EmailScanRun[]> {
+    return [...this.emailScanRuns.values()]
+      .filter((run) => run.userId === filters.userId)
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .slice(0, Math.min(Math.max(filters.limit ?? 20, 1), 100));
+  }
+
+  async upsertEmailTriageDecision(data: EmailTriageDecisionUpsertData): Promise<EmailTriageDecision> {
+    const existing = [...this.emailTriageDecisions.values()].find(
+      (decision) =>
+        decision.providerAccountId === data.providerAccountId &&
+        decision.gmailMessageId === data.gmailMessageId &&
+        decision.contentFingerprint === data.contentFingerprint &&
+        decision.classifierVersion === data.classifierVersion
+    );
+    const timestamp = nowIso();
+    const decision: EmailTriageDecision = {
+      ...existing,
+      ...data,
+      id: existing?.id ?? createId("email_triage_decision"),
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    this.emailTriageDecisions.set(decision.id, decision);
+    return decision;
+  }
+
+  async updateEmailTriageDecision(
+    decisionId: UUID,
+    patch: EmailTriageDecisionPatch
+  ): Promise<EmailTriageDecision> {
+    const existing = this.emailTriageDecisions.get(decisionId);
+    if (!existing) throw new Error(`Email triage decision not found: ${decisionId}`);
+    const updated: EmailTriageDecision = { ...existing, ...patch, updatedAt: nowIso() };
+    this.emailTriageDecisions.set(decisionId, updated);
+    return updated;
+  }
+
+  async getEmailTriageDecision(decisionId: UUID): Promise<EmailTriageDecision | undefined> {
+    return this.emailTriageDecisions.get(decisionId);
+  }
+
+  async listEmailTriageDecisions(filters: EmailTriageDecisionListFilters): Promise<EmailTriageDecision[]> {
+    return [...this.emailTriageDecisions.values()]
+      .filter((decision) => {
+        if (decision.userId !== filters.userId || decision.deletedAt) return false;
+        if (filters.providerAccountId !== undefined && decision.providerAccountId !== filters.providerAccountId) {
+          return false;
+        }
+        if (filters.outcome !== undefined && decision.outcome !== filters.outcome) return false;
+        return filters.gmailThreadId === undefined || decision.gmailThreadId === filters.gmailThreadId;
+      })
+      .sort((a, b) => b.evaluatedAt.localeCompare(a.evaluatedAt))
+      .slice(0, Math.min(Math.max(filters.limit ?? 50, 1), 200));
+  }
+
+  async upsertEmailSenderPreference(data: EmailSenderPreferenceUpsertData): Promise<EmailSenderPreference> {
+    const existing = [...this.emailSenderPreferences.values()].find(
+      (preference) =>
+        preference.userId === data.userId &&
+        preference.matchType === data.matchType &&
+        preference.value === data.value &&
+        !preference.deletedAt
+    );
+    const timestamp = nowIso();
+    const preference: EmailSenderPreference = {
+      id: existing?.id ?? createId("email_sender_preference"),
+      userId: data.userId,
+      matchType: data.matchType,
+      value: data.value,
+      disposition: data.disposition,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    if (data.originatingProposalId !== undefined) preference.originatingProposalId = data.originatingProposalId;
+    else if (existing?.originatingProposalId !== undefined) {
+      preference.originatingProposalId = existing.originatingProposalId;
+    }
+    this.emailSenderPreferences.set(preference.id, preference);
+    return preference;
+  }
+
+  async updateEmailSenderPreference(
+    preferenceId: UUID,
+    patch: EmailSenderPreferencePatch
+  ): Promise<EmailSenderPreference> {
+    const existing = this.emailSenderPreferences.get(preferenceId);
+    if (!existing) throw new Error(`Email sender preference not found: ${preferenceId}`);
+    const updated: EmailSenderPreference = { ...existing, ...patch, updatedAt: nowIso() };
+    this.emailSenderPreferences.set(preferenceId, updated);
+    return updated;
+  }
+
+  async getEmailSenderPreference(preferenceId: UUID): Promise<EmailSenderPreference | undefined> {
+    return this.emailSenderPreferences.get(preferenceId);
+  }
+
+  async listEmailSenderPreferences(userId: UUID): Promise<EmailSenderPreference[]> {
+    return [...this.emailSenderPreferences.values()]
+      .filter((preference) => preference.userId === userId && !preference.deletedAt)
+      .sort((a, b) => a.value.localeCompare(b.value));
   }
 
   async createOpportunity(data: OpportunityCreateData): Promise<Opportunity> {

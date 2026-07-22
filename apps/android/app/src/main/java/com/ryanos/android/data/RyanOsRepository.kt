@@ -549,6 +549,18 @@ class RyanOsRepository private constructor(context: Context) {
     }
   }
 
+  suspend fun setEmailSenderPreference(proposalId: String, disposition: String?): InboxSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext refreshInbox()
+    runCatching {
+      RyanOsApi.setEmailSenderPreference(settings, proposalId, disposition)
+      refreshInbox()
+    }.getOrElse { error ->
+      dataStore.edit { preferences -> preferences[INBOX_LAST_ERROR] = error.userFacingMessage() }
+      inboxSnapshotFlow.first()
+    }
+  }
+
   suspend fun actOnOpportunityProposal(proposalId: String, action: String): InboxSnapshot = withContext(Dispatchers.IO) {
     val settings = settingsFlow.first()
     if (!settings.isConfigured) return@withContext refreshInbox()

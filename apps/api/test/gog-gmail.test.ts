@@ -202,42 +202,48 @@ describe("GogGmailClient", () => {
         exitCode: 0,
         stderr: "",
         stdout: JSON.stringify({
-          headers: {
-            date: "Sun, 21 Jun 2026 10:00:00 -0500",
-            from: "sender@example.com",
-            message_id: "<message-1@example.com>",
-            subject: "Question",
-            to: "ryan@example.com"
-          },
-          body: "Can you take a look at this?",
-          message: {
-            id: "message-1",
-            threadId: "thread-1",
-            snippet: "Can you take a look"
-          }
+          id: "thread-1",
+          messages: [{
+            headers: {
+              date: "Sun, 21 Jun 2026 10:00:00 -0500",
+              from: "sender@example.com",
+              message_id: "<message-1@example.com>",
+              subject: "Question",
+              to: "ryan@example.com"
+            },
+            body: "Can you take a look at this?",
+            message: {
+              id: "message-1",
+              threadId: "thread-1",
+              snippet: "Can you take a look"
+            }
+          }]
         })
       };
     };
     const client = new GogGmailClient({ runner });
 
-    const messages = await client.searchMessages({
+    const page = await client.searchMessagePage({
       accountEmail: "ryan@example.com",
       query: "in:inbox is:unread newer_than:7d",
       max: 25
     });
-    const message = await client.getMessage({
+    const thread = await client.getThread({
       accountEmail: "ryan@example.com",
-      messageId: messages[0]!.id
+      threadId: page.messages[0]!.id
     });
 
-    expect(messages).toEqual([
+    expect(page).toMatchObject({
+      nextPageToken: "next",
+      messages: [
       expect.objectContaining({
         id: "thread-1",
         subject: "Question",
-        from: "sender@example.com"
+        from: "sender@example.com",
+        messageCount: 1
       })
-    ]);
-    expect(message).toMatchObject({
+    ]});
+    expect(thread.messages[0]).toMatchObject({
       id: "message-1",
       threadId: "thread-1",
       subject: "Question",

@@ -1,13 +1,18 @@
 import { run, type TaskList } from "graphile-worker";
 import { nowIso } from "@ryanos/shared";
 import { readFile } from "node:fs/promises";
+import {
+  internalEmailScanPath,
+  loadInternalEmailMasterKey,
+  signInternalEmailScanRequest
+} from "./internal-email-auth.js";
 
 const apiUrl = process.env.RYANOS_API_URL?.trim() || "http://api:4000";
 const codexAutomationIngestToken = process.env.RYANOS_CODEX_AUTOMATION_INGEST_TOKEN?.trim()
   || process.env.RYANOS_RFP_INGEST_TOKEN?.trim();
 const emailScanEnabled = process.env.EMAIL_TRIAGE_ENABLED !== "false";
 const emailScanIntervalMinutes = Math.min(
-  Math.max(Number(process.env.EMAIL_SCAN_INTERVAL_MINUTES ?? "60") || 60, 5),
+  Math.max(Number(process.env.EMAIL_SCAN_INTERVAL_MINUTES ?? "15") || 15, 5),
   1440
 );
 const rfpReportIngestEnabled = (
@@ -84,9 +89,7 @@ const tasks: TaskList = {
   "ryanos.email.scan": async (payload, helpers) => {
     const input = asRecord(payload);
     const body = {
-      userId: typeof input.userId === "string" ? input.userId : "local-owner",
       syncAccounts: input.syncAccounts !== false,
-      ...(typeof input.accountId === "string" ? { accountId: input.accountId } : {}),
       ...(typeof input.query === "string" ? { query: input.query } : {}),
       ...(typeof input.maxPerAccount === "number" ? { maxPerAccount: input.maxPerAccount } : {})
     };
@@ -132,12 +135,17 @@ const tasks: TaskList = {
 };
 
 async function requestEmailScan(body: Record<string, unknown>): Promise<unknown> {
-  const response = await fetch(`${apiUrl}/v1/email/scan`, {
+  const serializedBody = JSON.stringify(body);
+  const masterKey = await loadInternalEmailMasterKey();
+  const signed = signInternalEmailScanRequest(masterKey, serializedBody);
+  const response = await fetch(`${apiUrl}${internalEmailScanPath}`, {
     method: "POST",
     headers: {
-      "content-type": "application/json"
+      "content-type": "application/json",
+      "x-ryanos-internal-timestamp": signed.timestamp,
+      "x-ryanos-internal-signature": signed.signature
     },
-    body: JSON.stringify(body)
+    body: serializedBody
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -188,22 +196,21 @@ const runner = await run({
 console.log("RyanOS worker started.");
 
 if (emailScanEnabled) {
-  const runHourlyScan = async () => {
+  const runScheduledScan = async () => {
     try {
       const result = await requestEmailScan({
-        userId: "local-owner",
         syncAccounts: true
       });
-      console.log(`RyanOS hourly email scan completed: ${JSON.stringify(result)}`);
+      console.log(`RyanOS scheduled email scan completed: ${JSON.stringify(result)}`);
     } catch (err) {
-      console.error(`RyanOS hourly email scan failed: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`RyanOS scheduled email scan failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
   setTimeout(() => {
-    void runHourlyScan();
+    void runScheduledScan();
   }, 60000);
   setInterval(() => {
-    void runHourlyScan();
+    void runScheduledScan();
   }, emailScanIntervalMinutes * 60 * 1000);
 }
 

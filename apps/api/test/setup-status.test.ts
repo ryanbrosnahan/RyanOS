@@ -6,6 +6,7 @@ import { buildApp } from "../src/app.js";
 describe("setup status", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.useRealTimers();
   });
 
   it("reports human setup actions for disabled AI and unconfigured Telegram", async () => {
@@ -954,6 +955,100 @@ describe("setup status", () => {
     expect(item?.recurrence.policy).toMatchObject({
       type: "fixed_schedule",
       cron: "0 9 1 * *"
+    });
+  });
+
+  it("ramps monthly fixed-schedule priority around the due date", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const createdAt = "2026-07-20T12:00:00.000Z";
+    const item = await store.createItem({
+      userId: "local-owner",
+      title: "Pay the HOA",
+      kind: "habit",
+      priority: "normal"
+    });
+    store.items.set(item.id, {
+      ...item,
+      createdAt,
+      updatedAt: createdAt
+    });
+    const policy = await store.upsertRecurrencePolicy({
+      userId: "local-owner",
+      itemId: item.id,
+      type: "fixed_schedule",
+      cron: "0 9 1 * *",
+      resetFromCompletion: false,
+      status: "active",
+      metadata: {}
+    });
+    await store.updateRecurrenceState({
+      recurrencePolicyId: policy.id,
+      stalenessScore: 0,
+      updatedAt: createdAt
+    });
+
+    const app = buildApp({ store });
+    const beforeLead = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-07-28&timezone=UTC"
+    });
+    const hiddenIncluded = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-07-28&timezone=UTC&includeHidden=true"
+    });
+    const threeDaysBefore = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-07-29&timezone=UTC"
+    });
+    const twoDaysBefore = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-07-30&timezone=UTC"
+    });
+    const dueDay = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-08-01&timezone=UTC"
+    });
+    const dayAfter = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-08-02&timezone=UTC"
+    });
+    const capped = await app.inject({
+      method: "GET",
+      url: "/v1/items?userId=local-owner&date=2026-08-03&timezone=UTC"
+    });
+    await app.close();
+
+    const itemFrom = (response: typeof threeDaysBefore) => response.json().items[0] as {
+      hiddenUntil?: string;
+      priorityScore: number;
+      prioritySignals: string[];
+      recurrence: {
+        state: {
+          nextDueAt: string;
+          stalenessScore: number;
+        };
+      };
+    };
+
+    expect(beforeLead.json().items).toEqual([]);
+    expect(itemFrom(hiddenIncluded)).toMatchObject({
+      hiddenUntil: "2026-07-29",
+      prioritySignals: expect.arrayContaining(["hidden until 2026-07-29", "next due 2026-08-01"])
+    });
+    expect(itemFrom(threeDaysBefore).priorityScore).toBeGreaterThan(20);
+    expect(itemFrom(twoDaysBefore).priorityScore).toBeGreaterThan(itemFrom(threeDaysBefore).priorityScore);
+    expect(itemFrom(dueDay).priorityScore).toBeGreaterThan(itemFrom(twoDaysBefore).priorityScore);
+    expect(itemFrom(dayAfter).priorityScore).toBeGreaterThan(itemFrom(dueDay).priorityScore);
+    expect(itemFrom(capped)).toMatchObject({
+      priorityScore: 100,
+      prioritySignals: expect.arrayContaining(["2d stale", "fixed schedule cap"]),
+      recurrence: {
+        state: {
+          nextDueAt: "2026-08-01T09:00:00.000Z",
+          stalenessScore: 2
+        }
+      }
     });
   });
 

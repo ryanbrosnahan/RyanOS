@@ -11,6 +11,9 @@ import {
   InMemoryRyanStore,
   type Area,
   type DailyPlan,
+  type EmailScanRun,
+  type EmailSenderPreference,
+  type EmailTriageDecision,
   type Item,
   type ItemChecklistItem,
   type ItemProgressNote,
@@ -46,16 +49,23 @@ import { authModeFromEnv, createRyanOsAuth, type RyanOsAuthMode } from "./auth.j
 import {
   acceptEmailProposal,
   DEFAULT_EMAIL_SCAN_QUERY,
+  EMAIL_TRIAGE_CLASSIFIER_VERSION,
+  emailAddressFromHeader,
   emailTriageSettings,
   gmailProposalCounts,
   parseScanMax,
   proposalView,
+  preferenceForSender,
   rejectEmailProposal,
   scanGmailInbox,
   syncGmailAccounts,
   type GmailClientLike
 } from "./email-triage.js";
 import { GogGmailClient } from "./gog-gmail.js";
+import {
+  internalEmailScanPath,
+  verifyInternalEmailScanRequest
+} from "./internal-email-auth.js";
 import {
   acceptOpportunityProposal,
   ingestOpportunityReport,
@@ -363,7 +373,8 @@ const emailAccountParamsSchema = z.object({
 
 const emailAccountSettingsBodySchema = z.object({
   userId: z.string().default("local-owner"),
-  enabled: z.boolean()
+  enabled: z.boolean(),
+  mailboxContext: z.string().trim().max(1000).optional()
 });
 
 const emailScanBodySchema = z.object({
@@ -371,8 +382,16 @@ const emailScanBodySchema = z.object({
   accountId: z.string().optional(),
   query: z.string().optional(),
   maxPerAccount: z.number().int().min(1).max(100).optional(),
+  maxPerUser: z.number().int().min(1).max(200).optional(),
   syncAccounts: z.boolean().default(true),
-  includeNewAccounts: z.boolean().optional()
+  includeNewAccounts: z.boolean().optional(),
+  timezone: z.string().trim().min(1).max(100).optional()
+});
+
+const internalEmailScanBodySchema = emailScanBodySchema.omit({
+  userId: true,
+  accountId: true,
+  includeNewAccounts: true
 });
 
 const gmailAuthBodySchema = z.object({
@@ -392,8 +411,6 @@ const telegramLinkCodeBodySchema = z.object({
   userId: z.string().default("local-owner")
 });
 
-const activeEmailScans = new Map<string, { startedAt: string }>();
-
 const emailProposalsQuerySchema = z.object({
   userId: z.string().default("local-owner"),
   status: z.enum(["proposed", "accepted", "rejected"]).default("proposed"),
@@ -406,6 +423,42 @@ const emailProposalParamsSchema = z.object({
 
 const emailProposalActionBodySchema = z.object({
   userId: z.string().default("local-owner")
+});
+
+const emailSenderPreferenceSchema = z.object({
+  userId: z.string().default("local-owner"),
+  matchType: z.enum(["address", "domain"]),
+  value: z.string().trim().min(1).max(320),
+  disposition: z.enum(["never", "likely"])
+});
+
+const emailSenderPreferencePatchSchema = z.object({
+  userId: z.string().default("local-owner"),
+  disposition: z.enum(["never", "likely"]).optional()
+});
+
+const emailSenderPreferenceParamsSchema = z.object({
+  id: z.string().min(1)
+});
+
+const emailProposalSenderPreferenceBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  disposition: z.enum(["never", "likely"]).nullable(),
+  rejectCurrent: z.boolean().default(true)
+});
+
+const emailTriageDecisionsQuerySchema = z.object({
+  userId: z.string().default("local-owner"),
+  outcome: z.enum(["actionable", "maybe", "no_action", "error"]).optional(),
+  accountId: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50)
+});
+
+const emailTriageDecisionParamsSchema = z.object({ id: z.string().min(1) });
+
+const emailTriageDecisionActionBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  timezone: z.string().trim().min(1).max(100).optional()
 });
 
 const opportunityProposalsQuerySchema = z.object({
@@ -608,6 +661,79 @@ function daysBetweenDateKeys(startDateKey: string, endDateKey: string): number {
   return Math.round((endMs - startMs) / (24 * 60 * 60 * 1000));
 }
 
+const fixedScheduleLeadDays = 3;
+const fixedSchedulePriorityCap = 100;
+
+type MonthlyCronSchedule = {
+  minute: number;
+  hour: number;
+  dayOfMonth: number;
+};
+
+type RecurrenceSchedulePolicy = {
+  type: RecurrencePolicy["type"];
+  cron?: string | undefined;
+};
+
+function cronNumber(value: string | undefined, min: number, max: number): number | undefined {
+  if (value === undefined || !/^\d{1,2}$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return parsed >= min && parsed <= max ? parsed : undefined;
+}
+
+function monthlyCronSchedule(cron: string | undefined): MonthlyCronSchedule | undefined {
+  const parts = cron?.trim().split(/\s+/);
+  if (parts?.length !== 5) return undefined;
+  const [minutePart, hourPart, dayOfMonthPart, monthPart, dayOfWeekPart] = parts;
+  if (monthPart !== "*" || (dayOfWeekPart !== "*" && dayOfWeekPart !== "?")) return undefined;
+  const minute = cronNumber(minutePart, 0, 59);
+  const hour = cronNumber(hourPart, 0, 23);
+  const dayOfMonth = cronNumber(dayOfMonthPart, 1, 31);
+  if (minute === undefined || hour === undefined || dayOfMonth === undefined) return undefined;
+  return { minute, hour, dayOfMonth };
+}
+
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function addMonthsToDateParts(year: number, month: number, delta: number): { year: number; month: number } {
+  const date = new Date(Date.UTC(year, month - 1 + delta, 1));
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1
+  };
+}
+
+function monthlyDateKey(year: number, month: number, dayOfMonth: number): string | undefined {
+  if (dayOfMonth > daysInMonth(year, month)) return undefined;
+  return `${year}-${padDatePart(month)}-${padDatePart(dayOfMonth)}`;
+}
+
+function nextMonthlyDateKeyOnOrAfter(dateKey: string, dayOfMonth: number): string | undefined {
+  const start = parseDateKey(dateKey);
+  for (let offset = 0; offset < 36; offset += 1) {
+    const { year, month } = addMonthsToDateParts(start.year, start.month, offset);
+    const candidate = monthlyDateKey(year, month, dayOfMonth);
+    if (candidate !== undefined && candidate >= dateKey) return candidate;
+  }
+  return undefined;
+}
+
+function previousMonthlyDateKeyOnOrBefore(dateKey: string, dayOfMonth: number): string | undefined {
+  const start = parseDateKey(dateKey);
+  for (let offset = 0; offset < 36; offset += 1) {
+    const { year, month } = addMonthsToDateParts(start.year, start.month, -offset);
+    const candidate = monthlyDateKey(year, month, dayOfMonth);
+    if (candidate !== undefined && candidate <= dateKey) return candidate;
+  }
+  return undefined;
+}
+
+function nextMonthlyDateKeyAfter(dateKey: string, dayOfMonth: number): string | undefined {
+  return nextMonthlyDateKeyOnOrAfter(addDaysToDateKey(dateKey, 1), dayOfMonth);
+}
+
 function localDateParts(date: Date, timeZone: string): {
   year: number;
   month: number;
@@ -670,12 +796,57 @@ function completionTarget(policy: RecurrencePolicy): number | undefined {
   return undefined;
 }
 
+function fixedScheduleDueDateKeyForPolicy(input: {
+  policy: RecurrenceSchedulePolicy;
+  state?: RecurrenceState | undefined;
+  createdAt: string;
+  timeZone: string;
+  referenceDateKey: string;
+}): string | undefined {
+  if (input.policy.type !== "fixed_schedule") return undefined;
+  const schedule = monthlyCronSchedule(input.policy.cron);
+  if (schedule === undefined) return undefined;
+
+  const createdDateKey = localDateKey(new Date(input.createdAt), input.timeZone);
+  const previousDueKey = previousMonthlyDateKeyOnOrBefore(input.referenceDateKey, schedule.dayOfMonth);
+  const upcomingDueKey = nextMonthlyDateKeyOnOrAfter(input.referenceDateKey, schedule.dayOfMonth);
+  const dueKey =
+    previousDueKey !== undefined && previousDueKey >= createdDateKey ? previousDueKey : upcomingDueKey;
+  if (dueKey === undefined) return undefined;
+
+  const nextDueKey = nextMonthlyDateKeyAfter(dueKey, schedule.dayOfMonth);
+  if (nextDueKey === undefined) return dueKey;
+
+  const lastCompletedAt = input.state?.lastCompletedAt;
+  if (lastCompletedAt !== undefined) {
+    const lastCompletedKey = localDateKey(new Date(lastCompletedAt), input.timeZone);
+    const completionWindowStart = addDaysToDateKey(dueKey, -fixedScheduleLeadDays);
+    if (lastCompletedKey >= completionWindowStart && lastCompletedKey < nextDueKey) return nextDueKey;
+  }
+
+  return dueKey;
+}
+
+function fixedScheduleDueAtForPolicy(input: {
+  policy: RecurrenceSchedulePolicy;
+  state?: RecurrenceState | undefined;
+  createdAt: string;
+  timeZone: string;
+  referenceDateKey: string;
+}): string | undefined {
+  const schedule = monthlyCronSchedule(input.policy.cron);
+  const dueKey = fixedScheduleDueDateKeyForPolicy(input);
+  if (schedule === undefined || dueKey === undefined) return undefined;
+  return localDateTimeToUtcIso(dueKey, input.timeZone, schedule.hour, schedule.minute);
+}
+
 function recurrenceProgress(
   policy: RecurrencePolicy,
   state: RecurrenceState | undefined,
   events: RecurrenceEvent[],
   timeZone: string,
-  referenceDateKey: string
+  referenceDateKey: string,
+  itemCreatedAt: string
 ) {
   const startDate = addDaysToDateKey(referenceDateKey, -6);
   const dateKeys = Array.from({ length: 7 }, (_, index) => addDaysToDateKey(startDate, index));
@@ -707,6 +878,27 @@ function recurrenceProgress(
   });
 
   const completedCount = days.filter((day) => day.status === "completed").length;
+  const fixedDueAt = fixedScheduleDueAtForPolicy({
+    policy,
+    state,
+    createdAt: itemCreatedAt,
+    timeZone,
+    referenceDateKey
+  });
+  let progressState = state;
+  if (fixedDueAt !== undefined) {
+    const fixedDueKey = localDateKey(new Date(fixedDueAt), timeZone);
+    progressState = {
+      recurrencePolicyId: policy.id,
+      nextDueAt: fixedDueAt,
+      stalenessScore: Math.max(0, daysBetweenDateKeys(fixedDueKey, referenceDateKey)),
+      updatedAt: state?.updatedAt ?? policy.updatedAt
+    };
+    if (state?.lastEventAt !== undefined) progressState.lastEventAt = state.lastEventAt;
+    if (state?.lastCompletedAt !== undefined) progressState.lastCompletedAt = state.lastCompletedAt;
+    if (state?.nextEligibleAt !== undefined) progressState.nextEligibleAt = state.nextEligibleAt;
+  }
+
   return {
     policy: {
       id: policy.id,
@@ -718,7 +910,7 @@ function recurrenceProgress(
       targetWindowDays: policy.targetWindowDays,
       preferredDays: policy.preferredDays ?? []
     },
-    state,
+    state: progressState,
     week: {
       startDate,
       endDate: referenceDateKey,
@@ -737,6 +929,21 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function asJsonObject(value: unknown): JsonObject {
   return JSON.parse(JSON.stringify(value ?? {})) as JsonObject;
+}
+
+function normalizeSenderPreferenceValue(
+  matchType: EmailSenderPreference["matchType"],
+  rawValue: string
+): string {
+  const value = rawValue.trim().toLowerCase();
+  if (matchType === "address") {
+    const address = emailAddressFromHeader(value);
+    if (!address || address !== value) throw new Error("Enter a valid sender email address.");
+    return address;
+  }
+  const domain = value.replace(/^@/, "").replace(/^\.+|\.+$/g, "");
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domain)) throw new Error("Enter a valid sender domain.");
+  return domain;
 }
 
 function metadataString(metadata: Record<string, unknown>, key: string): string | undefined {
@@ -1150,7 +1357,7 @@ function emailScanConfig() {
     query: process.env.EMAIL_SCAN_QUERY?.trim() || DEFAULT_EMAIL_SCAN_QUERY,
     maxPerAccount: parseScanMax(process.env.EMAIL_SCAN_MAX_PER_ACCOUNT),
     cadenceMinutes: Math.min(
-      Math.max(Number(process.env.EMAIL_SCAN_INTERVAL_MINUTES ?? "60") || 60, 5),
+      Math.max(Number(process.env.EMAIL_SCAN_INTERVAL_MINUTES ?? "15") || 15, 5),
       1440
     ),
     enabled: process.env.EMAIL_TRIAGE_ENABLED !== "false"
@@ -1404,6 +1611,40 @@ async function gmailAccountView(store: RyanStore, account: ProviderAccount) {
   };
 }
 
+async function emailScannerHealth(store: RyanStore, userId: UUID) {
+  const [accounts, runs] = await Promise.all([
+    store.listProviderAccounts({ userId, provider: "gmail", limit: 200 }),
+    store.listEmailScanRuns({ userId, limit: 10 })
+  ]);
+  const enabledAccounts = accounts.filter(
+    (account) => account.status !== "disabled" && emailTriageSettings(account).enabled
+  );
+  const lastRun = runs[0];
+  const lastSuccess = runs.find((run) => run.status === "succeeded" && run.trigger === "scheduled");
+  const cadenceMinutes = emailScanConfig().cadenceMinutes;
+  const staleAfterMs = cadenceMinutes * 2 * 60_000;
+  const stale = enabledAccounts.length > 0 && (
+    !lastSuccess || Date.now() - new Date(lastSuccess.completedAt ?? lastSuccess.startedAt).getTime() > staleAfterMs
+  );
+  const lastCounts = asRecord(lastRun?.counts) ?? {};
+  const lastErrors = asRecord(lastRun?.errors) ?? {};
+  const modelFailures = typeof lastCounts.modelFailures === "number" ? lastCounts.modelFailures : 0;
+  const accountFailures = typeof lastCounts.accountsFailed === "number" ? lastCounts.accountsFailed : 0;
+  const degraded = stale || lastRun?.status === "failed" || modelFailures > 0 || accountFailures > 0;
+  return {
+    status: enabledAccounts.length === 0 ? "not_configured" : degraded ? "degraded" : "healthy",
+    stale,
+    cadenceMinutes,
+    enabledAccountCount: enabledAccounts.length,
+    backlog: typeof lastCounts.backlog === "number" ? lastCounts.backlog : 0,
+    modelFailures,
+    accountFailures,
+    ...(lastRun ? { lastRun } : {}),
+    ...(lastSuccess ? { lastSuccessAt: lastSuccess.completedAt ?? lastSuccess.startedAt } : {}),
+    ...(typeof lastErrors.message === "string" ? { error: lastErrors.message } : {})
+  };
+}
+
 type RyanOsRequestAuth = {
   authUserId: string;
   userId: string;
@@ -1465,6 +1706,150 @@ export function buildApp(options: {
   async function integrationEnabled(userId: string, integrationId: IntegrationId): Promise<boolean> {
     const setting = await store.getUserIntegrationSetting(userId as UUID, integrationId);
     return setting?.enabled ?? true;
+  }
+
+  async function runCoordinatedEmailScan(input: {
+    userId: UUID;
+    trigger: EmailScanRun["trigger"];
+    accountId?: UUID;
+    query?: string;
+    maxPerAccount?: number;
+    maxPerUser?: number;
+    syncAccounts?: boolean;
+    includeNewAccounts?: boolean;
+    timezone?: string;
+  }): Promise<{ run: EmailScanRun; result?: Awaited<ReturnType<typeof scanGmailInbox>>; alreadyRunning?: boolean }> {
+    const now = Date.now();
+    const priorRuns = await store.listEmailScanRuns({ userId: input.userId, limit: 20 });
+    const activeRun = priorRuns.find((run) => run.status === "running");
+    if (activeRun && new Date(activeRun.leaseExpiresAt).getTime() > now) {
+      return { run: activeRun, alreadyRunning: true };
+    }
+    if (activeRun) {
+      await store.updateEmailScanRun(activeRun.id, {
+        status: "failed",
+        completedAt: nowIso(),
+        errors: asJsonObject({ code: "abandoned_run", message: "Recovered a scan run after its 30-minute lease expired." })
+      });
+    }
+
+    let run: EmailScanRun;
+    try {
+      run = await store.createEmailScanRun({
+        userId: input.userId,
+        trigger: input.trigger,
+        status: "running",
+        classifierVersion: EMAIL_TRIAGE_CLASSIFIER_VERSION,
+        startedAt: nowIso(),
+        leaseExpiresAt: new Date(now + 30 * 60_000).toISOString(),
+        counts: {},
+        errors: {},
+        metadata: asJsonObject({ source: input.trigger === "scheduled" ? "worker" : "api" })
+      });
+    } catch (error) {
+      const concurrent = (await store.listEmailScanRuns({ userId: input.userId, limit: 5 }))
+        .find((candidate) => candidate.status === "running");
+      if (concurrent) return { run: concurrent, alreadyRunning: true };
+      throw error;
+    }
+
+    try {
+      if (!(await integrationEnabled(input.userId, "gmail"))) {
+        throw new Error("Gmail integration is disabled for this user.");
+      }
+      if (!(await integrationEnabled(input.userId, "ai"))) {
+        throw new Error("AI integration is disabled for this user.");
+      }
+      const status = await ai.getStatus();
+      if (!status.ready) throw new Error("AI provider is not ready.");
+      const config = emailScanConfig();
+      const identity = database ? await getRyanOsUserById(database.db, input.userId) : undefined;
+      const scanInput: Parameters<typeof scanGmailInbox>[0] = {
+        ai,
+        store,
+        client: emailClient,
+        userId: input.userId,
+        query: input.query ?? config.query,
+        maxPerAccount: input.maxPerAccount ?? config.maxPerAccount,
+        maxPerUser: input.maxPerUser ?? 60,
+        syncAccounts: input.syncAccounts ?? true,
+        includeNewAccounts: authMode === "dev-local" || input.includeNewAccounts === true,
+        ...(identity?.displayName ? { displayName: identity.displayName } : {}),
+        ...(input.timezone ? { timezone: input.timezone } : {})
+      };
+      if (input.accountId) scanInput.accountId = input.accountId;
+      const result = await scanGmailInbox(scanInput);
+      const allAccountsFailed = result.accountsScanned === 0 ||
+        result.accountsFailed >= result.accountsScanned;
+      run = await store.updateEmailScanRun(run.id, {
+        status: allAccountsFailed ? "failed" : "succeeded",
+        completedAt: nowIso(),
+        leaseExpiresAt: nowIso(),
+        counts: asJsonObject(result),
+        errors: allAccountsFailed
+          ? asJsonObject({
+              message: result.errors[0]?.error ?? "All enabled Gmail accounts failed to scan.",
+              errors: result.errors
+            })
+          : asJsonObject({ errors: result.errors })
+      });
+      return { run, result };
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, " ").slice(0, 500);
+      run = await store.updateEmailScanRun(run.id, {
+        status: "failed",
+        completedAt: nowIso(),
+        leaseExpiresAt: nowIso(),
+        errors: asJsonObject({ message })
+      });
+      throw Object.assign(new Error(message), { scanRun: run });
+    }
+  }
+
+  async function senderAddressForEmailProposal(proposalId: UUID, userId: UUID): Promise<{
+    proposal: Awaited<ReturnType<RyanStore["getEmailActionProposal"]>>;
+    senderAddress?: string;
+  }> {
+    const proposal = await store.getEmailActionProposal(proposalId);
+    if (!proposal || proposal.userId !== userId) return { proposal: undefined };
+    if (proposal.triageDecisionId) {
+      const decision = await store.getEmailTriageDecision(proposal.triageDecisionId);
+      if (decision?.senderAddress) return { proposal, senderAddress: decision.senderAddress };
+    }
+    const source = await store.getExternalSource(proposal.sourceId);
+    const gmail = asRecord(source?.metadata.gmail);
+    const from = typeof gmail?.from === "string" ? gmail.from : undefined;
+    const senderAddress = emailAddressFromHeader(from);
+    return { proposal, ...(senderAddress ? { senderAddress } : {}) };
+  }
+
+  async function emailDecisionView(decision: EmailTriageDecision) {
+    const [account, source, preferences] = await Promise.all([
+      store.getProviderAccount(decision.providerAccountId),
+      store.getExternalSource(decision.sourceId),
+      store.listEmailSenderPreferences(decision.userId)
+    ]);
+    const preference = preferenceForSender(preferences, decision.senderAddress);
+    return {
+      ...decision,
+      ...(account ? {
+        account: {
+          id: account.id,
+          ...(account.email ? { email: account.email } : {}),
+          ...(account.displayName ? { displayName: account.displayName } : {})
+        }
+      } : {}),
+      ...(source ? {
+        source: {
+          id: source.id,
+          ...(source.title ? { title: source.title } : {}),
+          ...(source.summary ? { summary: source.summary } : {}),
+          ...(source.url ? { url: source.url } : {}),
+          ...(source.occurredAt ? { occurredAt: source.occurredAt } : {})
+        }
+      } : {}),
+      ...(preference ? { senderPreference: preference } : {})
+    };
   }
 
   function setupForRole(entry: SetupStatus, role: UserRole): SetupStatus {
@@ -1913,7 +2298,7 @@ export function buildApp(options: {
       reply.header("Access-Control-Allow-Origin", origin);
       reply.header("Vary", "Origin");
       reply.header("Access-Control-Allow-Credentials", "true");
-      reply.header("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
+      reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
       reply.header(
         "Access-Control-Allow-Headers",
         typeof request.headers["access-control-request-headers"] === "string"
@@ -1941,7 +2326,8 @@ export function buildApp(options: {
       path === "/v1/inbound/telegram" ||
       path === "/v1/automation/ingest" ||
       path === "/v1/automation/codex-automations/ingest" ||
-      path === "/v1/automation/rfp-reports/ingest"
+      path === "/v1/automation/rfp-reports/ingest" ||
+      path === internalEmailScanPath
     );
   }
 
@@ -2076,6 +2462,56 @@ export function buildApp(options: {
     time: nowIso()
   }));
 
+  app.post(internalEmailScanPath, async (request, reply) => {
+    const bodyText = JSON.stringify(request.body ?? {});
+    const loadedVault = await loadSecretVaultFromEnv();
+    const timestampHeader = request.headers["x-ryanos-internal-timestamp"];
+    const signatureHeader = request.headers["x-ryanos-internal-signature"];
+    const timestamp = typeof timestampHeader === "string" ? timestampHeader : undefined;
+    const signature = typeof signatureHeader === "string" ? signatureHeader : undefined;
+    if (!loadedVault.vault) {
+      reply.code(503);
+      return { error: "Internal email scan authentication is not configured." };
+    }
+    if (!verifyInternalEmailScanRequest({
+      masterKey: loadedVault.vault.key,
+      body: bodyText,
+      timestamp,
+      signature
+    })) {
+      reply.code(401);
+      return { error: "Invalid or expired internal email scan signature." };
+    }
+    const body = internalEmailScanBodySchema.parse(request.body ?? {});
+    const accounts = await store.listProviderAccountsForProvider("gmail", 5000);
+    const userIds = [...new Set(
+      accounts
+        .filter((account) => account.status !== "disabled" && emailTriageSettings(account).enabled)
+        .map((account) => account.userId)
+    )];
+    const results: Array<Record<string, unknown>> = [];
+    for (const userId of userIds) {
+      try {
+        const scan = await runCoordinatedEmailScan({
+          userId,
+          trigger: "scheduled",
+          ...(body.query ? { query: body.query } : {}),
+          ...(body.maxPerAccount ? { maxPerAccount: body.maxPerAccount } : {}),
+          ...(body.maxPerUser ? { maxPerUser: body.maxPerUser } : {}),
+          syncAccounts: body.syncAccounts,
+          ...(body.timezone ? { timezone: body.timezone } : {})
+        });
+        results.push({ userId, ...scan });
+      } catch (error) {
+        results.push({
+          userId,
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 500)
+        });
+      }
+    }
+    return { usersDiscovered: userIds.length, results };
+  });
+
   app.get("/v1/tools", async () => ({
     tools: tools.list()
   }));
@@ -2120,11 +2556,28 @@ export function buildApp(options: {
     if (!requireSuperadmin(request, reply)) return;
     const aiStatus = await ai.getStatus();
     const userId = currentUserId(request) as UUID;
+    const [gmailSetup, scannerHealth] = await Promise.all([
+      gmailSetupStatus(emailClient),
+      emailScannerHealth(store, userId)
+    ]);
+    const gmailWarnings = scannerHealth.status === "degraded"
+      ? [
+          ...gmailSetup.warnings,
+          scannerHealth.error
+            ? `Email scanner failed: ${scannerHealth.error}`
+            : `Email scanner is stale; no signed worker scan completed within ${scannerHealth.cadenceMinutes * 2} minutes. Check worker authentication and availability.`
+        ]
+      : gmailSetup.warnings;
     return {
       ai: aiSetupStatus(aiStatus),
       integrations: [
         await telegramSetupStatus(database?.db),
-        await gmailSetupStatus(emailClient),
+        {
+          ...gmailSetup,
+          ready: gmailSetup.ready && scannerHealth.status !== "degraded",
+          warnings: gmailWarnings,
+          scannerHealth
+        },
         await codexRfpSetupStatus(userId)
       ]
     };
@@ -2142,6 +2595,9 @@ export function buildApp(options: {
       settings,
       gmailAccounts,
       gmailCounts,
+      scannerHealth,
+      gmailPreferences,
+      gmailRecentDecisions,
       telegramAccounts,
       providerAccountSummaries,
       integrationSettingSummaries
@@ -2158,6 +2614,9 @@ export function buildApp(options: {
         limit: 200
       }),
       gmailProposalCounts(store, userId as UUID),
+      emailScannerHealth(store, userId as UUID),
+      store.listEmailSenderPreferences(userId as UUID),
+      store.listEmailTriageDecisions({ userId: userId as UUID, limit: 20 }),
       store.listProviderAccounts({
         userId: userId as UUID,
         provider: "telegram",
@@ -2217,9 +2676,26 @@ export function buildApp(options: {
           })),
           canManageDeployment: role === "superadmin"
         }),
-        integrationView("gmail", gmailSetup, {
+        integrationView("gmail", {
+          ...gmailSetup,
+          warnings: scannerHealth.status === "degraded"
+            ? [
+                ...gmailSetup.warnings,
+                scannerHealth.error
+                  ? `Email scanner failed: ${scannerHealth.error}`
+                  : scannerHealth.accountFailures > 0
+                    ? `${scannerHealth.accountFailures} Gmail account scan${scannerHealth.accountFailures === 1 ? "" : "s"} failed during the latest run.`
+                  : scannerHealth.modelFailures > 0
+                    ? `${scannerHealth.modelFailures} email${scannerHealth.modelFailures === 1 ? "" : "s"} could not be classified during the latest run.`
+                  : `Email scanner is stale; no signed worker scan completed within ${scannerHealth.cadenceMinutes * 2} minutes. Check worker authentication and availability.`
+              ]
+            : gmailSetup.warnings
+        }, {
           config: emailScanConfig(),
           counts: gmailCounts,
+          scannerHealth,
+          senderPreferences: gmailPreferences,
+          recentDecisions: await Promise.all(gmailRecentDecisions.map(emailDecisionView)),
           accounts: await Promise.all(gmailAccounts.map((account) => gmailAccountView(store, account))),
           canManageDeployment: role === "superadmin"
         }),
@@ -2449,19 +2925,25 @@ export function buildApp(options: {
 
   app.get("/v1/email/accounts", async (request) => {
     const query = emailAccountsQuerySchema.parse(request.query);
-    const [setup, accounts, counts] = await Promise.all([
+    const [setup, accounts, counts, scannerHealth, preferences, recentDecisions] = await Promise.all([
       gmailSetupStatus(emailClient),
       store.listProviderAccounts({
         userId: query.userId,
         provider: "gmail",
         limit: 200
       }),
-      gmailProposalCounts(store, query.userId)
+      gmailProposalCounts(store, query.userId),
+      emailScannerHealth(store, query.userId as UUID),
+      store.listEmailSenderPreferences(query.userId as UUID),
+      store.listEmailTriageDecisions({ userId: query.userId as UUID, limit: 20 })
     ]);
     return {
       setup,
       config: emailScanConfig(),
       counts,
+      scannerHealth,
+      senderPreferences: preferences,
+      recentDecisions: await Promise.all(recentDecisions.map(emailDecisionView)),
       accounts: await Promise.all(accounts.map((account) => gmailAccountView(store, account)))
     };
   });
@@ -2567,7 +3049,8 @@ export function buildApp(options: {
         ...account.metadata,
         emailTriage: {
           ...(asRecord(account.metadata.emailTriage) ?? {}),
-          enabled: body.enabled
+          enabled: body.enabled,
+          ...(body.mailboxContext !== undefined ? { mailboxContext: body.mailboxContext } : {})
         }
       })
     });
@@ -2580,66 +3063,28 @@ export function buildApp(options: {
     const body = emailScanBodySchema.parse(request.body ?? {});
     if (!(await integrationEnabled(body.userId, "gmail"))) {
       reply.code(409);
-      return {
-        error: "Gmail integration is disabled for this user."
-      };
+      return { error: "Gmail integration is disabled for this user." };
     }
     if (!(await integrationEnabled(body.userId, "ai"))) {
       reply.code(409);
-      return {
-        error: "AI integration is disabled for this user."
-      };
+      return { error: "AI integration is disabled for this user." };
     }
-    const lockKey = body.userId;
-    const activeScan = activeEmailScans.get(lockKey);
-    const config = emailScanConfig();
-    if (activeScan) {
-      return {
-        result: {
-          query: body.query ?? config.query,
-          maxPerAccount: body.maxPerAccount ?? config.maxPerAccount,
-          accountsScanned: 0,
-          accountsSkipped: 0,
-          messagesSeen: 0,
-          messagesFetched: 0,
-          messagesSkippedByFilter: 0,
-          filterReasons: {},
-          proposalsCreatedOrUpdated: 0,
-          errors: [],
-          alreadyRunning: true,
-          startedAt: activeScan.startedAt
-        }
-      };
-    }
-    const status = await ai.getStatus();
-    if (!status.ready) {
-      reply.code(503);
-      return {
-        error: "AI provider is not ready.",
-        status
-      };
-    }
-    activeEmailScans.set(lockKey, {
-      startedAt: nowIso()
-    });
-    const scanInput: Parameters<typeof scanGmailInbox>[0] = {
-      ai,
-      store,
-        client: emailClient,
-        userId: body.userId,
-        query: body.query ?? config.query,
-        maxPerAccount: body.maxPerAccount ?? config.maxPerAccount,
-        syncAccounts: body.syncAccounts,
-        includeNewAccounts: authMode === "dev-local" || body.includeNewAccounts === true
-      };
-    if (body.accountId !== undefined) scanInput.accountId = body.accountId;
     try {
-      const result = await scanGmailInbox(scanInput);
-      return {
-        result
-      };
-    } finally {
-      activeEmailScans.delete(lockKey);
+      const scan = await runCoordinatedEmailScan({
+        userId: body.userId as UUID,
+        trigger: "manual",
+        ...(body.accountId ? { accountId: body.accountId as UUID } : {}),
+        ...(body.query ? { query: body.query } : {}),
+        ...(body.maxPerAccount ? { maxPerAccount: body.maxPerAccount } : {}),
+        ...(body.maxPerUser ? { maxPerUser: body.maxPerUser } : {}),
+        syncAccounts: body.syncAccounts,
+        includeNewAccounts: authMode === "dev-local" || body.includeNewAccounts === true,
+        ...(body.timezone ? { timezone: body.timezone } : {})
+      });
+      return scan;
+    } catch (error) {
+      reply.code(503);
+      return { error: error instanceof Error ? error.message : String(error) };
     }
   });
 
@@ -2694,6 +3139,186 @@ export function buildApp(options: {
         error: err instanceof Error ? err.message : String(err)
       };
     }
+  });
+
+  app.get("/v1/email/sender-preferences", async (request) => {
+    const query = emailAccountsQuerySchema.parse(request.query);
+    return { preferences: await store.listEmailSenderPreferences(query.userId as UUID) };
+  });
+
+  app.post("/v1/email/sender-preferences", async (request, reply) => {
+    try {
+      const body = emailSenderPreferenceSchema.parse(request.body ?? {});
+      const value = normalizeSenderPreferenceValue(body.matchType, body.value);
+      const preference = await store.upsertEmailSenderPreference({
+        userId: body.userId as UUID,
+        matchType: body.matchType,
+        value,
+        disposition: body.disposition,
+        metadata: {}
+      });
+      return { preference };
+    } catch (error) {
+      reply.code(400);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.patch("/v1/email/sender-preferences/:id", async (request, reply) => {
+    const params = emailSenderPreferenceParamsSchema.parse(request.params);
+    const body = emailSenderPreferencePatchSchema.parse(request.body ?? {});
+    const existing = await store.getEmailSenderPreference(params.id as UUID);
+    if (!existing || existing.userId !== body.userId || existing.deletedAt) {
+      reply.code(404);
+      return { error: "Sender preference not found." };
+    }
+    return {
+      preference: body.disposition
+        ? await store.updateEmailSenderPreference(existing.id, { disposition: body.disposition })
+        : existing
+    };
+  });
+
+  app.delete("/v1/email/sender-preferences/:id", async (request, reply) => {
+    const params = emailSenderPreferenceParamsSchema.parse(request.params);
+    const body = emailSenderPreferencePatchSchema.parse(request.body ?? {});
+    const existing = await store.getEmailSenderPreference(params.id as UUID);
+    if (!existing || existing.userId !== body.userId || existing.deletedAt) {
+      reply.code(404);
+      return { error: "Sender preference not found." };
+    }
+    await store.updateEmailSenderPreference(existing.id, { deletedAt: nowIso() });
+    return { removed: true };
+  });
+
+  app.put("/v1/email/proposals/:id/sender-preference", async (request, reply) => {
+    const params = emailProposalParamsSchema.parse(request.params);
+    const body = emailProposalSenderPreferenceBodySchema.parse(request.body ?? {});
+    const resolved = await senderAddressForEmailProposal(params.id as UUID, body.userId as UUID);
+    if (!resolved.proposal || !resolved.senderAddress) {
+      reply.code(404);
+      return { error: "Proposal sender was not found." };
+    }
+    const preferences = await store.listEmailSenderPreferences(body.userId as UUID);
+    const exact = preferences.find(
+      (preference) => preference.matchType === "address" && preference.value === resolved.senderAddress
+    );
+    let preference: EmailSenderPreference | undefined;
+    if (body.disposition === null) {
+      if (exact) await store.updateEmailSenderPreference(exact.id, { deletedAt: nowIso() });
+    } else {
+      preference = await store.upsertEmailSenderPreference({
+        userId: body.userId as UUID,
+        matchType: "address",
+        value: resolved.senderAddress,
+        disposition: body.disposition,
+        originatingProposalId: resolved.proposal.id,
+        metadata: asJsonObject({ source: "proposal_quick_action" })
+      });
+      if (
+        body.disposition === "never" &&
+        body.rejectCurrent &&
+        resolved.proposal.status === "proposed"
+      ) {
+        await rejectEmailProposal({
+          store,
+          userId: body.userId as UUID,
+          proposalId: resolved.proposal.id
+        });
+      }
+    }
+    return {
+      preference,
+      proposal: await proposalView(
+        store,
+        (await store.getEmailActionProposal(resolved.proposal.id)) ?? resolved.proposal
+      )
+    };
+  });
+
+  app.get("/v1/email/triage-decisions", async (request) => {
+    const query = emailTriageDecisionsQuerySchema.parse(request.query);
+    const decisions = await store.listEmailTriageDecisions({
+      userId: query.userId as UUID,
+      ...(query.accountId ? { providerAccountId: query.accountId as UUID } : {}),
+      ...(query.outcome ? { outcome: query.outcome } : {}),
+      limit: query.limit
+    });
+    return { decisions: await Promise.all(decisions.map(emailDecisionView)) };
+  });
+
+  app.post("/v1/email/triage-decisions/:id/reprocess", async (request, reply) => {
+    const params = emailTriageDecisionParamsSchema.parse(request.params);
+    const body = emailTriageDecisionActionBodySchema.parse(request.body ?? {});
+    const decision = await store.getEmailTriageDecision(params.id as UUID);
+    if (!decision || decision.userId !== body.userId || decision.deletedAt) {
+      reply.code(404);
+      return { error: "Email triage decision not found." };
+    }
+    await store.updateEmailTriageDecision(decision.id, {
+      outcome: "error",
+      reasonCode: "manual_reprocess",
+      reason: "Queued for manual reprocessing.",
+      retryCount: 0,
+      nextRetryAt: nowIso(),
+      evaluatedAt: nowIso()
+    });
+    try {
+      const scan = await runCoordinatedEmailScan({
+        userId: body.userId as UUID,
+        trigger: "manual",
+        accountId: decision.providerAccountId,
+        syncAccounts: false,
+        ...(body.timezone ? { timezone: body.timezone } : {})
+      });
+      return scan;
+    } catch (error) {
+      reply.code(503);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.post("/v1/email/triage-decisions/:id/create-proposal", async (request, reply) => {
+    const params = emailTriageDecisionParamsSchema.parse(request.params);
+    const body = emailTriageDecisionActionBodySchema.parse(request.body ?? {});
+    const decision = await store.getEmailTriageDecision(params.id as UUID);
+    if (!decision || decision.userId !== body.userId || decision.deletedAt) {
+      reply.code(404);
+      return { error: "Email triage decision not found." };
+    }
+    const source = await store.getExternalSource(decision.sourceId);
+    if (!source || source.userId !== body.userId) {
+      reply.code(404);
+      return { error: "Email source not found." };
+    }
+    const updatedDecision = await store.updateEmailTriageDecision(decision.id, {
+      outcome: "actionable",
+      reasonCode: "user_correction",
+      reason: "The user marked this email as a task.",
+      confidence: 100,
+      retryCount: 0,
+      evaluatedAt: nowIso()
+    });
+    const proposal = await store.upsertEmailActionProposal({
+      userId: body.userId as UUID,
+      sourceId: source.id,
+      providerAccountId: decision.providerAccountId,
+      triageDecisionId: decision.id,
+      idempotencyKey: `gmail-correction:${decision.id}`,
+      actionType: "task",
+      title: source.title ?? "Follow up on email",
+      ...(source.summary ? { body: source.summary } : {}),
+      priority: "normal",
+      rationale: "Created from a triage correction.",
+      confidence: 100,
+      metadata: asJsonObject({
+        source: "gmail_triage_correction",
+        triageOutcome: updatedDecision.outcome,
+        messageId: decision.gmailMessageId,
+        threadId: decision.gmailThreadId
+      })
+    });
+    return { proposal: await proposalView(store, proposal) };
   });
 
   app.post("/v1/opportunity-proposals/ingest", async (request, reply) => {
@@ -2868,6 +3493,38 @@ export function buildApp(options: {
     return nextDueAt === undefined ? undefined : localDateKey(new Date(nextDueAt), timeZone);
   }
 
+  function fixedScheduleDueDateKey(
+    item: DashboardItemBase,
+    timeZone: string,
+    referenceDateKey: string
+  ): string | undefined {
+    const policy = item.recurrence?.policy;
+    if (policy === undefined) return undefined;
+    return fixedScheduleDueDateKeyForPolicy({
+      policy,
+      state: item.recurrence?.state,
+      createdAt: item.createdAt,
+      timeZone,
+      referenceDateKey
+    });
+  }
+
+  function fixedScheduleDueAt(
+    item: DashboardItem,
+    timeZone: string,
+    referenceDateKey: string
+  ): string | undefined {
+    const policy = item.recurrence?.policy;
+    if (policy === undefined) return undefined;
+    return fixedScheduleDueAtForPolicy({
+      policy,
+      state: item.recurrence?.state,
+      createdAt: item.createdAt,
+      timeZone,
+      referenceDateKey
+    });
+  }
+
   function scoreDashboardItem(
     item: DashboardItemBase,
     timeZone: string,
@@ -2940,6 +3597,32 @@ export function buildApp(options: {
       }
     }
 
+    const fixedDueKey = fixedScheduleDueDateKey(item, timeZone, referenceDateKey);
+    if (fixedDueKey !== undefined) {
+      const attentionDateKey = addDaysToDateKey(fixedDueKey, -fixedScheduleLeadDays);
+      if (referenceDateKey < attentionDateKey) {
+        return {
+          priorityScore: Math.max(0, Math.min(score, 5)),
+          prioritySignals: [...signals, `hidden until ${attentionDateKey}`, `next due ${fixedDueKey}`],
+          hiddenUntil: attentionDateKey
+        };
+      }
+
+      const daysUntilDue = daysBetweenDateKeys(referenceDateKey, fixedDueKey);
+      if (daysUntilDue > 0) {
+        score += (fixedScheduleLeadDays - daysUntilDue + 1) * 8;
+        signals.push(daysUntilDue === 1 ? "recurs tomorrow" : `recurs in ${daysUntilDue}d`);
+      } else if (daysUntilDue === 0) {
+        score += 50;
+        signals.push("recurs today");
+      } else {
+        score += 60 + Math.min(20, Math.abs(daysUntilDue) * 10);
+        score = Math.min(score, fixedSchedulePriorityCap);
+        signals.push(`${Math.abs(daysUntilDue)}d stale`);
+        if (score >= fixedSchedulePriorityCap) signals.push("fixed schedule cap");
+      }
+    }
+
     if (item.recurrence?.policy.type === "target_frequency") {
       const target = item.recurrence.week.targetCount ?? item.recurrence.policy.targetCount ?? 0;
       const completed = item.recurrence.week.completedCount;
@@ -2973,7 +3656,7 @@ export function buildApp(options: {
           signals.push("done today");
         }
       }
-    } else if (item.recurrence !== undefined && cadenceDueKey === undefined) {
+    } else if (item.recurrence !== undefined && cadenceDueKey === undefined && fixedDueKey === undefined) {
       score += Math.min(12, item.recurrence.state?.stalenessScore ?? 0);
     }
 
@@ -3053,7 +3736,7 @@ export function buildApp(options: {
     ]);
     return withDashboardPriority({
       ...dashboardItem,
-      recurrence: recurrenceProgress(policy, state, events, timeZone, referenceDateKey)
+      recurrence: recurrenceProgress(policy, state, events, timeZone, referenceDateKey, item.createdAt)
     }, timeZone, referenceDateKey);
   }
 
@@ -3099,6 +3782,8 @@ export function buildApp(options: {
     if (item.recurrence === undefined) return false;
     const cadenceDueKey = cadenceDueDateKey(item, timeZone);
     if (cadenceDueKey !== undefined) return cadenceDueKey <= dateKey;
+    const fixedDueKey = fixedScheduleDueDateKey(item, timeZone, dateKey);
+    if (fixedDueKey !== undefined) return fixedDueKey <= dateKey;
     const today = item.recurrence.week.days.find((day) => day.date === dateKey);
     if (today?.status === "completed") return false;
     const target = item.recurrence.week.targetCount;
@@ -3180,8 +3865,10 @@ export function buildApp(options: {
     if (item.recurrence === undefined) return true;
     if (dashboardItemCheckedForMobile(item, dateKey)) return true;
     const cadenceDueKey = cadenceDueDateKey(item, timeZone);
-    if (cadenceDueKey === undefined) return true;
-    return dateKey >= addDaysToDateKey(cadenceDueKey, -recurrenceLeadDays);
+    if (cadenceDueKey !== undefined) return dateKey >= addDaysToDateKey(cadenceDueKey, -recurrenceLeadDays);
+    const fixedDueKey = fixedScheduleDueDateKey(item, timeZone, dateKey);
+    if (fixedDueKey !== undefined) return dateKey >= addDaysToDateKey(fixedDueKey, -fixedScheduleLeadDays);
+    return true;
   }
 
   function compareMobileWidgetItems(a: DashboardItem, b: DashboardItem, dateKey: string): number {
@@ -3295,21 +3982,11 @@ export function buildApp(options: {
     }
   }
 
-  function monthlyCronDay(cron: string | undefined): number | undefined {
-    const parts = cron?.trim().split(/\s+/);
-    if (parts?.length !== 5) return undefined;
-    const [, , dayOfMonth, month, dayOfWeek] = parts;
-    if (month !== "*" || (dayOfWeek !== "*" && dayOfWeek !== "?")) return undefined;
-    if (!/^\d{1,2}$/.test(dayOfMonth ?? "")) return undefined;
-    const day = Number(dayOfMonth);
-    return day >= 1 && day <= 31 ? day : undefined;
-  }
-
   function mobileRecurrenceSummary(recurrence: NonNullable<DashboardItem["recurrence"]>): string {
     const target = recurrence.week.targetCount;
     if (target !== undefined) return `${recurrence.week.completedCount}/${target}`;
     if (recurrence.policy.type === "fixed_schedule") {
-      const monthlyDay = monthlyCronDay(recurrence.policy.cron);
+      const monthlyDay = monthlyCronSchedule(recurrence.policy.cron)?.dayOfMonth;
       if (monthlyDay !== undefined) return `Monthly ${ordinalDay(monthlyDay)}`;
     }
     if (recurrence.policy.type === "minimum_interval" && recurrence.policy.minimumIntervalDays !== undefined) {
@@ -3321,8 +3998,12 @@ export function buildApp(options: {
     return `${recurrence.week.completedCount}`;
   }
 
-  function mobileDueAt(item: DashboardItem): string | undefined {
-    return item.dueAt ?? item.recurrence?.state?.nextDueAt;
+  function recurrenceDueAt(item: DashboardItem, timeZone: string, dateKey: string): string | undefined {
+    return item.recurrence?.state?.nextDueAt ?? fixedScheduleDueAt(item, timeZone, dateKey);
+  }
+
+  function mobileDueAt(item: DashboardItem, timeZone: string, dateKey: string): string | undefined {
+    return item.dueAt ?? recurrenceDueAt(item, timeZone, dateKey);
   }
 
   function mobileRecurrenceCompleted(item: DashboardItem, dateKey: string): boolean {
@@ -3335,11 +4016,11 @@ export function buildApp(options: {
     return dateKey < localDateKey(new Date(nextEligibleAt), timeZone);
   }
 
-  function mobileSecondaryText(item: DashboardItem, timeZone: string): string | undefined {
+  function mobileSecondaryText(item: DashboardItem, timeZone: string, dateKey: string): string | undefined {
     const labels = [item.scope.area?.name, item.scope.project?.name].filter(
       (label): label is string => label !== undefined
     );
-    const dueAt = mobileDueAt(item);
+    const dueAt = mobileDueAt(item, timeZone, dateKey);
     if (dueAt !== undefined) {
       labels.unshift(localDateKey(new Date(dueAt), timeZone));
     }
@@ -3361,8 +4042,9 @@ export function buildApp(options: {
   ): MobileWidgetRecurrence | undefined {
     const recurrence = item.recurrence;
     if (recurrence === undefined) return undefined;
+    const recurrenceNextDueAt = recurrenceDueAt(item, timeZone, dateKey);
     const intendedDate =
-      recurrence.state?.nextDueAt === undefined ? undefined : localDateKey(new Date(recurrence.state.nextDueAt), timeZone);
+      recurrenceNextDueAt === undefined ? undefined : localDateKey(new Date(recurrenceNextDueAt), timeZone);
     const widgetRecurrence: MobileWidgetRecurrence = {
       summary: mobileRecurrenceSummary(recurrence),
       days: recurrence.week.days.map((day) => ({
@@ -3375,7 +4057,7 @@ export function buildApp(options: {
       }))
     };
     if (intendedDate !== undefined) widgetRecurrence.intendedDate = intendedDate;
-    if (recurrence.state?.nextDueAt !== undefined) widgetRecurrence.nextDueAt = recurrence.state.nextDueAt;
+    if (recurrenceNextDueAt !== undefined) widgetRecurrence.nextDueAt = recurrenceNextDueAt;
     const lastDoneLabel = mobileRecurrenceLastDoneLabel(item, timeZone, dateKey);
     if (lastDoneLabel !== undefined) widgetRecurrence.lastDoneLabel = lastDoneLabel;
     return widgetRecurrence;
@@ -3426,9 +4108,9 @@ export function buildApp(options: {
       }
     };
     if (item.starredAt !== undefined) widgetItem.starredAt = item.starredAt;
-    const dueAt = mobileDueAt(item);
+    const dueAt = mobileDueAt(item, timeZone, dateKey);
     if (dueAt !== undefined) widgetItem.dueAt = dueAt;
-    const secondaryText = mobileSecondaryText(item, timeZone);
+    const secondaryText = mobileSecondaryText(item, timeZone, dateKey);
     if (secondaryText !== undefined) widgetItem.secondaryText = secondaryText;
     const recurrence = mobileRecurrenceForDashboard(item, timeZone, dateKey);
     if (recurrence !== undefined) widgetItem.recurrence = recurrence;

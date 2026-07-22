@@ -23,10 +23,12 @@ export type GogAccount = {
 export type GogSearchMessage = {
   id: string;
   threadId?: string;
+  messageCount?: number;
   subject?: string;
   from?: string;
   date?: string;
   snippet?: string;
+  labels?: string[];
   raw: unknown;
 };
 
@@ -35,6 +37,17 @@ export type GogEmailMessage = GogSearchMessage & {
   cc?: string;
   bodyText?: string;
   bodyHtml?: string;
+};
+
+export type GogSearchPage = {
+  messages: GogSearchMessage[];
+  nextPageToken?: string;
+};
+
+export type GogEmailThread = {
+  id: string;
+  messages: GogEmailMessage[];
+  raw: unknown;
 };
 
 export type GogDoctorStatus = {
@@ -227,6 +240,10 @@ function searchMessageFromUnknown(value: unknown): GogSearchMessage | undefined 
   const threadId =
     textField(record, ["threadId", "thread_id"]) ?? textField(messageRecord, ["threadId", "thread_id"]);
   if (threadId) message.threadId = threadId;
+  const messageCount = Number(
+    textField(record, ["messageCount", "message_count", "messagesTotal", "messages_total"])
+  );
+  if (Number.isFinite(messageCount) && messageCount > 0) message.messageCount = messageCount;
   const subject = textField(record, ["subject", "title"]) ?? headerValue(value, "Subject");
   if (subject) message.subject = subject;
   const from = textField(record, ["from", "sender"]) ?? headerValue(value, "From");
@@ -240,6 +257,8 @@ function searchMessageFromUnknown(value: unknown): GogSearchMessage | undefined 
     textField(record, ["snippet", "summary", "preview"]) ??
     textField(messageRecord, ["snippet", "summary", "preview"]);
   if (snippet) message.snippet = snippet;
+  const labels = stringList(record.labelIds ?? record.labels ?? messageRecord?.labelIds ?? messageRecord?.labels);
+  if (labels.length > 0) message.labels = labels;
   return message;
 }
 
@@ -252,6 +271,7 @@ function emailMessageFromUnknown(value: unknown, fallbackId: string): GogEmailMe
     raw: value
   };
   if (search?.threadId) message.threadId = search.threadId;
+  if (search?.messageCount) message.messageCount = search.messageCount;
   const subject = search?.subject ?? headerValue(value, "Subject");
   if (subject) message.subject = subject;
   const from = search?.from ?? headerValue(value, "From");
@@ -273,7 +293,20 @@ function emailMessageFromUnknown(value: unknown, fallbackId: string): GogEmailMe
   if (bodyText) message.bodyText = bodyText;
   const bodyHtml = textField(record, ["bodyHtml", "body_html", "html"]) ?? textField(messageRecord, ["bodyHtml", "body_html", "html"]);
   if (bodyHtml) message.bodyHtml = bodyHtml;
+  if (search?.labels) message.labels = search.labels;
   return message;
+}
+
+function threadFromUnknown(value: unknown, fallbackId: string): GogEmailThread {
+  const record = asRecord(value);
+  const threadRecord = nestedRecord(record, "thread") ?? record;
+  const id = textField(threadRecord, ["id", "threadId", "thread_id"]) ?? fallbackId;
+  const rawMessages = arrayPayload(threadRecord, ["messages", "items", "results"]);
+  return {
+    id,
+    messages: rawMessages.map((message, index) => emailMessageFromUnknown(message, `${id}:${index}`)),
+    raw: value
+  };
 }
 
 function accountFromUnknown(value: unknown): GogAccount | undefined {
@@ -427,11 +460,12 @@ export class GogGmailClient {
     };
   }
 
-  async searchMessages(input: {
+  async searchMessagePage(input: {
     accountEmail: string;
     query: string;
     max: number;
-  }): Promise<GogSearchMessage[]> {
+    pageToken?: string;
+  }): Promise<GogSearchPage> {
     const args = [
       "--gmail-no-send",
       "--account",
@@ -440,15 +474,35 @@ export class GogGmailClient {
       "search",
       input.query,
       "--max",
-      String(input.max),
-      "--json"
+      String(input.max)
     ];
+    if (input.pageToken) args.push("--page", input.pageToken);
+    args.push("--json");
     const result = await this.run(args);
     ensureSuccess(result, args.join(" "));
     const payload = parseJson(result.stdout, args.join(" "));
-    return arrayPayload(payload, ["messages", "threads", "items", "results"])
+    const messages = arrayPayload(payload, ["messages", "threads", "items", "results"])
       .map(searchMessageFromUnknown)
       .filter((message): message is GogSearchMessage => message !== undefined);
+    const record = asRecord(payload);
+    const nextPageToken = textField(record, [
+      "nextPageToken",
+      "next_page_token",
+      "nextPage",
+      "next_page"
+    ]);
+    return {
+      messages,
+      ...(nextPageToken ? { nextPageToken } : {})
+    };
+  }
+
+  async searchMessages(input: {
+    accountEmail: string;
+    query: string;
+    max: number;
+  }): Promise<GogSearchMessage[]> {
+    return (await this.searchMessagePage(input)).messages;
   }
 
   async getMessage(input: {
@@ -469,5 +523,26 @@ export class GogGmailClient {
     ensureSuccess(result, args.join(" "));
     const payload = parseJson(result.stdout, args.join(" "));
     return emailMessageFromUnknown(payload, input.messageId);
+  }
+
+  async getThread(input: {
+    accountEmail: string;
+    threadId: string;
+  }): Promise<GogEmailThread> {
+    const args = [
+      "--gmail-no-send",
+      "--account",
+      input.accountEmail,
+      "gmail",
+      "thread",
+      "get",
+      input.threadId,
+      "--sanitize-content",
+      "--json"
+    ];
+    const result = await this.run(args);
+    ensureSuccess(result, args.join(" "));
+    const payload = parseJson(result.stdout, args.join(" "));
+    return threadFromUnknown(payload, input.threadId);
   }
 }

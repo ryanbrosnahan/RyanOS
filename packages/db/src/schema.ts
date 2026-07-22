@@ -519,6 +519,26 @@ export const userIntegrationSettings = pgTable("user_integration_settings", {
   userIdx: index("user_integration_settings_user_idx").on(table.userId)
 }));
 
+export const emailScanRuns = pgTable("email_scan_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  trigger: text("trigger").notNull(),
+  status: text("status").notNull().default("running"),
+  classifierVersion: text("classifier_version").notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
+  counts: jsonb("counts").notNull().default({}),
+  errors: jsonb("errors").notNull().default([]),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps
+}, (table) => ({
+  oneRunningPerUserIdx: uniqueIndex("email_scan_runs_running_user_idx")
+    .on(table.userId)
+    .where(sql`${table.status} = 'running'`),
+  userStartedIdx: index("email_scan_runs_user_started_idx").on(table.userId, table.startedAt)
+}));
+
 export const secretRecords = pgTable("secret_records", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),
@@ -560,6 +580,45 @@ export const externalSources = pgTable("external_sources", {
   )
 }));
 
+export const emailTriageDecisions = pgTable("email_triage_decisions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  sourceId: uuid("source_id").notNull().references(() => externalSources.id),
+  providerAccountId: uuid("provider_account_id").notNull().references(() => providerAccounts.id),
+  gmailMessageId: text("gmail_message_id").notNull(),
+  gmailThreadId: text("gmail_thread_id").notNull(),
+  contentFingerprint: text("content_fingerprint").notNull(),
+  classifierVersion: text("classifier_version").notNull(),
+  outcome: text("outcome").notNull(),
+  reasonCode: text("reason_code"),
+  reason: text("reason"),
+  confidence: integer("confidence"),
+  senderAddress: text("sender_address"),
+  retryCount: integer("retry_count").notNull().default(0),
+  nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+  evaluatedAt: timestamp("evaluated_at", { withTimezone: true }).notNull().defaultNow(),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  identityIdx: uniqueIndex("email_triage_decisions_identity_idx").on(
+    table.providerAccountId,
+    table.gmailMessageId,
+    table.contentFingerprint,
+    table.classifierVersion
+  ),
+  userOutcomeIdx: index("email_triage_decisions_user_outcome_idx").on(
+    table.userId,
+    table.outcome,
+    table.evaluatedAt
+  ),
+  accountThreadIdx: index("email_triage_decisions_account_thread_idx").on(
+    table.providerAccountId,
+    table.gmailThreadId,
+    table.evaluatedAt
+  )
+}));
+
 export const emailActionProposals = pgTable("email_action_proposals", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),
@@ -575,6 +634,7 @@ export const emailActionProposals = pgTable("email_action_proposals", {
   draftReplyText: text("draft_reply_text"),
   rationale: text("rationale"),
   confidence: integer("confidence"),
+  triageDecisionId: uuid("triage_decision_id").references(() => emailTriageDecisions.id),
   acceptedItemId: uuid("accepted_item_id").references(() => items.id),
   acceptedAt: timestamp("accepted_at", { withTimezone: true }),
   rejectedAt: timestamp("rejected_at", { withTimezone: true }),
@@ -591,6 +651,27 @@ export const emailActionProposals = pgTable("email_action_proposals", {
     table.createdAt
   ),
   sourceIdx: index("email_action_proposals_source_idx").on(table.sourceId)
+}));
+
+export const emailSenderPreferences = pgTable("email_sender_preferences", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  matchType: text("match_type").notNull(),
+  value: text("value").notNull(),
+  disposition: text("disposition").notNull(),
+  originatingProposalId: uuid("originating_proposal_id").references(() => emailActionProposals.id),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  activeMatchIdx: uniqueIndex("email_sender_preferences_active_match_idx")
+    .on(table.userId, table.matchType, table.value)
+    .where(sql`${table.deletedAt} IS NULL`),
+  userDispositionIdx: index("email_sender_preferences_user_disposition_idx").on(
+    table.userId,
+    table.disposition,
+    table.updatedAt
+  )
 }));
 
 export const opportunities = pgTable("opportunities", {

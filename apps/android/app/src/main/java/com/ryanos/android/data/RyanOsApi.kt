@@ -268,6 +268,19 @@ object RyanOsApi {
   }
 
   @Throws(IOException::class)
+  fun setEmailSenderPreference(settings: RyanOsSettings, proposalId: String, disposition: String?) {
+    request(
+      settings = settings,
+      method = "PUT",
+      url = "${settings.normalizedBaseUrl}/v1/email/proposals/${proposalId.urlEncode()}/sender-preference",
+      body = JSONObject()
+        .put("userId", settings.userId)
+        .put("disposition", disposition ?: JSONObject.NULL)
+        .put("rejectCurrent", disposition == "never")
+    )
+  }
+
+  @Throws(IOException::class)
   fun actOnOpportunityProposal(settings: RyanOsSettings, proposalId: String, action: String) {
     request(
       settings = settings,
@@ -1509,6 +1522,9 @@ object RyanOsApi {
         val account = proposal.optJSONObject("account")
         val source = proposal.optJSONObject("source")
         val gmail = source?.optJSONObject("metadata")?.optJSONObject("gmail")
+        val triage = proposal.optJSONObject("triage")
+        val senderPreference = proposal.optJSONObject("senderPreference")
+        val checklist = proposal.optJSONArray("checklistItems")
         add(
           EmailProposal(
             id = id,
@@ -1526,7 +1542,18 @@ object RyanOsApi {
             subject = gmail?.optStringOrNull("subject") ?: source?.optStringOrNull("title"),
             sourceSummary = source?.optStringOrNull("summary"),
             sourceUrl = source?.optStringOrNull("url"),
-            occurredAt = source?.optStringOrNull("occurredAt")
+            occurredAt = source?.optStringOrNull("occurredAt"),
+            triageOutcome = triage?.optStringOrNull("outcome") ?: "actionable",
+            senderAddress = proposal.optStringOrNull("senderAddress"),
+            senderPreference = senderPreference?.optStringOrNull("disposition"),
+            initialProgressNote = proposal.optStringOrNull("initialProgressNote"),
+            checklistItems = buildList {
+              if (checklist != null) {
+                for (itemIndex in 0 until checklist.length()) {
+                  checklist.optString(itemIndex).takeIf { it.isNotBlank() }?.let(::add)
+                }
+              }
+            }
           )
         )
       }

@@ -4,6 +4,9 @@ import type {
   Area,
   DailyPlan,
   EmailActionProposal,
+  EmailScanRun,
+  EmailSenderPreference,
+  EmailTriageDecision,
   ExternalSource,
   Item,
   ItemChecklistItem,
@@ -200,6 +203,7 @@ export type EmailActionProposalUpsertData = {
   acceptedAt?: string;
   rejectedAt?: string;
   metadata?: JsonObject;
+  triageDecisionId?: UUID;
 };
 
 export type EmailActionProposalPatch = Partial<
@@ -227,6 +231,56 @@ export type EmailActionProposalListFilters = {
   providerAccountId?: UUID;
   limit?: number;
 };
+
+export type EmailScanRunCreateData = Omit<
+  EmailScanRun,
+  "id" | "createdAt" | "updatedAt" | "completedAt"
+> & { completedAt?: string };
+
+export type EmailScanRunPatch = Partial<
+  Pick<EmailScanRun, "status" | "completedAt" | "leaseExpiresAt" | "counts" | "errors" | "metadata">
+>;
+
+export type EmailTriageDecisionUpsertData = Omit<
+  EmailTriageDecision,
+  "id" | "createdAt" | "updatedAt" | "deletedAt"
+>;
+
+export type EmailTriageDecisionPatch = Partial<
+  Pick<
+    EmailTriageDecision,
+    | "outcome"
+    | "reasonCode"
+    | "reason"
+    | "confidence"
+    | "retryCount"
+    | "nextRetryAt"
+    | "evaluatedAt"
+    | "metadata"
+    | "deletedAt"
+  >
+>;
+
+export type EmailTriageDecisionListFilters = {
+  userId: UUID;
+  providerAccountId?: UUID;
+  outcome?: EmailTriageDecision["outcome"];
+  gmailThreadId?: string;
+  limit?: number;
+};
+
+export type EmailSenderPreferenceUpsertData = {
+  userId: UUID;
+  matchType: EmailSenderPreference["matchType"];
+  value: string;
+  disposition: EmailSenderPreference["disposition"];
+  originatingProposalId?: UUID;
+  metadata?: JsonObject;
+};
+
+export type EmailSenderPreferencePatch = Partial<
+  Pick<EmailSenderPreference, "disposition" | "metadata" | "deletedAt">
+>;
 
 export type OpportunityCreateData = {
   userId: UUID;
@@ -469,6 +523,7 @@ export interface RyanStore {
 
   upsertProviderAccount(account: ProviderAccountUpsertData): Promise<ProviderAccount>;
   listProviderAccounts(filters: { userId: UUID; provider?: string; limit?: number }): Promise<ProviderAccount[]>;
+  listProviderAccountsForProvider(provider: string, limit?: number): Promise<ProviderAccount[]>;
   getProviderAccount(accountId: UUID): Promise<ProviderAccount | undefined>;
   findProviderAccountByExternalId(provider: string, externalAccountId: string): Promise<ProviderAccount | undefined>;
   updateProviderAccount(accountId: UUID, patch: ProviderAccountPatch): Promise<ProviderAccount>;
@@ -486,6 +541,17 @@ export interface RyanStore {
   listEmailActionProposals(filters: EmailActionProposalListFilters): Promise<EmailActionProposal[]>;
   getEmailActionProposal(proposalId: UUID): Promise<EmailActionProposal | undefined>;
   updateEmailActionProposal(proposalId: UUID, patch: EmailActionProposalPatch): Promise<EmailActionProposal>;
+  createEmailScanRun(run: EmailScanRunCreateData): Promise<EmailScanRun>;
+  updateEmailScanRun(runId: UUID, patch: EmailScanRunPatch): Promise<EmailScanRun>;
+  listEmailScanRuns(filters: { userId: UUID; limit?: number }): Promise<EmailScanRun[]>;
+  upsertEmailTriageDecision(decision: EmailTriageDecisionUpsertData): Promise<EmailTriageDecision>;
+  updateEmailTriageDecision(decisionId: UUID, patch: EmailTriageDecisionPatch): Promise<EmailTriageDecision>;
+  getEmailTriageDecision(decisionId: UUID): Promise<EmailTriageDecision | undefined>;
+  listEmailTriageDecisions(filters: EmailTriageDecisionListFilters): Promise<EmailTriageDecision[]>;
+  upsertEmailSenderPreference(preference: EmailSenderPreferenceUpsertData): Promise<EmailSenderPreference>;
+  updateEmailSenderPreference(preferenceId: UUID, patch: EmailSenderPreferencePatch): Promise<EmailSenderPreference>;
+  getEmailSenderPreference(preferenceId: UUID): Promise<EmailSenderPreference | undefined>;
+  listEmailSenderPreferences(userId: UUID): Promise<EmailSenderPreference[]>;
 
   createOpportunity(data: OpportunityCreateData): Promise<Opportunity>;
   updateOpportunity(opportunityId: UUID, patch: OpportunityPatch): Promise<Opportunity>;
