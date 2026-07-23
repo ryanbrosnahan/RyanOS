@@ -266,6 +266,41 @@ export type UserIntegrationSetting = {
   updatedAt: ISODateString;
 };
 
+export type LotteryGameId = "powerball" | "mega_millions" | "lotto" | "easy_5";
+
+export type LotteryDrawSnapshot = {
+  id: UUID;
+  gameId: LotteryGameId;
+  status: "ready" | "error";
+  advertisedJackpotDollars?: number;
+  cashValueDollars?: number;
+  nextDrawAt?: ISODateString;
+  officialCutoffAt?: ISODateString;
+  sourceUrl: string;
+  fetchedAt?: ISODateString;
+  lastAttemptAt: ISODateString;
+  lastSuccessAt?: ISODateString;
+  lastFailureAt?: ISODateString;
+  error?: string;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+};
+
+export type LotteryTaskAlert = {
+  id: UUID;
+  userId: UUID;
+  gameId: LotteryGameId;
+  drawAt: ISODateString;
+  status: "created" | "cancelled";
+  itemId?: UUID;
+  advertisedJackpotDollars: number;
+  buyByAt: ISODateString;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+};
+
 export type ExternalSource = {
   id: UUID;
   userId: UUID;

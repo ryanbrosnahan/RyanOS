@@ -67,6 +67,20 @@ import {
   verifyInternalEmailScanRequest
 } from "./internal-email-auth.js";
 import {
+  internalLotteryCheckPath,
+  verifyInternalLotteryCheckRequest
+} from "./internal-lottery-auth.js";
+import {
+  lotteryGameConfigs,
+  lotteryGameIds,
+  lotterySettingsMetadata,
+  lotterySnapshotIsStale,
+  normalizeLotterySettings,
+  OfficialLouisianaLotterySource,
+  runLotteryCheck,
+  type LotteryDataSource
+} from "./lottery.js";
+import {
   acceptOpportunityProposal,
   ingestOpportunityReport,
   opportunityProposalView,
@@ -333,7 +347,7 @@ const emailAccountsQuerySchema = z.object({
   userId: z.string().default("local-owner")
 });
 
-const integrationIdSchema = z.enum(["ai", "telegram", "gmail", "codex_rfp"]);
+const integrationIdSchema = z.enum(["ai", "telegram", "gmail", "codex_rfp", "lottery"]);
 
 const integrationParamsSchema = z.object({
   id: integrationIdSchema
@@ -342,6 +356,30 @@ const integrationParamsSchema = z.object({
 const integrationSettingsBodySchema = z.object({
   userId: z.string().default("local-owner"),
   enabled: z.boolean()
+});
+
+const lotteryGameSettingsSchema = z.object({
+  enabled: z.boolean(),
+  minimumJackpotDollars: z.number().int().min(0).max(100_000_000_000).nullable(),
+  buyByBufferMinutes: z.number().int().min(0).max(720).multipleOf(30)
+});
+
+const lotterySettingsBodySchema = z.object({
+  userId: z.string().default("local-owner"),
+  enabled: z.boolean(),
+  timezone: z.string().trim().min(1).max(100),
+  taskCreationTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+  autoStar: z.boolean(),
+  games: z.object({
+    powerball: lotteryGameSettingsSchema,
+    mega_millions: lotteryGameSettingsSchema,
+    lotto: lotteryGameSettingsSchema,
+    easy_5: lotteryGameSettingsSchema
+  })
+});
+
+const internalLotteryCheckBodySchema = z.object({
+  refresh: z.boolean().default(true)
 });
 
 const automationPlatformSchema = z.enum(["codex", "api", "mcp", "other"]);
@@ -1370,7 +1408,8 @@ const integrationNames: Record<IntegrationId, string> = {
   ai: "AI provider",
   telegram: "Telegram",
   gmail: "Gmail",
-  codex_rfp: "Automation sources"
+  codex_rfp: "Automation sources",
+  lottery: "Louisiana Lottery"
 };
 
 const codexRfpProvider = "codex_rfp_ingest";
@@ -1669,6 +1708,7 @@ export function buildApp(options: {
   ai?: AiProvider;
   store?: RyanStore;
   emailClient?: GmailClientLike;
+  lotterySource?: LotteryDataSource;
   authMode?: RyanOsAuthMode;
   devLocalRole?: UserRole;
 } = {}) {
@@ -1684,6 +1724,7 @@ export function buildApp(options: {
   const tools = createCoreToolRegistry(store);
   const ai = options.ai ?? createAiProviderFromEnv();
   const emailClient = options.emailClient ?? new GogGmailClient();
+  const lotterySource = options.lotterySource ?? new OfficialLouisianaLotterySource();
   const authMode = options.authMode ?? authModeFromEnv();
   const devLocalRole = options.devLocalRole ?? "superadmin";
   const auth = database ? createRyanOsAuth(database.pool) : undefined;
@@ -1705,7 +1746,103 @@ export function buildApp(options: {
 
   async function integrationEnabled(userId: string, integrationId: IntegrationId): Promise<boolean> {
     const setting = await store.getUserIntegrationSetting(userId as UUID, integrationId);
-    return setting?.enabled ?? true;
+    return setting?.enabled ?? integrationId !== "lottery";
+  }
+
+  async function lotteryStatusPayload(userId: UUID) {
+    const [setting, snapshots, alerts] = await Promise.all([
+      store.getUserIntegrationSetting(userId, "lottery"),
+      store.listLotteryDrawSnapshots(),
+      store.listLotteryTaskAlerts({ userId, limit: 100 })
+    ]);
+    const settings = normalizeLotterySettings(setting?.metadata);
+    const snapshotByGame = new Map(snapshots.map((snapshot) => [snapshot.gameId, snapshot]));
+    const alertByDrawing = new Map(
+      alerts.map((alert) => [`${alert.gameId}:${alert.drawAt}`, alert])
+    );
+    const enabledGameIds = lotteryGameIds.filter((gameId) => settings.games[gameId].enabled);
+    const staleGameIds = enabledGameIds.filter((gameId) => {
+      const snapshot = snapshotByGame.get(gameId);
+      return snapshot === undefined || lotterySnapshotIsStale(snapshot);
+    });
+    const ready = enabledGameIds.length > 0 && staleGameIds.length === 0;
+    const lastSuccessAt = snapshots
+      .flatMap((snapshot) => snapshot.lastSuccessAt ? [snapshot.lastSuccessAt] : [])
+      .sort()
+      .at(-1);
+    const lastAttemptAt = snapshots
+      .map((snapshot) => snapshot.lastAttemptAt)
+      .sort()
+      .at(-1);
+    const lastError = snapshots
+      .filter((snapshot) => snapshot.error)
+      .sort((a, b) => b.lastAttemptAt.localeCompare(a.lastAttemptAt))[0]?.error;
+    const warnings = [];
+    if (setting?.enabled && enabledGameIds.length === 0) {
+      warnings.push("Enable at least one game before the lottery integration can create tasks.");
+    }
+    if (setting?.enabled && staleGameIds.length > 0) {
+      warnings.push(
+        `Official lottery data is unavailable or stale for ${staleGameIds
+          .map((gameId) => lotteryGameConfigs[gameId].name)
+          .join(", ")}. Tasks will not be created from uncertain data.`
+      );
+    }
+
+    return {
+      configured: setting !== undefined,
+      ready,
+      setupRequired: setting?.enabled === true && enabledGameIds.length === 0,
+      warnings,
+      settings: {
+        enabled: setting?.enabled ?? false,
+        ...settings
+      },
+      health: {
+        status:
+          setting === undefined || enabledGameIds.length === 0
+            ? "not_configured"
+            : ready
+              ? "healthy"
+              : "degraded",
+        staleGameIds,
+        lastSuccessAt,
+        lastAttemptAt,
+        error: lastError
+      },
+      games: lotteryGameIds.map((gameId) => {
+        const config = lotteryGameConfigs[gameId];
+        const gameSettings = settings.games[gameId];
+        const snapshot = snapshotByGame.get(gameId);
+        const alert = snapshot?.nextDrawAt
+          ? alertByDrawing.get(`${gameId}:${snapshot.nextDrawAt}`)
+          : undefined;
+        const thresholdGap =
+          gameSettings.minimumJackpotDollars !== null &&
+          snapshot?.advertisedJackpotDollars !== undefined
+            ? Math.max(
+                gameSettings.minimumJackpotDollars - snapshot.advertisedJackpotDollars,
+                0
+              )
+            : 0;
+        return {
+          id: gameId,
+          name: config.name,
+          sourceUrl: config.sourceUrl,
+          settings: gameSettings,
+          snapshot: snapshot
+            ? {
+                ...snapshot,
+                stale: lotterySnapshotIsStale(snapshot)
+              }
+            : undefined,
+          thresholdGap,
+          currentAlert: alert
+        };
+      }),
+      notice:
+        "Tickets must be purchased from a licensed retailer. Play responsibly; Louisiana Lottery players must be 21 or older."
+    };
   }
 
   async function runCoordinatedEmailScan(input: {
@@ -2327,7 +2464,8 @@ export function buildApp(options: {
       path === "/v1/automation/ingest" ||
       path === "/v1/automation/codex-automations/ingest" ||
       path === "/v1/automation/rfp-reports/ingest" ||
-      path === internalEmailScanPath
+      path === internalEmailScanPath ||
+      path === internalLotteryCheckPath
     );
   }
 
@@ -2512,6 +2650,34 @@ export function buildApp(options: {
     return { usersDiscovered: userIds.length, results };
   });
 
+  app.post(internalLotteryCheckPath, async (request, reply) => {
+    const bodyText = JSON.stringify(request.body ?? {});
+    const loadedVault = await loadSecretVaultFromEnv();
+    const timestampHeader = request.headers["x-ryanos-internal-timestamp"];
+    const signatureHeader = request.headers["x-ryanos-internal-signature"];
+    const timestamp = typeof timestampHeader === "string" ? timestampHeader : undefined;
+    const signature = typeof signatureHeader === "string" ? signatureHeader : undefined;
+    if (!loadedVault.vault) {
+      reply.code(503);
+      return { error: "Internal lottery check authentication is not configured." };
+    }
+    if (!verifyInternalLotteryCheckRequest({
+      masterKey: loadedVault.vault.key,
+      body: bodyText,
+      timestamp,
+      signature
+    })) {
+      reply.code(401);
+      return { error: "Invalid or expired internal lottery check signature." };
+    }
+    const body = internalLotteryCheckBodySchema.parse(request.body ?? {});
+    return runLotteryCheck({
+      store,
+      source: lotterySource,
+      refresh: body.refresh
+    });
+  });
+
   app.get("/v1/tools", async () => ({
     tools: tools.list()
   }));
@@ -2592,6 +2758,7 @@ export function buildApp(options: {
       gmailSetup,
       codexRfpSetup,
       codexRfpStatus,
+      lotteryStatus,
       settings,
       gmailAccounts,
       gmailCounts,
@@ -2607,6 +2774,7 @@ export function buildApp(options: {
       gmailSetupStatus(emailClient),
       codexRfpSetupStatus(userId as UUID),
       codexRfpStatusPayload(userId as UUID),
+      lotteryStatusPayload(userId as UUID),
       store.listUserIntegrationSettings(userId as UUID),
       store.listProviderAccounts({
         userId: userId as UUID,
@@ -2629,7 +2797,7 @@ export function buildApp(options: {
 
     function integrationView(id: IntegrationId, setup: SetupStatus, extra: Record<string, unknown> = {}) {
       const setting = settingsById.get(id);
-      const enabled = setting?.enabled ?? true;
+      const enabled = setting?.enabled ?? id !== "lottery";
       const visibleSetup = setupForRole(setup, role);
       return {
         id,
@@ -2705,6 +2873,17 @@ export function buildApp(options: {
           counts: codexRfpStatus.counts,
           account: codexRfpStatus.account,
           sources: codexRfpStatus.sources
+        }),
+        integrationView("lottery", {
+          id: "lottery",
+          name: integrationNames.lottery,
+          configured: lotteryStatus.configured,
+          ready: lotteryStatus.ready,
+          setupRequired: lotteryStatus.setupRequired,
+          setupActions: [],
+          warnings: lotteryStatus.warnings
+        }, {
+          lottery: lotteryStatus
         })
       ]
     };
@@ -2718,8 +2897,66 @@ export function buildApp(options: {
       integrationId: params.id,
       enabled: body.enabled
     });
+    if (params.id === "lottery") {
+      await runLotteryCheck({
+        store,
+        source: lotterySource,
+        userId: body.userId as UUID,
+        refresh: false
+      });
+    }
     return {
       setting
+    };
+  });
+
+  app.get("/v1/integrations/lottery", async (request: RyanOsRequest) => {
+    return lotteryStatusPayload(currentUserId(request) as UUID);
+  });
+
+  app.put("/v1/integrations/lottery", async (request: RyanOsRequest, reply) => {
+    try {
+      const body = lotterySettingsBodySchema.parse(request.body ?? {});
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: body.timezone }).format(new Date());
+      } catch {
+        reply.code(400);
+        return { error: "Timezone is not valid." };
+      }
+      await store.upsertUserIntegrationSetting({
+        userId: currentUserId(request) as UUID,
+        integrationId: "lottery",
+        enabled: body.enabled,
+        metadata: lotterySettingsMetadata({
+          timezone: body.timezone,
+          taskCreationTime: body.taskCreationTime,
+          autoStar: body.autoStar,
+          games: body.games
+        })
+      });
+      await runLotteryCheck({
+        store,
+        source: lotterySource,
+        userId: currentUserId(request) as UUID,
+        refresh: false
+      });
+      return lotteryStatusPayload(currentUserId(request) as UUID);
+    } catch (error) {
+      reply.code(400);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.post("/v1/integrations/lottery/check", async (request: RyanOsRequest) => {
+    const result = await runLotteryCheck({
+      store,
+      source: lotterySource,
+      userId: currentUserId(request) as UUID,
+      refresh: true
+    });
+    return {
+      result,
+      ...(await lotteryStatusPayload(currentUserId(request) as UUID))
     };
   });
 

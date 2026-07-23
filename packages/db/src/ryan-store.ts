@@ -58,6 +58,12 @@ import type {
   ItemProgressNote,
   ItemProgressNoteCreateData,
   ItemProgressNotePatch,
+  LotteryDrawSnapshot,
+  LotteryDrawSnapshotUpsertData,
+  LotteryGameId,
+  LotteryTaskAlert,
+  LotteryTaskAlertCreateData,
+  LotteryTaskAlertPatch,
   PolicyUpsertData,
   ProjectUpsertData,
   SearchMatch,
@@ -476,6 +482,54 @@ function userIntegrationSettingFromRow(row: typeof schema.userIntegrationSetting
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
   };
+}
+
+function lotteryDrawSnapshotFromRow(
+  row: typeof schema.lotteryDrawSnapshots.$inferSelect
+): LotteryDrawSnapshot {
+  const snapshot: LotteryDrawSnapshot = {
+    id: row.id,
+    gameId: row.gameId as LotteryGameId,
+    status: row.status as LotteryDrawSnapshot["status"],
+    sourceUrl: row.sourceUrl,
+    lastAttemptAt: row.lastAttemptAt.toISOString(),
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.advertisedJackpotDollars !== null) {
+    snapshot.advertisedJackpotDollars = row.advertisedJackpotDollars;
+  }
+  if (row.cashValueDollars !== null) snapshot.cashValueDollars = row.cashValueDollars;
+  const optionalDates = {
+    nextDrawAt: row.nextDrawAt,
+    officialCutoffAt: row.officialCutoffAt,
+    fetchedAt: row.fetchedAt,
+    lastSuccessAt: row.lastSuccessAt,
+    lastFailureAt: row.lastFailureAt
+  };
+  for (const [field, value] of Object.entries(optionalDates)) {
+    if (value !== null) Object.assign(snapshot, { [field]: value.toISOString() });
+  }
+  if (row.error !== null) snapshot.error = row.error;
+  return snapshot;
+}
+
+function lotteryTaskAlertFromRow(row: typeof schema.lotteryTaskAlerts.$inferSelect): LotteryTaskAlert {
+  const alert: LotteryTaskAlert = {
+    id: row.id,
+    userId: row.userId,
+    gameId: row.gameId as LotteryGameId,
+    drawAt: row.drawAt.toISOString(),
+    status: row.status as LotteryTaskAlert["status"],
+    advertisedJackpotDollars: row.advertisedJackpotDollars,
+    buyByAt: row.buyByAt.toISOString(),
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.itemId !== null) alert.itemId = row.itemId;
+  return alert;
 }
 
 function externalSourceFromRow(row: typeof schema.externalSources.$inferSelect): ExternalSource {
@@ -1623,6 +1677,15 @@ export class PostgresRyanStore implements RyanStore {
     return rows.map(userIntegrationSettingFromRow);
   }
 
+  async listUserIntegrationSettingsForIntegration(integrationId: string): Promise<UserIntegrationSetting[]> {
+    const rows = await this.db
+      .select()
+      .from(schema.userIntegrationSettings)
+      .where(eq(schema.userIntegrationSettings.integrationId, integrationId))
+      .orderBy(asc(schema.userIntegrationSettings.userId));
+    return rows.map(userIntegrationSettingFromRow);
+  }
+
   async upsertUserIntegrationSetting(data: UserIntegrationSettingUpsertData): Promise<UserIntegrationSetting> {
     const userId = await this.resolveUserId(data.userId);
     const existing = await this.db.query.userIntegrationSettings.findFirst({
@@ -1672,6 +1735,201 @@ export class PostgresRyanStore implements RyanStore {
       enabled: row.enabled,
       userCount: Number(row.userCount)
     }));
+  }
+
+  async upsertLotteryDrawSnapshot(data: LotteryDrawSnapshotUpsertData): Promise<LotteryDrawSnapshot> {
+    const existing = await this.db.query.lotteryDrawSnapshots.findFirst({
+      where: eq(schema.lotteryDrawSnapshots.gameId, data.gameId)
+    });
+    const values: typeof schema.lotteryDrawSnapshots.$inferInsert = {
+      gameId: data.gameId,
+      status: data.status,
+      advertisedJackpotDollars:
+        data.advertisedJackpotDollars ?? existing?.advertisedJackpotDollars ?? null,
+      cashValueDollars: data.cashValueDollars ?? existing?.cashValueDollars ?? null,
+      nextDrawAt: data.nextDrawAt ? new Date(data.nextDrawAt) : existing?.nextDrawAt ?? null,
+      officialCutoffAt: data.officialCutoffAt
+        ? new Date(data.officialCutoffAt)
+        : existing?.officialCutoffAt ?? null,
+      sourceUrl: data.sourceUrl,
+      fetchedAt: data.fetchedAt ? new Date(data.fetchedAt) : existing?.fetchedAt ?? null,
+      lastAttemptAt: new Date(data.lastAttemptAt),
+      lastSuccessAt: data.lastSuccessAt
+        ? new Date(data.lastSuccessAt)
+        : existing?.lastSuccessAt ?? null,
+      lastFailureAt: data.lastFailureAt
+        ? new Date(data.lastFailureAt)
+        : existing?.lastFailureAt ?? null,
+      error: data.status === "ready" ? null : data.error ?? existing?.error ?? null,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      updatedAt: new Date()
+    };
+    const [row] = await this.db
+      .insert(schema.lotteryDrawSnapshots)
+      .values(values)
+      .onConflictDoUpdate({
+        target: schema.lotteryDrawSnapshots.gameId,
+        set: {
+          status: values.status,
+          advertisedJackpotDollars: values.advertisedJackpotDollars,
+          cashValueDollars: values.cashValueDollars,
+          nextDrawAt: values.nextDrawAt,
+          officialCutoffAt: values.officialCutoffAt,
+          sourceUrl: values.sourceUrl,
+          fetchedAt: values.fetchedAt,
+          lastAttemptAt: values.lastAttemptAt,
+          lastSuccessAt: values.lastSuccessAt,
+          lastFailureAt: values.lastFailureAt,
+          error: values.error,
+          metadata: values.metadata,
+          updatedAt: new Date()
+        }
+      })
+      .returning();
+    if (!row) throw new Error(`Failed to upsert lottery draw snapshot: ${data.gameId}`);
+    return lotteryDrawSnapshotFromRow(row);
+  }
+
+  async getLotteryDrawSnapshot(gameId: LotteryGameId): Promise<LotteryDrawSnapshot | undefined> {
+    const row = await this.db.query.lotteryDrawSnapshots.findFirst({
+      where: eq(schema.lotteryDrawSnapshots.gameId, gameId)
+    });
+    return row ? lotteryDrawSnapshotFromRow(row) : undefined;
+  }
+
+  async listLotteryDrawSnapshots(): Promise<LotteryDrawSnapshot[]> {
+    const rows = await this.db
+      .select()
+      .from(schema.lotteryDrawSnapshots)
+      .orderBy(asc(schema.lotteryDrawSnapshots.gameId));
+    return rows.map(lotteryDrawSnapshotFromRow);
+  }
+
+  async createLotteryTaskAlert(data: LotteryTaskAlertCreateData): Promise<{
+    alert: LotteryTaskAlert;
+    item: Item;
+    created: boolean;
+  }> {
+    const userId = await this.resolveUserId(data.userId);
+    return this.db.transaction(async (tx) => {
+      const [insertedAlert] = await tx
+        .insert(schema.lotteryTaskAlerts)
+        .values({
+          userId,
+          gameId: data.gameId,
+          drawAt: new Date(data.drawAt),
+          status: "created",
+          advertisedJackpotDollars: data.advertisedJackpotDollars,
+          buyByAt: new Date(data.buyByAt),
+          metadata: data.metadata ?? {}
+        })
+        .onConflictDoNothing({
+          target: [
+            schema.lotteryTaskAlerts.userId,
+            schema.lotteryTaskAlerts.gameId,
+            schema.lotteryTaskAlerts.drawAt
+          ]
+        })
+        .returning();
+
+      if (!insertedAlert) {
+        const existing = await tx.query.lotteryTaskAlerts.findFirst({
+          where: and(
+            eq(schema.lotteryTaskAlerts.userId, userId),
+            eq(schema.lotteryTaskAlerts.gameId, data.gameId),
+            eq(schema.lotteryTaskAlerts.drawAt, new Date(data.drawAt))
+          )
+        });
+        if (!existing?.itemId) throw new Error("Existing lottery alert is missing its item.");
+        const item = await tx.query.items.findFirst({
+          where: eq(schema.items.id, existing.itemId)
+        });
+        if (!item) throw new Error(`Lottery alert item not found: ${existing.itemId}`);
+        return {
+          alert: lotteryTaskAlertFromRow(existing),
+          item: itemFromRow(item),
+          created: false
+        };
+      }
+
+      const [item] = await tx
+        .insert(schema.items)
+        .values({
+          userId,
+          kind: "task",
+          title: data.item.title,
+          body: data.item.body,
+          status: "open",
+          priority: data.item.priority,
+          dueAt: new Date(data.buyByAt),
+          starredAt: data.starredAt ? new Date(data.starredAt) : null,
+          metadata: data.item.metadata
+        })
+        .returning();
+      if (!item) throw new Error("Failed to create lottery task.");
+
+      const [linkedAlert] = await tx
+        .update(schema.lotteryTaskAlerts)
+        .set({
+          itemId: item.id,
+          updatedAt: new Date()
+        })
+        .where(eq(schema.lotteryTaskAlerts.id, insertedAlert.id))
+        .returning();
+      if (!linkedAlert) throw new Error("Failed to link lottery task alert.");
+      return {
+        alert: lotteryTaskAlertFromRow(linkedAlert),
+        item: itemFromRow(item),
+        created: true
+      };
+    });
+  }
+
+  async updateLotteryTaskAlert(alertId: UUID, patch: LotteryTaskAlertPatch): Promise<LotteryTaskAlert> {
+    const values: Partial<typeof schema.lotteryTaskAlerts.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.status !== undefined) values.status = patch.status;
+    if (patch.itemId !== undefined) values.itemId = patch.itemId;
+    if (patch.advertisedJackpotDollars !== undefined) {
+      values.advertisedJackpotDollars = patch.advertisedJackpotDollars;
+    }
+    if (patch.buyByAt !== undefined) values.buyByAt = new Date(patch.buyByAt);
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    const [row] = await this.db
+      .update(schema.lotteryTaskAlerts)
+      .set(values)
+      .where(eq(schema.lotteryTaskAlerts.id, alertId))
+      .returning();
+    if (!row) throw new Error(`Lottery alert not found: ${alertId}`);
+    return lotteryTaskAlertFromRow(row);
+  }
+
+  async listLotteryTaskAlerts(filters: {
+    userId: UUID;
+    gameId?: LotteryGameId;
+    drawAt?: string;
+    statuses?: LotteryTaskAlert["status"][];
+    limit?: number;
+  }): Promise<LotteryTaskAlert[]> {
+    const userId = await this.resolveUserId(filters.userId);
+    const conditions = [eq(schema.lotteryTaskAlerts.userId, userId)];
+    if (filters.gameId !== undefined) {
+      conditions.push(eq(schema.lotteryTaskAlerts.gameId, filters.gameId));
+    }
+    if (filters.drawAt !== undefined) {
+      conditions.push(eq(schema.lotteryTaskAlerts.drawAt, new Date(filters.drawAt)));
+    }
+    if (filters.statuses !== undefined) {
+      conditions.push(inArray(schema.lotteryTaskAlerts.status, filters.statuses));
+    }
+    const rows = await this.db
+      .select()
+      .from(schema.lotteryTaskAlerts)
+      .where(and(...conditions))
+      .orderBy(desc(schema.lotteryTaskAlerts.drawAt))
+      .limit(Math.min(Math.max(filters.limit ?? 100, 1), 500));
+    return rows.map(lotteryTaskAlertFromRow);
   }
 
   async upsertExternalSource(data: ExternalSourceUpsertData): Promise<ExternalSource> {

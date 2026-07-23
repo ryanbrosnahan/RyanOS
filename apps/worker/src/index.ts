@@ -6,6 +6,10 @@ import {
   loadInternalEmailMasterKey,
   signInternalEmailScanRequest
 } from "./internal-email-auth.js";
+import {
+  internalLotteryCheckPath,
+  signInternalLotteryCheckRequest
+} from "./internal-lottery-auth.js";
 
 const apiUrl = process.env.RYANOS_API_URL?.trim() || "http://api:4000";
 const codexAutomationIngestToken = process.env.RYANOS_CODEX_AUTOMATION_INGEST_TOKEN?.trim()
@@ -15,6 +19,9 @@ const emailScanIntervalMinutes = Math.min(
   Math.max(Number(process.env.EMAIL_SCAN_INTERVAL_MINUTES ?? "15") || 15, 5),
   1440
 );
+const lotteryCheckEnabled = process.env.LOTTERY_INTEGRATION_ENABLED !== "false";
+const lotteryCheckIntervalMinutes = 15;
+const lotteryRefreshIntervalMinutes = 60;
 const rfpReportIngestEnabled = (
   process.env.CODEX_AUTOMATION_REPORT_INGEST_ENABLED
     ?? process.env.RFP_REPORT_INGEST_ENABLED
@@ -96,6 +103,11 @@ const tasks: TaskList = {
     const result = await requestEmailScan(body);
     helpers.logger.info(`Email scan result: ${JSON.stringify(result)}`);
   },
+  "ryanos.lottery.check": async (payload, helpers) => {
+    const input = asRecord(payload);
+    const result = await requestLotteryCheck({ refresh: input.refresh !== false });
+    helpers.logger.info(`Lottery check result: ${JSON.stringify(result)}`);
+  },
   "ryanos.codex_automations.ingest": async (payload, helpers) => {
     const input = asRecord(payload);
     const sources = Array.isArray(input.sources)
@@ -150,6 +162,26 @@ async function requestEmailScan(body: Record<string, unknown>): Promise<unknown>
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(`Email scan returned HTTP ${response.status}: ${JSON.stringify(result)}`);
+  }
+  return result;
+}
+
+async function requestLotteryCheck(body: Record<string, unknown>): Promise<unknown> {
+  const serializedBody = JSON.stringify(body);
+  const masterKey = await loadInternalEmailMasterKey();
+  const signed = signInternalLotteryCheckRequest(masterKey, serializedBody);
+  const response = await fetch(`${apiUrl}${internalLotteryCheckPath}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-ryanos-internal-timestamp": signed.timestamp,
+      "x-ryanos-internal-signature": signed.signature
+    },
+    body: serializedBody
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`Lottery check returned HTTP ${response.status}: ${JSON.stringify(result)}`);
   }
   return result;
 }
@@ -212,6 +244,34 @@ if (emailScanEnabled) {
   setInterval(() => {
     void runScheduledScan();
   }, emailScanIntervalMinutes * 60 * 1000);
+}
+
+if (lotteryCheckEnabled) {
+  let lastSuccessfulRefreshAt = 0;
+  const runScheduledLotteryCheck = async () => {
+    const refresh = Date.now() - lastSuccessfulRefreshAt >= lotteryRefreshIntervalMinutes * 60_000;
+    try {
+      const result = await requestLotteryCheck({ refresh }) as {
+        snapshots?: Array<{ status?: string }>;
+      };
+      if (
+        refresh &&
+        result.snapshots?.length === 4 &&
+        result.snapshots.every((snapshot) => snapshot.status === "ready")
+      ) {
+        lastSuccessfulRefreshAt = Date.now();
+      }
+      console.log(`RyanOS scheduled lottery check completed: ${JSON.stringify(result)}`);
+    } catch (err) {
+      console.error(`RyanOS scheduled lottery check failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  setTimeout(() => {
+    void runScheduledLotteryCheck();
+  }, 75_000);
+  setInterval(() => {
+    void runScheduledLotteryCheck();
+  }, lotteryCheckIntervalMinutes * 60_000);
 }
 
 const reportSources = configuredReportSources();

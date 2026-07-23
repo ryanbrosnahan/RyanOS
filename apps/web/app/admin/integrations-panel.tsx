@@ -13,9 +13,11 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Save,
   Settings,
   ShieldCheck,
   Smartphone,
+  Ticket,
   Trash2
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
@@ -90,7 +92,7 @@ type AutomationSource = {
 };
 
 type Integration = {
-  id: "ai" | "telegram" | "gmail" | "codex_rfp";
+  id: "ai" | "telegram" | "gmail" | "codex_rfp" | "lottery";
   name: string;
   configured: boolean;
   ready: boolean;
@@ -160,6 +162,55 @@ type Integration = {
     source?: { title?: string; summary?: string; url?: string };
   }>;
   canManageDeployment?: boolean;
+  lottery?: LotteryIntegration;
+};
+
+type LotteryGameId = "powerball" | "mega_millions" | "lotto" | "easy_5";
+
+type LotteryGameSettings = {
+  enabled: boolean;
+  minimumJackpotDollars: number | null;
+  buyByBufferMinutes: number;
+};
+
+type LotteryIntegration = {
+  configured: boolean;
+  ready: boolean;
+  settings: {
+    enabled: boolean;
+    timezone: string;
+    taskCreationTime: string;
+    autoStar: boolean;
+    games: Record<LotteryGameId, LotteryGameSettings>;
+  };
+  health: {
+    status: "not_configured" | "healthy" | "degraded";
+    staleGameIds: LotteryGameId[];
+    lastSuccessAt?: string;
+    lastAttemptAt?: string;
+    error?: string;
+  };
+  games: Array<{
+    id: LotteryGameId;
+    name: string;
+    sourceUrl: string;
+    settings: LotteryGameSettings;
+    thresholdGap: number;
+    snapshot?: {
+      advertisedJackpotDollars?: number;
+      cashValueDollars?: number;
+      nextDrawAt?: string;
+      officialCutoffAt?: string;
+      lastSuccessAt?: string;
+      error?: string;
+      stale: boolean;
+    };
+    currentAlert?: {
+      status: "created" | "cancelled";
+      buyByAt: string;
+    };
+  }>;
+  notice: string;
 };
 
 type IntegrationsResponse = {
@@ -199,11 +250,12 @@ const iconByIntegration = {
   ai: Brain,
   telegram: Bot,
   gmail: Mail,
-  codex_rfp: Search
+  codex_rfp: Search,
+  lottery: Ticket
 } satisfies Record<Integration["id"], typeof Brain>;
 
 const adminExpandedIntegrationStorageKey = "ryanos.admin.expandedIntegration";
-const integrationIds = ["ai", "telegram", "gmail", "codex_rfp"] as const satisfies readonly Integration["id"][];
+const integrationIds = ["ai", "telegram", "gmail", "codex_rfp", "lottery"] as const satisfies readonly Integration["id"][];
 
 function isIntegrationId(value: string | null): value is Integration["id"] {
   return integrationIds.includes(value as Integration["id"]);
@@ -249,6 +301,20 @@ function formatDate(value: string | undefined): string {
     hour: "numeric",
     minute: "2-digit"
   });
+}
+
+function formatMoney(value: number | undefined): string {
+  if (value === undefined) return "Unavailable";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0
+  }).format(value);
+}
+
+function personalBuyBy(cutoff: string | undefined, bufferMinutes: number): string | undefined {
+  if (!cutoff) return undefined;
+  return new Date(new Date(cutoff).getTime() - bufferMinutes * 60_000).toISOString();
 }
 
 function absoluteEndpoint(path: string | undefined): string {
@@ -414,6 +480,7 @@ export function AdminOperationsPanel() {
   });
   const [showAutomationSourceForm, setShowAutomationSourceForm] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [lotteryDraft, setLotteryDraft] = useState<LotteryIntegration["settings"] | null>(null);
 
   async function load(options?: { background?: boolean }) {
     if (!options?.background) {
@@ -451,6 +518,13 @@ export function AdminOperationsPanel() {
     () => new Map(integrations.map((integration) => [integration.id, integration])),
     [integrations]
   );
+
+  useEffect(() => {
+    const lottery = integrationById.get("lottery")?.lottery;
+    if (lottery && lotteryDraft === null) {
+      setLotteryDraft(lottery.settings);
+    }
+  }, [integrationById, lotteryDraft]);
 
   async function toggleIntegration(integration: Integration, enabled: boolean) {
     setBusy(`toggle:${integration.id}`);
@@ -592,6 +666,67 @@ export function AdminOperationsPanel() {
     } finally {
       setBusy(null);
     }
+  }
+
+  async function saveLotterySettings() {
+    const integration = integrationById.get("lottery");
+    if (!integration?.lottery || !lotteryDraft) return;
+    setBusy("lottery:save");
+    setError(null);
+    try {
+      const response = await apiFetch(apiPath("/v1/integrations/lottery"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...lotteryDraft,
+          enabled: integration.enabled
+        })
+      });
+      if (!response.ok) throw new Error(await readResponseMessage(response));
+      const result = (await response.json()) as LotteryIntegration;
+      setLotteryDraft(result.settings);
+      await load({ background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function checkLottery() {
+    setBusy("lottery:check");
+    setError(null);
+    try {
+      const response = await apiFetch(apiPath("/v1/integrations/lottery/check"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      if (!response.ok) throw new Error(await readResponseMessage(response));
+      await load({ background: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function updateLotteryGame(
+    gameId: LotteryGameId,
+    patch: Partial<LotteryGameSettings>
+  ) {
+    setLotteryDraft((current) => current
+      ? {
+          ...current,
+          games: {
+            ...current.games,
+            [gameId]: {
+              ...current.games[gameId],
+              ...patch
+            }
+          }
+        }
+      : current);
   }
 
   async function startGmailAuth(event: FormEvent<HTMLFormElement>) {
@@ -890,7 +1025,11 @@ export function AdminOperationsPanel() {
             const open = expanded === integration.id;
             const automationEndpoint = integration.id === "codex_rfp" ? absoluteEndpoint(integration.endpointPath) : "";
             return (
-              <div key={integration.id} className="py-4 first:pt-0 last:pb-0">
+              <div
+                key={integration.id}
+                data-integration-id={integration.id}
+                className="py-4 first:pt-0 last:pb-0"
+              >
                 <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
                   <div className="flex min-w-0 items-center gap-3">
                     <Icon className="h-5 w-5 shrink-0 text-sky-700" aria-hidden="true" />
@@ -903,6 +1042,8 @@ export function AdminOperationsPanel() {
                             ? `${integration.linkedAccounts?.length ?? 0} linked`
                             : integration.id === "codex_rfp"
                               ? `${integration.sources?.length ?? 0} sources / ${integration.counts?.proposed ?? 0} proposed`
+                              : integration.id === "lottery"
+                                ? `${integration.lottery?.games.filter((game) => game.settings.enabled).length ?? 0} games followed`
                               : "Assistant bridge"}
                       </p>
                     </div>
@@ -1329,6 +1470,220 @@ export function AdminOperationsPanel() {
                             })}
                           </div>
                         )}
+                      </div>
+                    ) : null}
+
+                    {integration.id === "lottery" && integration.lottery ? (
+                      <div className="mt-4 space-y-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-stone-950">Drawing task rules</p>
+                            <p className="mt-0.5 text-sm leading-6 text-stone-600">
+                              Follow only the games you care about. A blank threshold means every drawing.
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void checkLottery()}
+                              disabled={busy !== null}
+                              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-stone-300 px-3 text-sm font-medium text-stone-700 hover:bg-stone-100 disabled:opacity-60"
+                            >
+                              <RefreshCw className={`h-4 w-4 ${busy === "lottery:check" ? "animate-spin" : ""}`} aria-hidden="true" />
+                              Check now
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void saveLotterySettings()}
+                              disabled={busy !== null || lotteryDraft === null}
+                              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-stone-950 px-3 text-sm font-medium text-white hover:bg-stone-800 disabled:opacity-60"
+                            >
+                              <Save className="h-4 w-4" aria-hidden="true" />
+                              Save
+                            </button>
+                          </div>
+                        </div>
+
+                        <div
+                          className={`border px-3 py-2 text-sm ${
+                            integration.lottery.health.status === "degraded"
+                              ? "border-amber-300 bg-amber-50 text-amber-900"
+                              : "border-stone-200 bg-stone-50 text-stone-700"
+                          } rounded-md`}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-semibold">
+                              Source {integration.lottery.health.status.replace("_", " ")}
+                            </span>
+                            <span className="text-xs">
+                              Last success {formatDate(integration.lottery.health.lastSuccessAt)}
+                            </span>
+                          </div>
+                          {integration.lottery.health.error ? (
+                            <p className="mt-1 text-xs leading-5">{integration.lottery.health.error}</p>
+                          ) : null}
+                        </div>
+
+                        {lotteryDraft ? (
+                          <div className="grid gap-3 border-y border-stone-200 py-3 sm:grid-cols-[150px_minmax(0,1fr)_auto] sm:items-end">
+                            <label className="block text-sm font-medium text-stone-700">
+                              Create tasks at
+                              <input
+                                type="time"
+                                value={lotteryDraft.taskCreationTime}
+                                onChange={(event) =>
+                                  setLotteryDraft((current) => current
+                                    ? { ...current, taskCreationTime: event.target.value }
+                                    : current)
+                                }
+                                className="mt-1 h-10 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none focus:border-sky-500"
+                              />
+                            </label>
+                            <label className="block text-sm font-medium text-stone-700">
+                              Timezone
+                              <input
+                                type="text"
+                                value={lotteryDraft.timezone}
+                                onChange={(event) =>
+                                  setLotteryDraft((current) => current
+                                    ? { ...current, timezone: event.target.value }
+                                    : current)
+                                }
+                                placeholder="America/Chicago"
+                                className="mt-1 h-10 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none focus:border-sky-500"
+                              />
+                            </label>
+                            <div className="flex h-10 items-center justify-between gap-3 sm:justify-start">
+                              <span className="text-sm font-medium text-stone-700">Auto-star tasks</span>
+                              <Toggle
+                                checked={lotteryDraft.autoStar}
+                                disabled={busy !== null}
+                                label="Automatically star generated lottery tasks"
+                                onChange={(checked) =>
+                                  setLotteryDraft((current) => current
+                                    ? { ...current, autoStar: checked }
+                                    : current)
+                                }
+                              />
+                            </div>
+                          </div>
+                        ) : null}
+
+                        <div className="overflow-hidden rounded-md border border-stone-200 bg-white">
+                          {integration.lottery.games.map((game) => {
+                            const settings = lotteryDraft?.games[game.id] ?? game.settings;
+                            const buyByAt = personalBuyBy(
+                              game.snapshot?.officialCutoffAt,
+                              settings.buyByBufferMinutes
+                            );
+                            return (
+                              <div
+                                key={game.id}
+                                data-lottery-game-id={game.id}
+                                className="grid gap-3 border-t border-stone-200 px-3 py-3 first:border-t-0 lg:grid-cols-[minmax(190px,1fr)_minmax(170px,0.8fr)_minmax(180px,0.8fr)] lg:items-center"
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-3">
+                                    <Toggle
+                                      checked={settings.enabled}
+                                      disabled={busy !== null}
+                                      label={`${settings.enabled ? "Stop following" : "Follow"} ${game.name}`}
+                                      onChange={(checked) => updateLotteryGame(game.id, { enabled: checked })}
+                                    />
+                                    <div className="min-w-0">
+                                      <p className="text-sm font-semibold text-stone-950">{game.name}</p>
+                                      <p className="mt-0.5 text-xs text-stone-500">
+                                        {game.snapshot?.stale ? "Data stale" : "Official Louisiana Lottery"}
+                                      </p>
+                                    </div>
+                                  </div>
+                                  <a
+                                    href={game.sourceUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="mt-2 inline-block text-xs font-medium text-sky-800 underline-offset-2 hover:underline"
+                                  >
+                                    Official game page
+                                  </a>
+                                </div>
+
+                                <div className="min-w-0 text-sm">
+                                  <p className="font-semibold text-stone-950">
+                                    {formatMoney(game.snapshot?.advertisedJackpotDollars)}
+                                  </p>
+                                  <p className="mt-1 text-xs leading-5 text-stone-600">
+                                    {game.snapshot?.nextDrawAt
+                                      ? `Draw ${formatDate(game.snapshot.nextDrawAt)}`
+                                      : "Refresh to load drawing details"}
+                                  </p>
+                                  {buyByAt && game.snapshot?.officialCutoffAt ? (
+                                    <p className="text-xs leading-5 text-stone-600">
+                                      Buy by {formatDate(buyByAt)} / cutoff {formatDate(game.snapshot.officialCutoffAt)}
+                                    </p>
+                                  ) : null}
+                                  {game.currentAlert?.status === "created" ? (
+                                    <p className="mt-1 text-xs font-medium text-emerald-800">Task created</p>
+                                  ) : null}
+                                </div>
+
+                                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                                  <label className="block text-xs font-medium text-stone-600">
+                                    Minimum jackpot
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step={1_000_000}
+                                      value={settings.minimumJackpotDollars ?? ""}
+                                      onChange={(event) =>
+                                        updateLotteryGame(game.id, {
+                                          minimumJackpotDollars:
+                                            event.target.value === ""
+                                              ? null
+                                              : Math.max(0, Number(event.target.value))
+                                        })
+                                      }
+                                      placeholder="Every drawing"
+                                      className="mt-1 h-9 w-full rounded-md border border-stone-300 bg-white px-2 text-sm text-stone-950 outline-none focus:border-sky-500"
+                                    />
+                                    {game.thresholdGap > 0 ? (
+                                      <span className="mt-1 block font-normal text-stone-500">
+                                        {formatMoney(game.thresholdGap)} below trigger
+                                      </span>
+                                    ) : null}
+                                  </label>
+                                  <label className="block text-xs font-medium text-stone-600">
+                                    Before cutoff
+                                    <select
+                                      value={settings.buyByBufferMinutes}
+                                      onChange={(event) =>
+                                        updateLotteryGame(game.id, {
+                                          buyByBufferMinutes: Number(event.target.value)
+                                        })
+                                      }
+                                      className="mt-1 h-9 w-full rounded-md border border-stone-300 bg-white px-2 text-sm text-stone-950 outline-none focus:border-sky-500"
+                                    >
+                                      {Array.from({ length: 25 }, (_, index) => index * 30).map((minutes) => (
+                                        <option key={minutes} value={minutes}>
+                                          {minutes === 0
+                                            ? "At cutoff"
+                                            : minutes === 30
+                                              ? "30 min"
+                                            : minutes % 60 === 0
+                                              ? `${minutes / 60} hr`
+                                              : `${Math.floor(minutes / 60)} hr 30 min`}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <p className="text-xs leading-5 text-stone-500">
+                          {integration.lottery.notice}
+                        </p>
                       </div>
                     ) : null}
 

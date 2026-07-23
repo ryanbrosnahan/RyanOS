@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   index,
   integer,
@@ -517,6 +518,52 @@ export const userIntegrationSettings = pgTable("user_integration_settings", {
 }, (table) => ({
   pk: primaryKey({ columns: [table.userId, table.integrationId] }),
   userIdx: index("user_integration_settings_user_idx").on(table.userId)
+}));
+
+export const lotteryDrawSnapshots = pgTable("lottery_draw_snapshots", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  gameId: text("game_id").notNull(),
+  status: text("status").notNull().default("error"),
+  advertisedJackpotDollars: bigint("advertised_jackpot_dollars", { mode: "number" }),
+  cashValueDollars: bigint("cash_value_dollars", { mode: "number" }),
+  nextDrawAt: timestamp("next_draw_at", { withTimezone: true }),
+  officialCutoffAt: timestamp("official_cutoff_at", { withTimezone: true }),
+  sourceUrl: text("source_url").notNull(),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }),
+  lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }).notNull(),
+  lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
+  lastFailureAt: timestamp("last_failure_at", { withTimezone: true }),
+  error: text("error"),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps
+}, (table) => ({
+  gameIdx: uniqueIndex("lottery_draw_snapshots_game_idx").on(table.gameId),
+  freshnessIdx: index("lottery_draw_snapshots_freshness_idx").on(table.status, table.lastSuccessAt)
+}));
+
+export const lotteryTaskAlerts = pgTable("lottery_task_alerts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  gameId: text("game_id").notNull(),
+  drawAt: timestamp("draw_at", { withTimezone: true }).notNull(),
+  status: text("status").notNull().default("created"),
+  itemId: uuid("item_id").references(() => items.id),
+  advertisedJackpotDollars: bigint("advertised_jackpot_dollars", { mode: "number" }).notNull(),
+  buyByAt: timestamp("buy_by_at", { withTimezone: true }).notNull(),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps
+}, (table) => ({
+  drawingIdx: uniqueIndex("lottery_task_alerts_drawing_idx").on(
+    table.userId,
+    table.gameId,
+    table.drawAt
+  ),
+  userStatusIdx: index("lottery_task_alerts_user_status_idx").on(
+    table.userId,
+    table.status,
+    table.buyByAt
+  ),
+  itemIdx: uniqueIndex("lottery_task_alerts_item_idx").on(table.itemId)
 }));
 
 export const emailScanRuns = pgTable("email_scan_runs", {

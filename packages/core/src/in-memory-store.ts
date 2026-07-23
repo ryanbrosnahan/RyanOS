@@ -21,6 +21,9 @@ import type {
   ItemPatch,
   ItemProgressNoteCreateData,
   ItemProgressNotePatch,
+  LotteryDrawSnapshotUpsertData,
+  LotteryTaskAlertCreateData,
+  LotteryTaskAlertPatch,
   OpportunityCreateData,
   OpportunityPatch,
   OpportunityProposalListFilters,
@@ -58,6 +61,9 @@ import type {
   ItemChecklistItem,
   ItemEvent,
   ItemProgressNote,
+  LotteryDrawSnapshot,
+  LotteryGameId,
+  LotteryTaskAlert,
   Opportunity,
   OpportunityProposal,
   Policy,
@@ -93,6 +99,8 @@ export class InMemoryRyanStore implements RyanStore {
   readonly dailyPlans = new Map<UUID, DailyPlan>();
   readonly providerAccounts = new Map<UUID, ProviderAccount>();
   readonly userIntegrationSettings = new Map<string, UserIntegrationSetting>();
+  readonly lotteryDrawSnapshots = new Map<LotteryGameId, LotteryDrawSnapshot>();
+  readonly lotteryTaskAlerts = new Map<UUID, LotteryTaskAlert>();
   readonly externalSources = new Map<UUID, ExternalSource>();
   readonly sourceLinks: SourceLink[] = [];
   readonly emailActionProposals = new Map<UUID, EmailActionProposal>();
@@ -754,6 +762,12 @@ export class InMemoryRyanStore implements RyanStore {
       .sort((a, b) => a.integrationId.localeCompare(b.integrationId));
   }
 
+  async listUserIntegrationSettingsForIntegration(integrationId: string): Promise<UserIntegrationSetting[]> {
+    return [...this.userIntegrationSettings.values()]
+      .filter((setting) => setting.integrationId === integrationId)
+      .sort((a, b) => a.userId.localeCompare(b.userId));
+  }
+
   async upsertUserIntegrationSetting(data: UserIntegrationSettingUpsertData): Promise<UserIntegrationSetting> {
     const key = `${data.userId}:${data.integrationId}`;
     const existing = this.userIntegrationSettings.get(key);
@@ -789,6 +803,135 @@ export class InMemoryRyanStore implements RyanStore {
         userCount: entry.users.size
       }))
       .sort((a, b) => a.integrationId.localeCompare(b.integrationId) || Number(b.enabled) - Number(a.enabled));
+  }
+
+  async upsertLotteryDrawSnapshot(data: LotteryDrawSnapshotUpsertData): Promise<LotteryDrawSnapshot> {
+    const existing = this.lotteryDrawSnapshots.get(data.gameId);
+    const timestamp = nowIso();
+    const snapshot: LotteryDrawSnapshot = {
+      id: existing?.id ?? createId("lottery_draw"),
+      gameId: data.gameId,
+      status: data.status,
+      sourceUrl: data.sourceUrl,
+      lastAttemptAt: data.lastAttemptAt,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    const optionalFields = [
+      "advertisedJackpotDollars",
+      "cashValueDollars",
+      "nextDrawAt",
+      "officialCutoffAt",
+      "fetchedAt",
+      "lastSuccessAt",
+      "lastFailureAt",
+      "error"
+    ] as const;
+    for (const field of optionalFields) {
+      const value = data[field] ?? existing?.[field];
+      if (value !== undefined) {
+        Object.assign(snapshot, { [field]: value });
+      }
+    }
+    if (data.status === "ready") delete snapshot.error;
+    this.lotteryDrawSnapshots.set(data.gameId, snapshot);
+    return snapshot;
+  }
+
+  async getLotteryDrawSnapshot(gameId: LotteryGameId): Promise<LotteryDrawSnapshot | undefined> {
+    return this.lotteryDrawSnapshots.get(gameId);
+  }
+
+  async listLotteryDrawSnapshots(): Promise<LotteryDrawSnapshot[]> {
+    return [...this.lotteryDrawSnapshots.values()].sort((a, b) => a.gameId.localeCompare(b.gameId));
+  }
+
+  async createLotteryTaskAlert(data: LotteryTaskAlertCreateData): Promise<{
+    alert: LotteryTaskAlert;
+    item: Item;
+    created: boolean;
+  }> {
+    const existing = [...this.lotteryTaskAlerts.values()].find(
+      (alert) =>
+        alert.userId === data.userId &&
+        alert.gameId === data.gameId &&
+        alert.drawAt === data.drawAt
+    );
+    if (existing?.itemId) {
+      const item = this.items.get(existing.itemId);
+      if (!item) throw new Error(`Lottery alert item not found: ${existing.itemId}`);
+      return { alert: existing, item, created: false };
+    }
+
+    const timestamp = nowIso();
+    const item: Item = {
+      id: createId("item"),
+      userId: data.userId,
+      kind: "task",
+      title: data.item.title,
+      body: data.item.body,
+      status: "open",
+      priority: data.item.priority,
+      dueAt: data.buyByAt,
+      revision: 1,
+      metadata: data.item.metadata,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    if (data.starredAt !== undefined) item.starredAt = data.starredAt;
+    this.items.set(item.id, item);
+
+    const alert: LotteryTaskAlert = {
+      id: existing?.id ?? createId("lottery_alert"),
+      userId: data.userId,
+      gameId: data.gameId,
+      drawAt: data.drawAt,
+      status: "created",
+      itemId: item.id,
+      advertisedJackpotDollars: data.advertisedJackpotDollars,
+      buyByAt: data.buyByAt,
+      metadata: data.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    this.lotteryTaskAlerts.set(alert.id, alert);
+    return { alert, item, created: true };
+  }
+
+  async updateLotteryTaskAlert(alertId: UUID, patch: LotteryTaskAlertPatch): Promise<LotteryTaskAlert> {
+    const alert = this.lotteryTaskAlerts.get(alertId);
+    if (!alert) throw new Error(`Lottery alert not found: ${alertId}`);
+    const updated: LotteryTaskAlert = {
+      ...alert,
+      status: patch.status ?? alert.status,
+      advertisedJackpotDollars: patch.advertisedJackpotDollars ?? alert.advertisedJackpotDollars,
+      buyByAt: patch.buyByAt ?? alert.buyByAt,
+      metadata: patch.metadata ?? alert.metadata,
+      updatedAt: nowIso()
+    };
+    if (patch.itemId === null) delete updated.itemId;
+    else if (patch.itemId !== undefined) updated.itemId = patch.itemId;
+    this.lotteryTaskAlerts.set(alertId, updated);
+    return updated;
+  }
+
+  async listLotteryTaskAlerts(filters: {
+    userId: UUID;
+    gameId?: LotteryGameId;
+    drawAt?: string;
+    statuses?: LotteryTaskAlert["status"][];
+    limit?: number;
+  }): Promise<LotteryTaskAlert[]> {
+    return [...this.lotteryTaskAlerts.values()]
+      .filter((alert) => {
+        if (alert.userId !== filters.userId) return false;
+        if (filters.gameId !== undefined && alert.gameId !== filters.gameId) return false;
+        if (filters.drawAt !== undefined && alert.drawAt !== filters.drawAt) return false;
+        return filters.statuses === undefined || filters.statuses.includes(alert.status);
+      })
+      .sort((a, b) => b.drawAt.localeCompare(a.drawAt))
+      .slice(0, Math.min(Math.max(filters.limit ?? 100, 1), 500));
   }
 
   async upsertExternalSource(data: ExternalSourceUpsertData): Promise<ExternalSource> {
@@ -1511,6 +1654,8 @@ export class InMemoryRyanStore implements RyanStore {
       policyCount: this.policies.size,
       dailyPlanCount: this.dailyPlans.size,
       providerAccountCount: this.providerAccounts.size,
+      lotteryDrawSnapshotCount: this.lotteryDrawSnapshots.size,
+      lotteryTaskAlertCount: this.lotteryTaskAlerts.size,
       externalSourceCount: this.externalSources.size,
       emailActionProposalCount: this.emailActionProposals.size,
       opportunityCount: this.opportunities.size,

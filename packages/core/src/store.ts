@@ -12,6 +12,9 @@ import type {
   ItemChecklistItem,
   ItemEvent,
   ItemProgressNote,
+  LotteryDrawSnapshot,
+  LotteryGameId,
+  LotteryTaskAlert,
   Opportunity,
   OpportunityProposal,
   Policy,
@@ -167,6 +170,46 @@ export type UserIntegrationSettingSummary = {
   integrationId: string;
   enabled: boolean;
   userCount: number;
+};
+
+export type LotteryDrawSnapshotUpsertData = {
+  gameId: LotteryGameId;
+  status: LotteryDrawSnapshot["status"];
+  advertisedJackpotDollars?: number;
+  cashValueDollars?: number;
+  nextDrawAt?: string;
+  officialCutoffAt?: string;
+  sourceUrl: string;
+  fetchedAt?: string;
+  lastAttemptAt: string;
+  lastSuccessAt?: string;
+  lastFailureAt?: string;
+  error?: string;
+  metadata?: JsonObject;
+};
+
+export type LotteryTaskAlertCreateData = {
+  userId: UUID;
+  gameId: LotteryGameId;
+  drawAt: string;
+  advertisedJackpotDollars: number;
+  buyByAt: string;
+  starredAt?: string;
+  item: {
+    title: string;
+    body: string;
+    priority: Item["priority"];
+    metadata: JsonObject;
+  };
+  metadata?: JsonObject;
+};
+
+export type LotteryTaskAlertPatch = {
+  status?: LotteryTaskAlert["status"];
+  itemId?: UUID | null;
+  advertisedJackpotDollars?: number;
+  buyByAt?: string;
+  metadata?: JsonObject;
 };
 
 export type ExternalSourceUpsertData = {
@@ -530,8 +573,26 @@ export interface RyanStore {
   listProviderAccountSummaries(): Promise<ProviderAccountSummary[]>;
   getUserIntegrationSetting(userId: UUID, integrationId: string): Promise<UserIntegrationSetting | undefined>;
   listUserIntegrationSettings(userId: UUID): Promise<UserIntegrationSetting[]>;
+  listUserIntegrationSettingsForIntegration(integrationId: string): Promise<UserIntegrationSetting[]>;
   upsertUserIntegrationSetting(setting: UserIntegrationSettingUpsertData): Promise<UserIntegrationSetting>;
   listUserIntegrationSettingSummaries(): Promise<UserIntegrationSettingSummary[]>;
+
+  upsertLotteryDrawSnapshot(snapshot: LotteryDrawSnapshotUpsertData): Promise<LotteryDrawSnapshot>;
+  getLotteryDrawSnapshot(gameId: LotteryGameId): Promise<LotteryDrawSnapshot | undefined>;
+  listLotteryDrawSnapshots(): Promise<LotteryDrawSnapshot[]>;
+  createLotteryTaskAlert(data: LotteryTaskAlertCreateData): Promise<{
+    alert: LotteryTaskAlert;
+    item: Item;
+    created: boolean;
+  }>;
+  updateLotteryTaskAlert(alertId: UUID, patch: LotteryTaskAlertPatch): Promise<LotteryTaskAlert>;
+  listLotteryTaskAlerts(filters: {
+    userId: UUID;
+    gameId?: LotteryGameId;
+    drawAt?: string;
+    statuses?: LotteryTaskAlert["status"][];
+    limit?: number;
+  }): Promise<LotteryTaskAlert[]>;
 
   upsertExternalSource(source: ExternalSourceUpsertData): Promise<ExternalSource>;
   getExternalSource(sourceId: UUID): Promise<ExternalSource | undefined>;
