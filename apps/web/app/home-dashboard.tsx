@@ -4,6 +4,7 @@ import Link from "next/link";
 import { MessageSquare, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ChatPanel } from "./chat-panel";
+import { CalendarAgendaPanel } from "./calendar-agenda-panel";
 import { DailyFocusPanel } from "./daily-focus-panel";
 import { EmailProposalsPanel } from "./email-proposals-panel";
 import { ItemsPanel } from "./items-panel";
@@ -33,6 +34,12 @@ export function HomeDashboard() {
               </h1>
             </div>
             <div className="flex flex-wrap gap-2">
+              <Link
+                href="/calendar"
+                className="inline-flex h-9 items-center justify-center rounded-md border border-sky-200 bg-sky-50 px-3 text-sm font-medium text-sky-900 hover:bg-sky-100"
+              >
+                Calendar
+              </Link>
               <Link
                 href="/vocabulary"
                 className="inline-flex h-9 items-center justify-center rounded-md border border-indigo-200 bg-indigo-50 px-3 text-sm font-medium text-indigo-900 hover:bg-indigo-100"
@@ -67,6 +74,7 @@ export function HomeDashboard() {
 
       <section className="mx-auto flex max-w-screen-2xl flex-col gap-6 px-5 py-6 sm:px-8 lg:px-10">
         <DailyFocusPanel />
+        <CalendarAgendaPanel />
         <ItemsPanel />
 
         <div className="grid gap-6 xl:grid-cols-2">

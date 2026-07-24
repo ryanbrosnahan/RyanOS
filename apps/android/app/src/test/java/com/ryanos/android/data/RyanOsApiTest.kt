@@ -1062,4 +1062,74 @@ class RyanOsApiTest {
     assertTrue(updated.messages[2].pending)
     assertEquals("plan today", updated.messages[2].text)
   }
+
+  @Test
+  fun parsesCalendarAgendaDraftAndUnscheduledTasks() {
+    val snapshot = RyanOsApi.parseCalendarSnapshot(
+      statusRawJson = """
+        {
+          "configured": true,
+          "settings": { "enabled": true }
+        }
+      """.trimIndent(),
+      eventsRawJson = """
+        {
+          "events": [
+            {
+              "id": "event-1",
+              "googleCalendarId": "calendar-1",
+              "title": "Client call",
+              "startAt": "2026-07-24T15:00:00.000Z",
+              "endAt": "2026-07-24T15:30:00.000Z",
+              "status": "confirmed",
+              "location": "Meet"
+            }
+          ]
+        }
+      """.trimIndent(),
+      planRawJson = """
+        {
+          "plan": {
+            "id": "plan-1",
+            "status": "draft"
+          },
+          "blocks": [
+            {
+              "id": "block-1",
+              "googleCalendarId": "calendar-1",
+              "title": "Prepare filing",
+              "startAt": "2026-07-24T16:00:00.000Z",
+              "endAt": "2026-07-24T17:00:00.000Z",
+              "status": "draft",
+              "pinned": true
+            }
+          ],
+          "unscheduledItems": [
+            {
+              "id": "item-1",
+              "title": "Call contractor",
+              "priority": "high",
+              "dueAt": "2026-07-25T22:00:00.000Z"
+            }
+          ]
+        }
+      """.trimIndent(),
+      date = "2026-07-24",
+      lastSyncedAt = "2026-07-24T14:00:00.000Z"
+    )
+
+    assertTrue(snapshot.configured)
+    assertTrue(snapshot.enabled)
+    assertEquals("draft", snapshot.planStatus)
+    assertEquals("plan-1", snapshot.planId)
+    assertEquals(1, snapshot.events.size)
+    assertEquals("calendar", snapshot.events[0].source)
+    assertEquals("calendar-1", snapshot.events[0].calendarId)
+    assertEquals("Meet", snapshot.events[0].location)
+    assertEquals(1, snapshot.blocks.size)
+    assertEquals("plan", snapshot.blocks[0].source)
+    assertTrue(snapshot.blocks[0].pinned)
+    assertEquals(1, snapshot.unscheduledTasks.size)
+    assertEquals("high", snapshot.unscheduledTasks[0].priority)
+  }
 }

@@ -637,6 +637,7 @@ export async function syncGmailAccounts(input: {
   const synced: ProviderAccount[] = [];
   const syncedAt = nowIso();
   for (const account of accounts) {
+    if (!account.scopes.some((scope) => scope.toLowerCase().includes("gmail"))) continue;
     const matchesRequestedAccount =
       input.accountEmail === undefined ||
       account.email.toLowerCase() === input.accountEmail.toLowerCase() ||

@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Refresh
@@ -88,6 +89,8 @@ import androidx.navigation.compose.rememberNavController
 import com.ryanos.android.BuildConfig
 import com.ryanos.android.MainActivity
 import com.ryanos.android.data.AndroidUpdateStatus
+import com.ryanos.android.data.CalendarAgendaEntry
+import com.ryanos.android.data.CalendarSnapshot
 import com.ryanos.android.data.DailyPlanSnapshot
 import com.ryanos.android.data.EmailProposal
 import com.ryanos.android.data.FocusItem
@@ -111,6 +114,9 @@ import com.ryanos.android.data.WidgetScope
 import com.ryanos.android.data.WidgetSnapshot
 import com.ryanos.android.data.WidgetProgressNote
 import com.ryanos.android.data.clampRecurrenceLeadDays
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 private enum class Destination(
   val route: String,
@@ -119,6 +125,7 @@ private enum class Destination(
 ) {
   TASKS(MainActivity.SCREEN_TASKS, "Tasks", Icons.Filled.Today),
   INBOX(MainActivity.SCREEN_INBOX, "Inbox", Icons.Filled.Search),
+  CALENDAR(MainActivity.SCREEN_CALENDAR, "Calendar", Icons.Filled.Event),
   SHOPPING(MainActivity.SCREEN_SHOPPING, "Shopping", Icons.Filled.ShoppingCart),
   VOCABULARY(MainActivity.SCREEN_VOCABULARY, "Words", Icons.Filled.MenuBook),
   CHAT(MainActivity.SCREEN_CHAT, "Chat", Icons.Filled.Chat),
@@ -151,6 +158,7 @@ fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
   val vocabularySnapshot by viewModel.vocabularyFlow.collectAsState(initial = VocabularySnapshot(configured = settings.isConfigured))
   val messageSnapshot by viewModel.messageFlow.collectAsState(initial = MessageSnapshot(configured = settings.isConfigured))
   val inboxSnapshot by viewModel.inboxFlow.collectAsState(initial = InboxSnapshot(configured = settings.isConfigured))
+  val calendarSnapshot = viewModel.calendarSnapshot
   val backStackEntry by navController.currentBackStackEntryAsState()
   val currentDestination = destinationForRoute(backStackEntry?.destination?.route)
   var captureKind by remember { mutableStateOf(CaptureKind.TASK) }
@@ -268,7 +276,11 @@ fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
           }
         },
         floatingActionButton = {
-          if (currentDestination != Destination.SETTINGS && currentDestination != Destination.INBOX) {
+          if (
+            currentDestination != Destination.SETTINGS &&
+            currentDestination != Destination.INBOX &&
+            currentDestination != Destination.CALENDAR
+          ) {
             if (wide) {
               ExtendedFloatingActionButton(
                 onClick = { openCapture() },
@@ -330,6 +342,21 @@ fun RyanOsApp(viewModel: RyanOsViewModel, initialScreen: String?) {
               onEmailAction = viewModel::actOnEmailProposal,
               onEmailSenderPreference = viewModel::setEmailSenderPreference,
               onOpportunityAction = viewModel::actOnOpportunityProposal,
+              onOpenSettings = {
+                navController.navigate(Destination.SETTINGS.route) {
+                  launchSingleTop = true
+                }
+              }
+            )
+          }
+          composable(Destination.CALENDAR.route) {
+            CalendarScreen(
+              snapshot = calendarSnapshot,
+              busy = viewModel.busy,
+              statusText = viewModel.statusText,
+              onRefresh = viewModel::refreshCalendar,
+              onGenerate = viewModel::generateCalendarPlan,
+              onPublish = viewModel::publishCalendarPlan,
               onOpenSettings = {
                 navController.navigate(Destination.SETTINGS.route) {
                   launchSingleTop = true
@@ -420,6 +447,211 @@ private fun RyanOsNavigationRail(
         icon = { Icon(destination.icon, contentDescription = null) },
         label = { Text(destination.label) }
       )
+    }
+  }
+}
+
+@Composable
+private fun CalendarScreen(
+  snapshot: CalendarSnapshot,
+  busy: Boolean,
+  statusText: String,
+  onRefresh: () -> Unit,
+  onGenerate: () -> Unit,
+  onPublish: () -> Unit,
+  onOpenSettings: () -> Unit
+) {
+  var confirmPublish by remember { mutableStateOf(false) }
+  val agenda = (snapshot.events + snapshot.blocks).sortedBy { it.startAt }
+
+  if (confirmPublish) {
+    AlertDialog(
+      onDismissRequest = { confirmPublish = false },
+      icon = { Icon(Icons.Filled.Event, contentDescription = null) },
+      title = { Text("Publish this schedule?") },
+      text = { Text("Draft time blocks will be added to your selected Google Calendar.") },
+      confirmButton = {
+        TextButton(
+          onClick = {
+            confirmPublish = false
+            onPublish()
+          }
+        ) {
+          Text("Publish")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { confirmPublish = false }) {
+          Text("Cancel")
+        }
+      }
+    )
+  }
+
+  LazyColumn(
+    modifier = Modifier.fillMaxSize(),
+    contentPadding = PaddingValues(16.dp),
+    verticalArrangement = Arrangement.spacedBy(12.dp)
+  ) {
+    item {
+      HeaderActions(
+        title = snapshot.date.ifBlank { "Calendar" },
+        subtitle = syncSubtitle(snapshot.lastSyncedAt, snapshot.error),
+        primaryLabel = "Refresh",
+        primaryIcon = Icons.Filled.Refresh,
+        onPrimary = onRefresh,
+        busy = busy
+      )
+    }
+    item {
+      StatusBanner(
+        configured = snapshot.configured,
+        error = snapshot.error,
+        statusText = statusText,
+        emptyMessage = "Connect Google Calendar in RyanOS Admin.",
+        onOpenSettings = onOpenSettings
+      )
+    }
+    if (snapshot.configured && !snapshot.enabled) {
+      item {
+        EmptyText("Google Calendar is disabled. Enable it from RyanOS Admin.")
+      }
+    }
+    if (snapshot.configured && snapshot.enabled) {
+      item {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Button(
+            enabled = !busy,
+            onClick = onGenerate,
+            modifier = Modifier.weight(1f)
+          ) {
+            Icon(Icons.Filled.Event, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Build day")
+          }
+          if (snapshot.planId != null && snapshot.planStatus == "draft") {
+            OutlinedButton(
+              enabled = !busy && snapshot.blocks.isNotEmpty(),
+              onClick = { confirmPublish = true },
+              modifier = Modifier.weight(1f)
+            ) {
+              Text("Publish")
+            }
+          }
+        }
+      }
+      if (snapshot.planStatus != null) {
+        item {
+          Text(
+            text = "Schedule ${snapshot.planStatus.replaceFirstChar { it.titlecase() }}",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary
+          )
+        }
+      }
+      if (agenda.isEmpty()) {
+        item { EmptyText("No events or time blocks for this day.") }
+      } else {
+        items(agenda, key = { "${it.source}:${it.id}" }) { entry ->
+          CalendarAgendaCard(entry)
+        }
+      }
+      if (snapshot.unscheduledTasks.isNotEmpty()) {
+        item {
+          Text(
+            text = "Not scheduled",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+          )
+        }
+        items(snapshot.unscheduledTasks, key = { "unscheduled:${it.id}" }) { task ->
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(vertical = 4.dp)
+          ) {
+            Text(
+              text = task.title,
+              style = MaterialTheme.typography.bodyLarge,
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis
+            )
+            Text(
+              text = listOfNotNull(
+                task.priority.replaceFirstChar { it.titlecase() },
+                task.dueAt?.let { "Due ${shortDateTime(it)}" }
+              ).joinToString(" · "),
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun CalendarAgendaCard(entry: CalendarAgendaEntry) {
+  ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(14.dp),
+      horizontalArrangement = Arrangement.spacedBy(12.dp),
+      verticalAlignment = Alignment.Top
+    ) {
+      Text(
+        text = calendarTime(entry.startAt),
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.width(72.dp)
+      )
+      Column(
+        modifier = Modifier.weight(1f),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+      ) {
+        Text(
+          text = entry.title,
+          style = MaterialTheme.typography.bodyLarge,
+          fontWeight = FontWeight.SemiBold,
+          maxLines = 3,
+          overflow = TextOverflow.Ellipsis
+        )
+        Text(
+          text = "${calendarTime(entry.startAt)} - ${calendarTime(entry.endAt)} · ${
+            if (entry.source == "plan") "Time block" else "Calendar"
+          }",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        entry.location?.takeIf { it.isNotBlank() }?.let { location ->
+          Text(
+            text = location,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+          )
+        }
+        if (entry.pinned) {
+          Text(
+            text = "Pinned after a calendar edit",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.tertiary
+          )
+        }
+        entry.error?.let { error ->
+          Text(
+            text = error,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error
+          )
+        }
+      }
     }
   }
 }
@@ -2821,6 +3053,13 @@ private fun formatDateLabel(dateKey: String): String =
 
 private fun shortDateTime(value: String?): String? =
   value?.replace('T', ' ')?.take(16)
+
+private val calendarTimeFormatter: DateTimeFormatter =
+  DateTimeFormatter.ofPattern("h:mm a").withZone(ZoneId.systemDefault())
+
+private fun calendarTime(value: String): String =
+  runCatching { calendarTimeFormatter.format(Instant.parse(value)) }
+    .getOrElse { value.replace('T', ' ').takeLast(8).take(5) }
 
 private fun projectLabel(value: String): String =
   value

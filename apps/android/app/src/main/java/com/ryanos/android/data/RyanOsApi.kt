@@ -258,6 +258,56 @@ object RyanOsApi {
   }
 
   @Throws(IOException::class)
+  fun fetchCalendarSnapshot(settings: RyanOsSettings, date: String = todayDateKey(settings.timezone)): CalendarSnapshot {
+    val zone = runCatching { ZoneId.of(settings.timezone) }.getOrElse { ZoneId.systemDefault() }
+    val localDate = LocalDate.parse(date)
+    val from = localDate.atStartOfDay(zone).toInstant().toString()
+    val to = localDate.plusDays(1).atStartOfDay(zone).toInstant().toString()
+    val statusRaw = request(
+      settings = settings,
+      method = "GET",
+      url = "${settings.normalizedBaseUrl}/v1/integrations/calendar"
+    )
+    val eventsRaw = request(
+      settings = settings,
+      method = "GET",
+      url = "${settings.normalizedBaseUrl}/v1/calendar/events?${mapOf("from" to from, "to" to to).toQueryString()}"
+    )
+    val planRaw = request(
+      settings = settings,
+      method = "GET",
+      url = "${settings.normalizedBaseUrl}/v1/calendar/plans?${mapOf("date" to date).toQueryString()}"
+    )
+    return parseCalendarSnapshot(
+      statusRawJson = statusRaw,
+      eventsRawJson = eventsRaw,
+      planRawJson = planRaw,
+      date = date,
+      lastSyncedAt = Instant.now().toString()
+    )
+  }
+
+  @Throws(IOException::class)
+  fun generateCalendarPlan(settings: RyanOsSettings, date: String = todayDateKey(settings.timezone)) {
+    request(
+      settings = settings,
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/calendar/plans/generate",
+      body = JSONObject().put("date", date)
+    )
+  }
+
+  @Throws(IOException::class)
+  fun publishCalendarPlan(settings: RyanOsSettings, planId: String) {
+    request(
+      settings = settings,
+      method = "POST",
+      url = "${settings.normalizedBaseUrl}/v1/calendar/plans/${planId.urlEncode()}/publish",
+      body = JSONObject()
+    )
+  }
+
+  @Throws(IOException::class)
   fun actOnEmailProposal(settings: RyanOsSettings, proposalId: String, action: String) {
     request(
       settings = settings,
@@ -1255,6 +1305,93 @@ object RyanOsApi {
       )
     }
   }
+
+  fun parseCalendarSnapshot(
+    statusRawJson: String?,
+    eventsRawJson: String?,
+    planRawJson: String?,
+    date: String,
+    lastSyncedAt: String? = null,
+    error: String? = null
+  ): CalendarSnapshot {
+    return runCatching {
+      val statusRoot = JSONObject(statusRawJson ?: "{}")
+      val settings = statusRoot.optJSONObject("settings")
+      val configured = statusRoot.optBoolean("configured", false)
+      val enabled = settings?.optBoolean("enabled", false) ?: false
+      val eventsRoot = JSONObject(eventsRawJson ?: "{}")
+      val planRoot = JSONObject(planRawJson ?: "{}")
+      val events = planAgendaEntries(eventsRoot.optJSONArray("events"), "calendar")
+      val blocks = planAgendaEntries(planRoot.optJSONArray("blocks"), "plan")
+        .filterNot { it.status == "removed" }
+      val unscheduledArray = planRoot.optJSONArray("unscheduledItems")
+      CalendarSnapshot(
+        configured = configured,
+        enabled = enabled,
+        readOnly = error != null,
+        error = error,
+        lastSyncedAt = lastSyncedAt,
+        date = date,
+        events = events,
+        blocks = blocks,
+        planId = planRoot.optJSONObject("plan")?.optStringOrNull("id"),
+        planStatus = planRoot.optJSONObject("plan")?.optStringOrNull("status"),
+        unscheduledTasks = buildList {
+          if (unscheduledArray != null) {
+            for (index in 0 until unscheduledArray.length()) {
+              val item = unscheduledArray.optJSONObject(index) ?: continue
+              val id = item.optString("id")
+              val title = item.optString("title")
+              if (id.isBlank() || title.isBlank()) continue
+              add(
+                CalendarUnscheduledTask(
+                  id = id,
+                  title = title,
+                  priority = item.optString("priority", "normal"),
+                  dueAt = item.optStringOrNull("dueAt")
+                )
+              )
+            }
+          }
+        }
+      )
+    }.getOrElse { parseError ->
+      CalendarSnapshot(
+        configured = false,
+        readOnly = true,
+        date = date,
+        lastSyncedAt = lastSyncedAt,
+        error = error ?: "Could not read calendar: ${parseError.message ?: parseError.javaClass.simpleName}"
+      )
+    }
+  }
+
+  private fun planAgendaEntries(array: JSONArray?, source: String): List<CalendarAgendaEntry> =
+    buildList {
+      if (array == null) return@buildList
+      for (index in 0 until array.length()) {
+        val entry = array.optJSONObject(index) ?: continue
+        val id = entry.optString("id")
+        val title = entry.optString("title")
+        val startAt = entry.optString("startAt")
+        val endAt = entry.optString("endAt")
+        if (id.isBlank() || title.isBlank() || startAt.isBlank() || endAt.isBlank()) continue
+        add(
+          CalendarAgendaEntry(
+            id = id,
+            title = title,
+            startAt = startAt,
+            endAt = endAt,
+            status = entry.optString("status", "confirmed"),
+            calendarId = entry.optStringOrNull("googleCalendarId"),
+            location = entry.optStringOrNull("location"),
+            source = source,
+            pinned = entry.optBoolean("pinned", false),
+            error = entry.optStringOrNull("error")
+          )
+        )
+      }
+    }
 
   private fun parseItemDetailsResult(rawJson: String): ItemDetailsPayloadResult {
     val syncedAt = Instant.now().toString()

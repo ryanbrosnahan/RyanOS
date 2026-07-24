@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ryanos.android.BuildConfig
 import com.ryanos.android.data.AndroidUpdateStatus
+import com.ryanos.android.data.CalendarSnapshot
 import com.ryanos.android.data.FocusItem
 import com.ryanos.android.data.ItemDetailsSnapshot
 import com.ryanos.android.data.RyanOsRepository
@@ -42,6 +43,8 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
     private set
   var itemDetails by mutableStateOf<Map<String, ItemDetailsSnapshot>>(emptyMap())
     private set
+  var calendarSnapshot by mutableStateOf(CalendarSnapshot())
+    private set
 
   val busy: Boolean
     get() = busyLabel != null
@@ -59,6 +62,7 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
       repository.refreshVocabulary()
       repository.refreshMessages()
       repository.refreshInbox()
+      calendarSnapshot = repository.refreshCalendar()
       updateWidgets()
       statusText = "Refreshed"
     }
@@ -243,6 +247,28 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
     }
   }
 
+  fun refreshCalendar() {
+    launchWork("Refreshing calendar") {
+      calendarSnapshot = repository.refreshCalendar()
+      statusText = calendarSnapshot.error ?: "Calendar refreshed"
+    }
+  }
+
+  fun generateCalendarPlan() {
+    launchWork("Building day") {
+      calendarSnapshot = repository.generateCalendarPlan()
+      statusText = calendarSnapshot.error ?: "Draft schedule ready"
+    }
+  }
+
+  fun publishCalendarPlan() {
+    val planId = calendarSnapshot.planId ?: return
+    launchWork("Publishing schedule") {
+      calendarSnapshot = repository.publishCalendarPlan(planId)
+      statusText = calendarSnapshot.error ?: "Schedule published"
+    }
+  }
+
   fun loadItemDetails(itemId: String) {
     launchWork("Loading task") {
       val details = repository.fetchItemDetails(itemId)
@@ -413,6 +439,7 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
       repository.refreshVocabulary()
       repository.refreshMessages()
       repository.refreshInbox()
+      calendarSnapshot = repository.refreshCalendar()
       updateWidgets()
       statusText = "Settings saved"
     }
@@ -429,6 +456,7 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
       repository.refreshVocabulary()
       repository.refreshMessages()
       repository.refreshInbox()
+      calendarSnapshot = repository.refreshCalendar()
       updateWidgets()
       statusText = "Signed in"
     }
@@ -437,6 +465,7 @@ class RyanOsViewModel(application: Application) : AndroidViewModel(application) 
   fun signOut() {
     launchWork("Signing out") {
       repository.signOut()
+      calendarSnapshot = CalendarSnapshot()
       statusText = "Signed out"
     }
   }

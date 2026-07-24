@@ -3,6 +3,7 @@
 import {
   Bot,
   Brain,
+  CalendarDays,
   ChevronDown,
   Copy,
   Download,
@@ -22,6 +23,10 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { apiFetch, apiPath } from "../api-client";
+import {
+  CalendarIntegrationPanel,
+  type CalendarIntegrationStatus
+} from "./calendar-integration-panel";
 
 type SetupAction = {
   id: string;
@@ -92,7 +97,7 @@ type AutomationSource = {
 };
 
 type Integration = {
-  id: "ai" | "telegram" | "gmail" | "codex_rfp" | "lottery";
+  id: "ai" | "telegram" | "gmail" | "calendar" | "codex_rfp" | "lottery";
   name: string;
   configured: boolean;
   ready: boolean;
@@ -162,6 +167,7 @@ type Integration = {
     source?: { title?: string; summary?: string; url?: string };
   }>;
   canManageDeployment?: boolean;
+  calendar?: CalendarIntegrationStatus;
   lottery?: LotteryIntegration;
 };
 
@@ -250,12 +256,13 @@ const iconByIntegration = {
   ai: Brain,
   telegram: Bot,
   gmail: Mail,
+  calendar: CalendarDays,
   codex_rfp: Search,
   lottery: Ticket
 } satisfies Record<Integration["id"], typeof Brain>;
 
 const adminExpandedIntegrationStorageKey = "ryanos.admin.expandedIntegration";
-const integrationIds = ["ai", "telegram", "gmail", "codex_rfp", "lottery"] as const satisfies readonly Integration["id"][];
+const integrationIds = ["ai", "telegram", "gmail", "calendar", "codex_rfp", "lottery"] as const satisfies readonly Integration["id"][];
 
 function isIntegrationId(value: string | null): value is Integration["id"] {
   return integrationIds.includes(value as Integration["id"]);
@@ -932,6 +939,11 @@ export function AdminOperationsPanel() {
       icon: Mail
     },
     {
+      label: "Calendar",
+      value: integrationById.get("calendar") ? statusLabel(integrationById.get("calendar")!) : "Loading",
+      icon: CalendarDays
+    },
+    {
       label: "Automation sources",
       value: integrationById.get("codex_rfp") ? statusLabel(integrationById.get("codex_rfp")!) : "Loading",
       icon: Search
@@ -1038,6 +1050,8 @@ export function AdminOperationsPanel() {
                       <p className="mt-0.5 text-xs text-stone-500">
                         {integration.id === "gmail"
                           ? `${integration.accounts?.length ?? 0} accounts`
+                          : integration.id === "calendar"
+                            ? `${integration.calendar?.accounts.length ?? 0} accounts`
                           : integration.id === "telegram"
                             ? `${integration.linkedAccounts?.length ?? 0} linked`
                             : integration.id === "codex_rfp"
@@ -1061,6 +1075,7 @@ export function AdminOperationsPanel() {
                     <button
                       type="button"
                       onClick={() => updateExpandedIntegration(open ? null : integration.id)}
+                      aria-label={`${open ? "Close" : "Open"} ${integration.name} settings`}
                       className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-300 px-2 text-sm font-medium text-stone-700 hover:bg-stone-100"
                     >
                       Settings
@@ -1264,6 +1279,13 @@ export function AdminOperationsPanel() {
                           </details>
                         ) : null}
                       </div>
+                    ) : null}
+
+                    {integration.id === "calendar" && integration.calendar ? (
+                      <CalendarIntegrationPanel
+                        calendar={integration.calendar}
+                        onRefresh={() => load({ background: true })}
+                      />
                     ) : null}
 
                     {integration.id === "codex_rfp" ? (

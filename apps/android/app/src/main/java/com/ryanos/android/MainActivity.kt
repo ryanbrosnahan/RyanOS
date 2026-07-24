@@ -26,6 +26,7 @@ class MainActivity : ComponentActivity() {
     const val SCREEN_TASKS = "tasks"
     const val SCREEN_TODAY = "tasks"
     const val SCREEN_INBOX = "inbox"
+    const val SCREEN_CALENDAR = "calendar"
     const val SCREEN_SHOPPING = "shopping"
     const val SCREEN_VOCABULARY = "vocabulary"
     const val SCREEN_CHAT = "chat"

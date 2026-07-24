@@ -222,6 +222,40 @@ data class TaskListSnapshot(
   val items: List<FocusItem> = emptyList()
 )
 
+data class CalendarSnapshot(
+  val configured: Boolean = false,
+  val enabled: Boolean = false,
+  val readOnly: Boolean = false,
+  val error: String? = null,
+  val lastSyncedAt: String? = null,
+  val date: String = "",
+  val events: List<CalendarAgendaEntry> = emptyList(),
+  val blocks: List<CalendarAgendaEntry> = emptyList(),
+  val planId: String? = null,
+  val planStatus: String? = null,
+  val unscheduledTasks: List<CalendarUnscheduledTask> = emptyList()
+)
+
+data class CalendarAgendaEntry(
+  val id: String,
+  val title: String,
+  val startAt: String,
+  val endAt: String,
+  val status: String,
+  val calendarId: String? = null,
+  val location: String? = null,
+  val source: String,
+  val pinned: Boolean = false,
+  val error: String? = null
+)
+
+data class CalendarUnscheduledTask(
+  val id: String,
+  val title: String,
+  val priority: String,
+  val dueAt: String? = null
+)
+
 data class ItemDetailsPayloadResult(
   val rawJson: String,
   val snapshot: ItemDetailsSnapshot

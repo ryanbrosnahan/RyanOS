@@ -534,6 +534,60 @@ class RyanOsRepository private constructor(context: Context) {
     }
   }
 
+  suspend fun refreshCalendar(): CalendarSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) {
+      return@withContext CalendarSnapshot(
+        configured = false,
+        readOnly = true,
+        error = "Connect RyanOS to load Calendar."
+      )
+    }
+    runCatching {
+      RyanOsApi.fetchCalendarSnapshot(settings)
+    }.getOrElse { error ->
+      CalendarSnapshot(
+        configured = true,
+        readOnly = true,
+        date = RyanOsApi.todayDateKey(settings.timezone),
+        lastSyncedAt = Instant.now().toString(),
+        error = error.userFacingMessage()
+      )
+    }
+  }
+
+  suspend fun generateCalendarPlan(): CalendarSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext refreshCalendar()
+    runCatching {
+      RyanOsApi.generateCalendarPlan(settings)
+      refreshCalendar()
+    }.getOrElse { error ->
+      CalendarSnapshot(
+        configured = true,
+        readOnly = true,
+        date = RyanOsApi.todayDateKey(settings.timezone),
+        error = error.userFacingMessage()
+      )
+    }
+  }
+
+  suspend fun publishCalendarPlan(planId: String): CalendarSnapshot = withContext(Dispatchers.IO) {
+    val settings = settingsFlow.first()
+    if (!settings.isConfigured) return@withContext refreshCalendar()
+    runCatching {
+      RyanOsApi.publishCalendarPlan(settings, planId)
+      refreshCalendar()
+    }.getOrElse { error ->
+      CalendarSnapshot(
+        configured = true,
+        readOnly = true,
+        date = RyanOsApi.todayDateKey(settings.timezone),
+        error = error.userFacingMessage()
+      )
+    }
+  }
+
   suspend fun actOnEmailProposal(proposalId: String, action: String): InboxSnapshot = withContext(Dispatchers.IO) {
     val settings = settingsFlow.first()
     if (!settings.isConfigured) return@withContext refreshInbox()

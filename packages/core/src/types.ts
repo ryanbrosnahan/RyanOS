@@ -257,6 +257,102 @@ export type ProviderAccount = {
   deletedAt?: ISODateString;
 };
 
+export type GoogleCalendar = {
+  id: UUID;
+  userId: UUID;
+  providerAccountId: UUID;
+  externalCalendarId: string;
+  name: string;
+  timezone?: string;
+  accessRole: string;
+  backgroundColor?: string;
+  primary: boolean;
+  selectedForAvailability: boolean;
+  allDayBlocksAvailability: boolean;
+  writeEnabled: boolean;
+  status: "active" | "disabled" | "error";
+  lastSyncedAt?: ISODateString;
+  lastError?: string;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type GoogleCalendarEvent = {
+  id: UUID;
+  userId: UUID;
+  providerAccountId: UUID;
+  googleCalendarId: UUID;
+  externalEventId: string;
+  iCalUid?: string;
+  title: string;
+  startAt: ISODateString;
+  endAt: ISODateString;
+  allDay: boolean;
+  transparency: "opaque" | "transparent";
+  status: string;
+  location?: string;
+  htmlLink?: string;
+  recurringEventId?: string;
+  etag?: string;
+  ryanosOwned: boolean;
+  syncedAt: ISODateString;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type TimeBlockPlanStatus =
+  | "draft"
+  | "publishing"
+  | "published"
+  | "partial"
+  | "superseded";
+
+export type TimeBlockPlan = {
+  id: UUID;
+  userId: UUID;
+  dateKey: string;
+  timezone: string;
+  status: TimeBlockPlanStatus;
+  rulePolicyId?: UUID;
+  generatedAt: ISODateString;
+  publishedAt?: ISODateString;
+  error?: string;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
+export type TimeBlockBlockStatus =
+  | "draft"
+  | "published"
+  | "failed"
+  | "removed";
+
+export type TimeBlockBlock = {
+  id: UUID;
+  userId: UUID;
+  planId: UUID;
+  itemId?: UUID;
+  googleCalendarId: UUID;
+  title: string;
+  startAt: ISODateString;
+  endAt: ISODateString;
+  status: TimeBlockBlockStatus;
+  pinned: boolean;
+  externalEventId?: string;
+  error?: string;
+  sortOrder: number;
+  metadata: JsonObject;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+  deletedAt?: ISODateString;
+};
+
 export type UserIntegrationSetting = {
   userId: UUID;
   integrationId: string;

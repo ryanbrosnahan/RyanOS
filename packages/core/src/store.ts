@@ -8,6 +8,8 @@ import type {
   EmailSenderPreference,
   EmailTriageDecision,
   ExternalSource,
+  GoogleCalendar,
+  GoogleCalendarEvent,
   Item,
   ItemChecklistItem,
   ItemEvent,
@@ -27,6 +29,8 @@ import type {
   ShoppingList,
   ShoppingListItem,
   SourceLink,
+  TimeBlockBlock,
+  TimeBlockPlan,
   UserIntegrationSetting,
   VocabularyEncounter,
   VocabularyEntry
@@ -155,6 +159,130 @@ export type ProviderAccountSummary = {
   status: string;
   accountCount: number;
   userCount: number;
+};
+
+export type GoogleCalendarUpsertData = {
+  userId: UUID;
+  providerAccountId: UUID;
+  externalCalendarId: string;
+  name: string;
+  timezone?: string;
+  accessRole?: string;
+  backgroundColor?: string;
+  primary?: boolean;
+  selectedForAvailability?: boolean;
+  allDayBlocksAvailability?: boolean;
+  writeEnabled?: boolean;
+  status?: GoogleCalendar["status"];
+  lastSyncedAt?: string;
+  lastError?: string;
+  metadata?: JsonObject;
+};
+
+export type GoogleCalendarPatch = Partial<
+  Pick<
+    GoogleCalendar,
+    | "name"
+    | "timezone"
+    | "accessRole"
+    | "backgroundColor"
+    | "primary"
+    | "selectedForAvailability"
+    | "allDayBlocksAvailability"
+    | "writeEnabled"
+    | "status"
+    | "lastSyncedAt"
+    | "lastError"
+    | "metadata"
+  >
+> & {
+  deletedAt?: string | null;
+};
+
+export type GoogleCalendarEventUpsertData = {
+  userId: UUID;
+  providerAccountId: UUID;
+  googleCalendarId: UUID;
+  externalEventId: string;
+  iCalUid?: string;
+  title: string;
+  startAt: string;
+  endAt: string;
+  allDay?: boolean;
+  transparency?: GoogleCalendarEvent["transparency"];
+  status?: string;
+  location?: string;
+  htmlLink?: string;
+  recurringEventId?: string;
+  etag?: string;
+  ryanosOwned?: boolean;
+  syncedAt?: string;
+  metadata?: JsonObject;
+};
+
+export type GoogleCalendarEventPatch = Partial<
+  Pick<
+    GoogleCalendarEvent,
+    | "title"
+    | "startAt"
+    | "endAt"
+    | "allDay"
+    | "transparency"
+    | "status"
+    | "location"
+    | "htmlLink"
+    | "recurringEventId"
+    | "etag"
+    | "ryanosOwned"
+    | "syncedAt"
+    | "metadata"
+  >
+> & {
+  deletedAt?: string | null;
+};
+
+export type TimeBlockPlanUpsertData = {
+  userId: UUID;
+  dateKey: string;
+  timezone: string;
+  status: TimeBlockPlan["status"];
+  rulePolicyId?: UUID;
+  generatedAt?: string;
+  publishedAt?: string;
+  error?: string;
+  metadata?: JsonObject;
+};
+
+export type TimeBlockPlanPatch = Partial<
+  Pick<TimeBlockPlan, "timezone" | "status" | "rulePolicyId" | "generatedAt" | "publishedAt" | "error" | "metadata">
+> & {
+  deletedAt?: string | null;
+};
+
+export type TimeBlockBlockCreateData = {
+  userId: UUID;
+  planId: UUID;
+  itemId?: UUID;
+  googleCalendarId: UUID;
+  title: string;
+  startAt: string;
+  endAt: string;
+  status?: TimeBlockBlock["status"];
+  pinned?: boolean;
+  externalEventId?: string;
+  error?: string;
+  sortOrder?: number;
+  metadata?: JsonObject;
+};
+
+export type TimeBlockBlockPatch = Partial<
+  Pick<
+    TimeBlockBlock,
+    "title" | "startAt" | "endAt" | "status" | "pinned" | "externalEventId" | "error" | "sortOrder" | "metadata"
+  >
+> & {
+  itemId?: UUID | null;
+  deletedAt?: string | null;
 };
 
 export type UserIntegrationSettingUpsertData = {
@@ -559,6 +687,14 @@ export interface RyanStore {
   getRecurrenceState(policyId: UUID): Promise<RecurrenceState | undefined>;
 
   upsertPolicy(policy: PolicyUpsertData): Promise<Policy>;
+  getPolicy(policyId: UUID): Promise<Policy | undefined>;
+  listPolicies(filters: {
+    userId: UUID;
+    type?: Policy["type"];
+    scope?: string;
+    statuses?: Policy["status"][];
+    limit?: number;
+  }): Promise<Policy[]>;
 
   getDailyPlan(userId: UUID, dateKey: string): Promise<DailyPlan | undefined>;
   listDailyPlans(filters: { userId: UUID; beforeDateKey?: string; limit?: number }): Promise<DailyPlan[]>;
@@ -571,6 +707,35 @@ export interface RyanStore {
   findProviderAccountByExternalId(provider: string, externalAccountId: string): Promise<ProviderAccount | undefined>;
   updateProviderAccount(accountId: UUID, patch: ProviderAccountPatch): Promise<ProviderAccount>;
   listProviderAccountSummaries(): Promise<ProviderAccountSummary[]>;
+  upsertGoogleCalendar(calendar: GoogleCalendarUpsertData): Promise<GoogleCalendar>;
+  updateGoogleCalendar(calendarId: UUID, patch: GoogleCalendarPatch): Promise<GoogleCalendar>;
+  getGoogleCalendar(calendarId: UUID): Promise<GoogleCalendar | undefined>;
+  listGoogleCalendars(filters: {
+    userId: UUID;
+    providerAccountId?: UUID;
+    selectedForAvailability?: boolean;
+    limit?: number;
+  }): Promise<GoogleCalendar[]>;
+  upsertGoogleCalendarEvent(event: GoogleCalendarEventUpsertData): Promise<GoogleCalendarEvent>;
+  updateGoogleCalendarEvent(eventId: UUID, patch: GoogleCalendarEventPatch): Promise<GoogleCalendarEvent>;
+  getGoogleCalendarEvent(eventId: UUID): Promise<GoogleCalendarEvent | undefined>;
+  findGoogleCalendarEvent(googleCalendarId: UUID, externalEventId: string): Promise<GoogleCalendarEvent | undefined>;
+  listGoogleCalendarEvents(filters: {
+    userId: UUID;
+    googleCalendarIds?: UUID[];
+    startsBefore?: string;
+    endsAfter?: string;
+    includeDeleted?: boolean;
+    limit?: number;
+  }): Promise<GoogleCalendarEvent[]>;
+  upsertTimeBlockPlan(plan: TimeBlockPlanUpsertData): Promise<TimeBlockPlan>;
+  updateTimeBlockPlan(planId: UUID, patch: TimeBlockPlanPatch): Promise<TimeBlockPlan>;
+  getTimeBlockPlan(planId: UUID): Promise<TimeBlockPlan | undefined>;
+  findTimeBlockPlan(userId: UUID, dateKey: string): Promise<TimeBlockPlan | undefined>;
+  createTimeBlockBlock(block: TimeBlockBlockCreateData): Promise<TimeBlockBlock>;
+  updateTimeBlockBlock(blockId: UUID, patch: TimeBlockBlockPatch): Promise<TimeBlockBlock>;
+  getTimeBlockBlock(blockId: UUID): Promise<TimeBlockBlock | undefined>;
+  listTimeBlockBlocks(filters: { userId: UUID; planId?: UUID; itemId?: UUID; limit?: number }): Promise<TimeBlockBlock[]>;
   getUserIntegrationSetting(userId: UUID, integrationId: string): Promise<UserIntegrationSetting | undefined>;
   listUserIntegrationSettings(userId: UUID): Promise<UserIntegrationSetting[]>;
   listUserIntegrationSettingsForIntegration(integrationId: string): Promise<UserIntegrationSetting[]>;

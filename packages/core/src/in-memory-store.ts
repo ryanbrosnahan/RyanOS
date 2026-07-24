@@ -12,6 +12,10 @@ import type {
   EmailTriageDecisionPatch,
   EmailTriageDecisionUpsertData,
   ExternalSourceUpsertData,
+  GoogleCalendarEventPatch,
+  GoogleCalendarEventUpsertData,
+  GoogleCalendarPatch,
+  GoogleCalendarUpsertData,
   AreaUpsertData,
   DailyPlanUpsertData,
   ItemCreateData,
@@ -41,6 +45,10 @@ import type {
   ShoppingItemCreateData,
   ShoppingItemListFilters,
   ShoppingItemPatch,
+  TimeBlockBlockCreateData,
+  TimeBlockBlockPatch,
+  TimeBlockPlanPatch,
+  TimeBlockPlanUpsertData,
   UserIntegrationSettingSummary,
   UserIntegrationSettingUpsertData,
   VocabularyEncounterCreateData,
@@ -57,6 +65,8 @@ import type {
   EmailSenderPreference,
   EmailTriageDecision,
   ExternalSource,
+  GoogleCalendar,
+  GoogleCalendarEvent,
   Item,
   ItemChecklistItem,
   ItemEvent,
@@ -76,6 +86,8 @@ import type {
   ShoppingList,
   ShoppingListItem,
   SourceLink,
+  TimeBlockBlock,
+  TimeBlockPlan,
   UserIntegrationSetting,
   VocabularyEncounter,
   VocabularyEntry
@@ -98,6 +110,10 @@ export class InMemoryRyanStore implements RyanStore {
   readonly policies = new Map<UUID, Policy>();
   readonly dailyPlans = new Map<UUID, DailyPlan>();
   readonly providerAccounts = new Map<UUID, ProviderAccount>();
+  readonly googleCalendars = new Map<UUID, GoogleCalendar>();
+  readonly googleCalendarEvents = new Map<UUID, GoogleCalendarEvent>();
+  readonly timeBlockPlans = new Map<UUID, TimeBlockPlan>();
+  readonly timeBlockBlocks = new Map<UUID, TimeBlockBlock>();
   readonly userIntegrationSettings = new Map<string, UserIntegrationSetting>();
   readonly lotteryDrawSnapshots = new Map<LotteryGameId, LotteryDrawSnapshot>();
   readonly lotteryTaskAlerts = new Map<UUID, LotteryTaskAlert>();
@@ -614,6 +630,28 @@ export class InMemoryRyanStore implements RyanStore {
     return stored;
   }
 
+  async getPolicy(policyId: UUID): Promise<Policy | undefined> {
+    return this.policies.get(policyId);
+  }
+
+  async listPolicies(filters: {
+    userId: UUID;
+    type?: Policy["type"];
+    scope?: string;
+    statuses?: Policy["status"][];
+    limit?: number;
+  }): Promise<Policy[]> {
+    return [...this.policies.values()]
+      .filter((policy) => {
+        if (policy.userId !== filters.userId || policy.deletedAt) return false;
+        if (filters.type !== undefined && policy.type !== filters.type) return false;
+        if (filters.scope !== undefined && policy.scope !== filters.scope) return false;
+        return filters.statuses === undefined || filters.statuses.includes(policy.status);
+      })
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, Math.min(Math.max(filters.limit ?? 100, 1), 500));
+  }
+
   async getDailyPlan(userId: UUID, dateKey: string): Promise<DailyPlan | undefined> {
     return [...this.dailyPlans.values()].find(
       (plan) => plan.userId === userId && plan.dateKey === dateKey && !plan.deletedAt
@@ -750,6 +788,270 @@ export class InMemoryRyanStore implements RyanStore {
         userCount: entry.users.size
       }))
       .sort((a, b) => a.provider.localeCompare(b.provider) || a.status.localeCompare(b.status));
+  }
+
+  async upsertGoogleCalendar(data: GoogleCalendarUpsertData): Promise<GoogleCalendar> {
+    const existing = [...this.googleCalendars.values()].find(
+      (calendar) =>
+        calendar.providerAccountId === data.providerAccountId &&
+        calendar.externalCalendarId === data.externalCalendarId &&
+        !calendar.deletedAt
+    );
+    const timestamp = nowIso();
+    const calendar: GoogleCalendar = {
+      ...existing,
+      id: existing?.id ?? createId("google_calendar"),
+      userId: data.userId,
+      providerAccountId: data.providerAccountId,
+      externalCalendarId: data.externalCalendarId,
+      name: data.name,
+      accessRole: data.accessRole ?? existing?.accessRole ?? "reader",
+      primary: data.primary ?? existing?.primary ?? false,
+      selectedForAvailability: data.selectedForAvailability ?? existing?.selectedForAvailability ?? false,
+      allDayBlocksAvailability: data.allDayBlocksAvailability ?? existing?.allDayBlocksAvailability ?? false,
+      writeEnabled: data.writeEnabled ?? existing?.writeEnabled ?? false,
+      status: data.status ?? existing?.status ?? "active",
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    if (data.timezone !== undefined) calendar.timezone = data.timezone;
+    if (data.backgroundColor !== undefined) calendar.backgroundColor = data.backgroundColor;
+    if (data.lastSyncedAt !== undefined) calendar.lastSyncedAt = data.lastSyncedAt;
+    if (data.lastError !== undefined) calendar.lastError = data.lastError;
+    this.googleCalendars.set(calendar.id, calendar);
+    return calendar;
+  }
+
+  async updateGoogleCalendar(calendarId: UUID, patch: GoogleCalendarPatch): Promise<GoogleCalendar> {
+    const existing = this.googleCalendars.get(calendarId);
+    if (!existing) throw new Error(`Google calendar not found: ${calendarId}`);
+    const updated = { ...existing, updatedAt: nowIso() };
+    for (const field of [
+      "name",
+      "timezone",
+      "accessRole",
+      "backgroundColor",
+      "primary",
+      "selectedForAvailability",
+      "allDayBlocksAvailability",
+      "writeEnabled",
+      "status",
+      "lastSyncedAt",
+      "lastError",
+      "metadata"
+    ] as const) {
+      if (patch[field] !== undefined) Object.assign(updated, { [field]: patch[field] });
+    }
+    if (patch.deletedAt === null) delete updated.deletedAt;
+    else if (patch.deletedAt !== undefined) updated.deletedAt = patch.deletedAt;
+    this.googleCalendars.set(calendarId, updated);
+    return updated;
+  }
+
+  async getGoogleCalendar(calendarId: UUID): Promise<GoogleCalendar | undefined> {
+    return this.googleCalendars.get(calendarId);
+  }
+
+  async listGoogleCalendars(filters: {
+    userId: UUID;
+    providerAccountId?: UUID;
+    selectedForAvailability?: boolean;
+    limit?: number;
+  }): Promise<GoogleCalendar[]> {
+    return [...this.googleCalendars.values()]
+      .filter((calendar) => {
+        if (calendar.userId !== filters.userId || calendar.deletedAt) return false;
+        if (filters.providerAccountId !== undefined && calendar.providerAccountId !== filters.providerAccountId) return false;
+        return filters.selectedForAvailability === undefined ||
+          calendar.selectedForAvailability === filters.selectedForAvailability;
+      })
+      .sort((a, b) => Number(b.primary) - Number(a.primary) || a.name.localeCompare(b.name))
+      .slice(0, Math.min(Math.max(filters.limit ?? 200, 1), 500));
+  }
+
+  async upsertGoogleCalendarEvent(data: GoogleCalendarEventUpsertData): Promise<GoogleCalendarEvent> {
+    const existing = [...this.googleCalendarEvents.values()].find(
+      (event) =>
+        event.googleCalendarId === data.googleCalendarId &&
+        event.externalEventId === data.externalEventId
+    );
+    const timestamp = nowIso();
+    const event: GoogleCalendarEvent = {
+      ...existing,
+      id: existing?.id ?? createId("google_calendar_event"),
+      userId: data.userId,
+      providerAccountId: data.providerAccountId,
+      googleCalendarId: data.googleCalendarId,
+      externalEventId: data.externalEventId,
+      title: data.title,
+      startAt: data.startAt,
+      endAt: data.endAt,
+      allDay: data.allDay ?? existing?.allDay ?? false,
+      transparency: data.transparency ?? existing?.transparency ?? "opaque",
+      status: data.status ?? existing?.status ?? "confirmed",
+      ryanosOwned: data.ryanosOwned ?? existing?.ryanosOwned ?? false,
+      syncedAt: data.syncedAt ?? timestamp,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    for (const field of ["iCalUid", "location", "htmlLink", "recurringEventId", "etag"] as const) {
+      if (data[field] !== undefined) Object.assign(event, { [field]: data[field] });
+    }
+    delete event.deletedAt;
+    this.googleCalendarEvents.set(event.id, event);
+    return event;
+  }
+
+  async updateGoogleCalendarEvent(eventId: UUID, patch: GoogleCalendarEventPatch): Promise<GoogleCalendarEvent> {
+    const existing = this.googleCalendarEvents.get(eventId);
+    if (!existing) throw new Error(`Google calendar event not found: ${eventId}`);
+    const updated = { ...existing, updatedAt: nowIso() };
+    for (const [field, value] of Object.entries(patch)) {
+      if (field === "deletedAt") continue;
+      if (value !== undefined) Object.assign(updated, { [field]: value });
+    }
+    if (patch.deletedAt === null) delete updated.deletedAt;
+    else if (patch.deletedAt !== undefined) updated.deletedAt = patch.deletedAt;
+    this.googleCalendarEvents.set(eventId, updated);
+    return updated;
+  }
+
+  async getGoogleCalendarEvent(eventId: UUID): Promise<GoogleCalendarEvent | undefined> {
+    return this.googleCalendarEvents.get(eventId);
+  }
+
+  async findGoogleCalendarEvent(googleCalendarId: UUID, externalEventId: string): Promise<GoogleCalendarEvent | undefined> {
+    return [...this.googleCalendarEvents.values()].find(
+      (event) => event.googleCalendarId === googleCalendarId && event.externalEventId === externalEventId
+    );
+  }
+
+  async listGoogleCalendarEvents(filters: {
+    userId: UUID;
+    googleCalendarIds?: UUID[];
+    startsBefore?: string;
+    endsAfter?: string;
+    includeDeleted?: boolean;
+    limit?: number;
+  }): Promise<GoogleCalendarEvent[]> {
+    return [...this.googleCalendarEvents.values()]
+      .filter((event) => {
+        if (event.userId !== filters.userId) return false;
+        if (!filters.includeDeleted && event.deletedAt) return false;
+        if (filters.googleCalendarIds !== undefined && !filters.googleCalendarIds.includes(event.googleCalendarId)) return false;
+        if (filters.startsBefore !== undefined && event.startAt >= filters.startsBefore) return false;
+        return filters.endsAfter === undefined || event.endAt > filters.endsAfter;
+      })
+      .sort((a, b) => a.startAt.localeCompare(b.startAt))
+      .slice(0, Math.min(Math.max(filters.limit ?? 1000, 1), 5000));
+  }
+
+  async upsertTimeBlockPlan(data: TimeBlockPlanUpsertData): Promise<TimeBlockPlan> {
+    const existing = await this.findTimeBlockPlan(data.userId, data.dateKey);
+    const timestamp = nowIso();
+    const plan: TimeBlockPlan = {
+      ...existing,
+      id: existing?.id ?? createId("time_block_plan"),
+      userId: data.userId,
+      dateKey: data.dateKey,
+      timezone: data.timezone,
+      status: data.status,
+      generatedAt: data.generatedAt ?? timestamp,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    for (const field of ["rulePolicyId", "publishedAt", "error"] as const) {
+      if (data[field] !== undefined) Object.assign(plan, { [field]: data[field] });
+    }
+    this.timeBlockPlans.set(plan.id, plan);
+    return plan;
+  }
+
+  async updateTimeBlockPlan(planId: UUID, patch: TimeBlockPlanPatch): Promise<TimeBlockPlan> {
+    const existing = this.timeBlockPlans.get(planId);
+    if (!existing) throw new Error(`Time block plan not found: ${planId}`);
+    const updated = { ...existing, updatedAt: nowIso() };
+    for (const [field, value] of Object.entries(patch)) {
+      if (field === "deletedAt") continue;
+      if (value !== undefined) Object.assign(updated, { [field]: value });
+    }
+    if (patch.deletedAt === null) delete updated.deletedAt;
+    else if (patch.deletedAt !== undefined) updated.deletedAt = patch.deletedAt;
+    this.timeBlockPlans.set(planId, updated);
+    return updated;
+  }
+
+  async getTimeBlockPlan(planId: UUID): Promise<TimeBlockPlan | undefined> {
+    return this.timeBlockPlans.get(planId);
+  }
+
+  async findTimeBlockPlan(userId: UUID, dateKey: string): Promise<TimeBlockPlan | undefined> {
+    return [...this.timeBlockPlans.values()].find(
+      (plan) => plan.userId === userId && plan.dateKey === dateKey && !plan.deletedAt
+    );
+  }
+
+  async createTimeBlockBlock(data: TimeBlockBlockCreateData): Promise<TimeBlockBlock> {
+    const timestamp = nowIso();
+    const block: TimeBlockBlock = {
+      id: createId("time_block_block"),
+      userId: data.userId,
+      planId: data.planId,
+      googleCalendarId: data.googleCalendarId,
+      title: data.title,
+      startAt: data.startAt,
+      endAt: data.endAt,
+      status: data.status ?? "draft",
+      pinned: data.pinned ?? false,
+      sortOrder: data.sortOrder ?? 0,
+      metadata: data.metadata ?? {},
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    for (const field of ["itemId", "externalEventId", "error"] as const) {
+      if (data[field] !== undefined) Object.assign(block, { [field]: data[field] });
+    }
+    this.timeBlockBlocks.set(block.id, block);
+    return block;
+  }
+
+  async updateTimeBlockBlock(blockId: UUID, patch: TimeBlockBlockPatch): Promise<TimeBlockBlock> {
+    const existing = this.timeBlockBlocks.get(blockId);
+    if (!existing) throw new Error(`Time block not found: ${blockId}`);
+    const updated = { ...existing, updatedAt: nowIso() };
+    for (const [field, value] of Object.entries(patch)) {
+      if (field === "deletedAt" || field === "itemId") continue;
+      if (value !== undefined) Object.assign(updated, { [field]: value });
+    }
+    if (patch.itemId === null) delete updated.itemId;
+    else if (patch.itemId !== undefined) updated.itemId = patch.itemId;
+    if (patch.deletedAt === null) delete updated.deletedAt;
+    else if (patch.deletedAt !== undefined) updated.deletedAt = patch.deletedAt;
+    this.timeBlockBlocks.set(blockId, updated);
+    return updated;
+  }
+
+  async getTimeBlockBlock(blockId: UUID): Promise<TimeBlockBlock | undefined> {
+    return this.timeBlockBlocks.get(blockId);
+  }
+
+  async listTimeBlockBlocks(filters: {
+    userId: UUID;
+    planId?: UUID;
+    itemId?: UUID;
+    limit?: number;
+  }): Promise<TimeBlockBlock[]> {
+    return [...this.timeBlockBlocks.values()]
+      .filter((block) => {
+        if (block.userId !== filters.userId || block.deletedAt) return false;
+        if (filters.planId !== undefined && block.planId !== filters.planId) return false;
+        return filters.itemId === undefined || block.itemId === filters.itemId;
+      })
+      .sort((a, b) => a.startAt.localeCompare(b.startAt) || a.sortOrder - b.sortOrder)
+      .slice(0, Math.min(Math.max(filters.limit ?? 500, 1), 2000));
   }
 
   async getUserIntegrationSetting(userId: UUID, integrationId: string): Promise<UserIntegrationSetting | undefined> {
@@ -1654,6 +1956,10 @@ export class InMemoryRyanStore implements RyanStore {
       policyCount: this.policies.size,
       dailyPlanCount: this.dailyPlans.size,
       providerAccountCount: this.providerAccounts.size,
+      googleCalendarCount: this.googleCalendars.size,
+      googleCalendarEventCount: this.googleCalendarEvents.size,
+      timeBlockPlanCount: this.timeBlockPlans.size,
+      timeBlockBlockCount: this.timeBlockBlocks.size,
       lotteryDrawSnapshotCount: this.lotteryDrawSnapshots.size,
       lotteryTaskAlertCount: this.lotteryTaskAlerts.size,
       externalSourceCount: this.externalSources.size,

@@ -41,7 +41,7 @@ import {
   type UserRole,
   type StoredMessage
 } from "@ryanos/db";
-import { nowIso, type JsonObject, type UUID } from "@ryanos/shared";
+import { createId, nowIso, type JsonObject, type UUID } from "@ryanos/shared";
 import { fromNodeHeaders } from "better-auth/node";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -62,6 +62,34 @@ import {
   type GmailClientLike
 } from "./email-triage.js";
 import { GogGmailClient } from "./gog-gmail.js";
+import {
+  CalendarConflictError,
+  GOOGLE_CALENDAR_PROVIDER,
+  TIME_BLOCK_POLICY_SCOPE,
+  calendarAccountSettings,
+  calendarPlanView,
+  createPersonalCalendarEvent,
+  deletePersonalCalendarEvent,
+  generateCalendarPlan,
+  publishCalendarPlan,
+  ruleView,
+  syncCalendarAccounts,
+  syncCalendarCatalog,
+  syncUserCalendars,
+  updatePersonalCalendarEvent
+} from "./calendar-integration.js";
+import {
+  localDateKey as calendarLocalDateKey,
+  localTime,
+  normalizeTimeBlockRule,
+  validateTimeBlockRule
+} from "./calendar-scheduling.js";
+import { GogCalendarClient, type CalendarClientLike } from "./gog-calendar.js";
+import { registerCalendarTools } from "./calendar-tools.js";
+import {
+  internalCalendarSyncPath,
+  verifyInternalCalendarSyncRequest
+} from "./internal-calendar-auth.js";
 import {
   internalEmailScanPath,
   verifyInternalEmailScanRequest
@@ -347,7 +375,7 @@ const emailAccountsQuerySchema = z.object({
   userId: z.string().default("local-owner")
 });
 
-const integrationIdSchema = z.enum(["ai", "telegram", "gmail", "codex_rfp", "lottery"]);
+const integrationIdSchema = z.enum(["ai", "telegram", "gmail", "calendar", "codex_rfp", "lottery"]);
 
 const integrationParamsSchema = z.object({
   id: integrationIdSchema
@@ -380,6 +408,10 @@ const lotterySettingsBodySchema = z.object({
 
 const internalLotteryCheckBodySchema = z.object({
   refresh: z.boolean().default(true)
+});
+
+const internalCalendarSyncBodySchema = z.object({
+  refreshCatalog: z.boolean().default(false)
 });
 
 const automationPlatformSchema = z.enum(["codex", "api", "mcp", "other"]);
@@ -439,6 +471,107 @@ const gmailAuthBodySchema = z.object({
 
 const gmailAuthCompleteBodySchema = gmailAuthBodySchema.extend({
   redirectUrl: z.string().trim().url()
+});
+
+const calendarAuthBodySchema = z.object({
+  email: z.string().trim().email()
+});
+
+const calendarAuthCompleteBodySchema = calendarAuthBodySchema.extend({
+  redirectUrl: z.string().trim().url()
+});
+
+const calendarAccountParamsSchema = z.object({
+  accountId: z.string().min(1)
+});
+
+const googleCalendarParamsSchema = z.object({
+  calendarId: z.string().min(1)
+});
+
+const calendarAccountSettingsBodySchema = z.object({
+  enabled: z.boolean()
+});
+
+const googleCalendarSettingsBodySchema = z.object({
+  selectedForAvailability: z.boolean().optional(),
+  allDayBlocksAvailability: z.boolean().optional(),
+  writeEnabled: z.boolean().optional()
+});
+
+const timeWindowSchema = z.object({
+  start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+});
+
+const timeBlockRuleBodySchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  timezone: z.string().min(1),
+  availability: z.record(z.string(), z.array(timeWindowSchema)),
+  targetCalendarId: z.string().min(1),
+  includeStarred: z.boolean().default(true),
+  includeDue: z.boolean().default(true),
+  areaIds: z.array(z.string()).default([]),
+  projectIds: z.array(z.string()).default([]),
+  bufferBeforeMinutes: z.number().int().min(0).max(180).default(15),
+  bufferAfterMinutes: z.number().int().min(0).max(180).default(15),
+  defaultEstimateMinutes: z.number().int().min(5).max(480).default(30),
+  minimumChunkMinutes: z.number().int().min(5).max(240).default(15),
+  maximumBlockMinutes: z.number().int().min(15).max(480).default(120),
+  splitTasks: z.boolean().default(true),
+  scheduledDraftTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
+  enabled: z.boolean().default(true)
+});
+
+const calendarRuleParamsSchema = z.object({
+  ruleId: z.string().min(1)
+});
+
+const calendarRangeQuerySchema = z.object({
+  from: z.string().datetime(),
+  to: z.string().datetime()
+});
+
+const calendarPlanQuerySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+});
+
+const calendarPlanGenerateBodySchema = calendarPlanQuerySchema.extend({
+  rulePolicyId: z.string().optional()
+});
+
+const calendarPlanParamsSchema = z.object({
+  planId: z.string().min(1)
+});
+
+const calendarBlockParamsSchema = calendarPlanParamsSchema.extend({
+  blockId: z.string().min(1)
+});
+
+const calendarBlockPatchBodySchema = z.object({
+  title: z.string().trim().min(1).max(500).optional(),
+  startAt: z.string().datetime().optional(),
+  endAt: z.string().datetime().optional(),
+  pinned: z.boolean().optional(),
+  removed: z.boolean().optional()
+});
+
+const calendarEventBodySchema = z.object({
+  googleCalendarId: z.string().min(1),
+  title: z.string().trim().min(1).max(500),
+  startAt: z.string().datetime(),
+  endAt: z.string().datetime(),
+  timezone: z.string().min(1),
+  description: z.string().max(10000).optional(),
+  location: z.string().max(1000).optional()
+});
+
+const calendarEventParamsSchema = z.object({
+  eventId: z.string().min(1)
+});
+
+const calendarEventPatchBodySchema = calendarEventBodySchema.omit({
+  googleCalendarId: true
 });
 
 const telegramTokenBodySchema = z.object({
@@ -1408,6 +1541,7 @@ const integrationNames: Record<IntegrationId, string> = {
   ai: "AI provider",
   telegram: "Telegram",
   gmail: "Gmail",
+  calendar: "Google Calendar",
   codex_rfp: "Automation sources",
   lottery: "Louisiana Lottery"
 };
@@ -1708,6 +1842,7 @@ export function buildApp(options: {
   ai?: AiProvider;
   store?: RyanStore;
   emailClient?: GmailClientLike;
+  calendarClient?: CalendarClientLike;
   lotterySource?: LotteryDataSource;
   authMode?: RyanOsAuthMode;
   devLocalRole?: UserRole;
@@ -1724,6 +1859,8 @@ export function buildApp(options: {
   const tools = createCoreToolRegistry(store);
   const ai = options.ai ?? createAiProviderFromEnv();
   const emailClient = options.emailClient ?? new GogGmailClient();
+  const calendarClient = options.calendarClient ?? new GogCalendarClient();
+  registerCalendarTools({ tools, store, client: calendarClient });
   const lotterySource = options.lotterySource ?? new OfficialLouisianaLotterySource();
   const authMode = options.authMode ?? authModeFromEnv();
   const devLocalRole = options.devLocalRole ?? "superadmin";
@@ -1746,7 +1883,7 @@ export function buildApp(options: {
 
   async function integrationEnabled(userId: string, integrationId: IntegrationId): Promise<boolean> {
     const setting = await store.getUserIntegrationSetting(userId as UUID, integrationId);
-    return setting?.enabled ?? integrationId !== "lottery";
+    return setting?.enabled ?? !["lottery", "calendar"].includes(integrationId);
   }
 
   async function lotteryStatusPayload(userId: UUID) {
@@ -1842,6 +1979,71 @@ export function buildApp(options: {
       }),
       notice:
         "Tickets must be purchased from a licensed retailer. Play responsibly; Louisiana Lottery players must be 21 or older."
+    };
+  }
+
+  async function calendarStatusPayload(userId: UUID) {
+    const [setting, accounts, calendars, policies] = await Promise.all([
+      store.getUserIntegrationSetting(userId, "calendar"),
+      store.listProviderAccounts({ userId, provider: GOOGLE_CALENDAR_PROVIDER, limit: 200 }),
+      store.listGoogleCalendars({ userId, limit: 500 }),
+      store.listPolicies({
+        userId,
+        type: "planning",
+        scope: TIME_BLOCK_POLICY_SCOPE,
+        limit: 100
+      })
+    ]);
+    const selectedCount = calendars.filter((calendar) => calendar.selectedForAvailability && calendar.status !== "disabled").length;
+    const writableCount = calendars.filter((calendar) => calendar.writeEnabled && calendar.status !== "disabled").length;
+    const enabledAccounts = accounts.filter(
+      (account) => account.status !== "disabled" && calendarAccountSettings(account).enabled
+    );
+    const latestSuccessAt = enabledAccounts
+      .flatMap((account) => calendarAccountSettings(account).lastSuccessAt ? [calendarAccountSettings(account).lastSuccessAt!] : [])
+      .sort()
+      .at(-1);
+    const stale = enabledAccounts.length > 0 && (
+      !latestSuccessAt || Date.now() - new Date(latestSuccessAt).getTime() > 30 * 60_000
+    );
+    const accountErrors = enabledAccounts.flatMap((account) => {
+      const error = calendarAccountSettings(account).lastError;
+      return error ? [{ accountId: account.id, error }] : [];
+    });
+    const enabled = setting?.enabled ?? false;
+    const ready = enabled && enabledAccounts.length > 0 && selectedCount > 0 && writableCount === 1 && !stale && accountErrors.length === 0;
+    const warnings: string[] = [];
+    if (enabled && enabledAccounts.length === 0) warnings.push("Connect at least one Google Calendar account.");
+    if (enabled && selectedCount === 0) warnings.push("Select at least one calendar for availability.");
+    if (enabled && writableCount !== 1) warnings.push("Choose exactly one default writable calendar.");
+    if (enabled && stale) warnings.push("Calendar synchronization is stale.");
+    for (const failure of accountErrors) warnings.push(failure.error);
+    return {
+      configured: accounts.length > 0,
+      ready,
+      setupRequired: enabled && !ready,
+      warnings,
+      settings: {
+        enabled,
+        metadata: setting?.metadata ?? {}
+      },
+      health: {
+        status: accounts.length === 0 ? "not_configured" : ready ? "healthy" : "degraded",
+        stale,
+        lastSuccessAt: latestSuccessAt,
+        accountErrors
+      },
+      accounts: accounts.map((account) => ({
+        id: account.id,
+        email: account.email,
+        displayName: account.displayName,
+        status: account.status,
+        scopes: account.scopes,
+        settings: calendarAccountSettings(account),
+        calendars: calendars.filter((calendar) => calendar.providerAccountId === account.id)
+      })),
+      calendars,
+      rules: policies.map(ruleView)
     };
   }
 
@@ -2465,6 +2667,7 @@ export function buildApp(options: {
       path === "/v1/automation/codex-automations/ingest" ||
       path === "/v1/automation/rfp-reports/ingest" ||
       path === internalEmailScanPath ||
+      path === internalCalendarSyncPath ||
       path === internalLotteryCheckPath
     );
   }
@@ -2678,6 +2881,76 @@ export function buildApp(options: {
     });
   });
 
+  app.post(internalCalendarSyncPath, async (request, reply) => {
+    const bodyText = JSON.stringify(request.body ?? {});
+    const loadedVault = await loadSecretVaultFromEnv();
+    const timestampHeader = request.headers["x-ryanos-internal-timestamp"];
+    const signatureHeader = request.headers["x-ryanos-internal-signature"];
+    const timestamp = typeof timestampHeader === "string" ? timestampHeader : undefined;
+    const signature = typeof signatureHeader === "string" ? signatureHeader : undefined;
+    if (!loadedVault.vault) {
+      reply.code(503);
+      return { error: "Internal calendar sync authentication is not configured." };
+    }
+    if (!verifyInternalCalendarSyncRequest({
+      masterKey: loadedVault.vault.key,
+      body: bodyText,
+      timestamp,
+      signature
+    })) {
+      reply.code(401);
+      return { error: "Invalid or expired internal calendar sync signature." };
+    }
+    const body = internalCalendarSyncBodySchema.parse(request.body ?? {});
+    const settings = await store.listUserIntegrationSettingsForIntegration("calendar");
+    const userIds = settings.filter((setting) => setting.enabled).map((setting) => setting.userId);
+    const results: Array<Record<string, unknown>> = [];
+    for (const userId of userIds) {
+      try {
+        const sync = await syncUserCalendars({
+          store,
+          client: calendarClient,
+          userId,
+          refreshCatalog: body.refreshCatalog
+        });
+        const policies = await store.listPolicies({
+          userId,
+          type: "planning",
+          scope: TIME_BLOCK_POLICY_SCOPE,
+          statuses: ["active"],
+          limit: 100
+        });
+        const generatedPlans = [];
+        for (const policy of policies) {
+          const rule = normalizeTimeBlockRule(policy.rules);
+          if (!rule.scheduledDraftTime) continue;
+          const dateKey = calendarLocalDateKey(new Date(), rule.timezone);
+          const currentTime = localTime(new Date(), rule.timezone);
+          if (currentTime < rule.scheduledDraftTime) continue;
+          const existing = await store.findTimeBlockPlan(userId, dateKey);
+          if (existing) continue;
+          generatedPlans.push(await generateCalendarPlan({
+            store,
+            userId,
+            dateKey,
+            rulePolicyId: policy.id
+          }));
+        }
+        results.push({
+          userId,
+          sync,
+          generatedPlanIds: generatedPlans.map((entry) => entry.plan.id)
+        });
+      } catch (error) {
+        results.push({
+          userId,
+          error: (error instanceof Error ? error.message : String(error)).slice(0, 500)
+        });
+      }
+    }
+    return { usersDiscovered: userIds.length, results };
+  });
+
   app.get("/v1/tools", async () => ({
     tools: tools.list()
   }));
@@ -2722,9 +2995,10 @@ export function buildApp(options: {
     if (!requireSuperadmin(request, reply)) return;
     const aiStatus = await ai.getStatus();
     const userId = currentUserId(request) as UUID;
-    const [gmailSetup, scannerHealth] = await Promise.all([
+    const [gmailSetup, scannerHealth, calendarStatus] = await Promise.all([
       gmailSetupStatus(emailClient),
-      emailScannerHealth(store, userId)
+      emailScannerHealth(store, userId),
+      calendarStatusPayload(userId)
     ]);
     const gmailWarnings = scannerHealth.status === "degraded"
       ? [
@@ -2744,6 +3018,15 @@ export function buildApp(options: {
           warnings: gmailWarnings,
           scannerHealth
         },
+        {
+          id: "calendar",
+          name: integrationNames.calendar,
+          configured: calendarStatus.configured,
+          ready: calendarStatus.ready,
+          setupRequired: calendarStatus.setupRequired,
+          setupActions: [],
+          warnings: calendarStatus.warnings
+        },
         await codexRfpSetupStatus(userId)
       ]
     };
@@ -2759,6 +3042,7 @@ export function buildApp(options: {
       codexRfpSetup,
       codexRfpStatus,
       lotteryStatus,
+      calendarStatus,
       settings,
       gmailAccounts,
       gmailCounts,
@@ -2775,6 +3059,7 @@ export function buildApp(options: {
       codexRfpSetupStatus(userId as UUID),
       codexRfpStatusPayload(userId as UUID),
       lotteryStatusPayload(userId as UUID),
+      calendarStatusPayload(userId as UUID),
       store.listUserIntegrationSettings(userId as UUID),
       store.listProviderAccounts({
         userId: userId as UUID,
@@ -2797,7 +3082,7 @@ export function buildApp(options: {
 
     function integrationView(id: IntegrationId, setup: SetupStatus, extra: Record<string, unknown> = {}) {
       const setting = settingsById.get(id);
-      const enabled = setting?.enabled ?? id !== "lottery";
+      const enabled = setting?.enabled ?? !["lottery", "calendar"].includes(id);
       const visibleSetup = setupForRole(setup, role);
       return {
         id,
@@ -2867,6 +3152,17 @@ export function buildApp(options: {
           accounts: await Promise.all(gmailAccounts.map((account) => gmailAccountView(store, account))),
           canManageDeployment: role === "superadmin"
         }),
+        integrationView("calendar", {
+          id: "calendar",
+          name: integrationNames.calendar,
+          configured: calendarStatus.configured,
+          ready: calendarStatus.ready,
+          setupRequired: calendarStatus.setupRequired,
+          setupActions: [],
+          warnings: calendarStatus.warnings
+        }, {
+          calendar: calendarStatus
+        }),
         integrationView("codex_rfp", codexRfpSetup, {
           endpointPath: codexRfpStatus.endpointPath,
           legacyEndpointPaths: codexRfpStatus.legacyEndpointPaths,
@@ -2892,8 +3188,9 @@ export function buildApp(options: {
   app.patch("/v1/integrations/:id/settings", async (request) => {
     const params = integrationParamsSchema.parse(request.params);
     const body = integrationSettingsBodySchema.parse(request.body ?? {});
+    const userId = currentUserId(request as RyanOsRequest) as UUID;
     const setting = await store.upsertUserIntegrationSetting({
-      userId: body.userId as UUID,
+      userId,
       integrationId: params.id,
       enabled: body.enabled
     });
@@ -2901,13 +3198,460 @@ export function buildApp(options: {
       await runLotteryCheck({
         store,
         source: lotterySource,
-        userId: body.userId as UUID,
+        userId,
         refresh: false
       });
     }
     return {
       setting
     };
+  });
+
+  app.get("/v1/integrations/calendar", async (request: RyanOsRequest) => {
+    return calendarStatusPayload(currentUserId(request) as UUID);
+  });
+
+  app.post("/v1/integrations/calendar/auth/start", async (request: RyanOsRequest, reply) => {
+    const body = calendarAuthBodySchema.parse(request.body ?? {});
+    const userId = currentUserId(request) as UUID;
+    const existing = await store.findProviderAccountByExternalId(GOOGLE_CALENDAR_PROVIDER, body.email);
+    if (existing && existing.userId !== userId) {
+      reply.code(409);
+      return { error: "That Google Calendar account is already linked to another RyanOS user." };
+    }
+    const gmailAccount = await store.findProviderAccountByExternalId("gmail", body.email);
+    const includeGmail = gmailAccount?.userId === userId;
+    try {
+      const result = await calendarClient.startRemoteAuth({ email: body.email, includeGmail });
+      return {
+        authUrl: result.authUrl,
+        includeGmail,
+        instructions: [
+          "Open the Google authorization URL.",
+          includeGmail
+            ? "Approve Calendar access; RyanOS will keep Gmail read-only."
+            : "Approve Google Calendar access.",
+          "Copy the final redirect URL and paste it back into RyanOS."
+        ]
+      };
+    } catch (error) {
+      reply.code(503);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.post("/v1/integrations/calendar/auth/complete", async (request: RyanOsRequest, reply) => {
+    const body = calendarAuthCompleteBodySchema.parse(request.body ?? {});
+    const userId = currentUserId(request) as UUID;
+    const gmailAccount = await store.findProviderAccountByExternalId("gmail", body.email);
+    const includeGmail = gmailAccount?.userId === userId;
+    try {
+      await calendarClient.completeRemoteAuth({
+        email: body.email,
+        redirectUrl: body.redirectUrl,
+        includeGmail
+      });
+      const accounts = await syncCalendarAccounts({
+        store,
+        client: calendarClient,
+        userId,
+        accountEmail: body.email,
+        includeNewAccounts: true
+      });
+      const account = accounts[0];
+      if (!account) {
+        reply.code(404);
+        return { error: "Calendar authorization completed, but RyanOS could not sync the account." };
+      }
+      await syncCalendarCatalog({ store, client: calendarClient, account });
+      await syncUserCalendars({
+        store,
+        client: calendarClient,
+        userId,
+        refreshCatalog: false
+      });
+      if (includeGmail) {
+        await syncGmailAccounts({
+          store,
+          client: emailClient,
+          userId,
+          accountEmail: body.email,
+          includeNewAccounts: false
+        });
+      }
+      await store.upsertUserIntegrationSetting({
+        userId,
+        integrationId: "calendar",
+        enabled: true
+      });
+      return calendarStatusPayload(userId);
+    } catch (error) {
+      reply.code(503);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.post("/v1/integrations/calendar/sync", async (request: RyanOsRequest, reply) => {
+    const userId = currentUserId(request) as UUID;
+    try {
+      await syncCalendarAccounts({
+        store,
+        client: calendarClient,
+        userId,
+        includeNewAccounts: false
+      });
+      const result = await syncUserCalendars({
+        store,
+        client: calendarClient,
+        userId,
+        refreshCatalog: true
+      });
+      return {
+        result,
+        ...(await calendarStatusPayload(userId))
+      };
+    } catch (error) {
+      reply.code(503);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.patch("/v1/integrations/calendar/accounts/:accountId", async (request: RyanOsRequest, reply) => {
+    const params = calendarAccountParamsSchema.parse(request.params);
+    const body = calendarAccountSettingsBodySchema.parse(request.body ?? {});
+    const userId = currentUserId(request) as UUID;
+    const account = await store.getProviderAccount(params.accountId);
+    if (!account || account.userId !== userId || account.provider !== GOOGLE_CALENDAR_PROVIDER) {
+      reply.code(404);
+      return { error: "Calendar account not found." };
+    }
+    await store.updateProviderAccount(account.id, {
+      status: body.enabled ? "active" : "disabled",
+      metadata: asJsonObject({
+        ...account.metadata,
+        calendar: {
+          ...(asRecord(account.metadata.calendar) ?? {}),
+          enabled: body.enabled
+        }
+      })
+    });
+    return calendarStatusPayload(userId);
+  });
+
+  app.patch("/v1/integrations/calendar/calendars/:calendarId", async (request: RyanOsRequest, reply) => {
+    const params = googleCalendarParamsSchema.parse(request.params);
+    const body = googleCalendarSettingsBodySchema.parse(request.body ?? {});
+    const userId = currentUserId(request) as UUID;
+    const calendar = await store.getGoogleCalendar(params.calendarId);
+    if (!calendar || calendar.userId !== userId) {
+      reply.code(404);
+      return { error: "Calendar not found." };
+    }
+    if (body.writeEnabled === true && !["owner", "writer"].includes(calendar.accessRole)) {
+      reply.code(400);
+      return { error: "This calendar is not writable." };
+    }
+    if (body.writeEnabled === true) {
+      const all = await store.listGoogleCalendars({ userId, limit: 500 });
+      await Promise.all(
+        all
+          .filter((candidate) => candidate.id !== calendar.id && candidate.writeEnabled)
+          .map((candidate) => store.updateGoogleCalendar(candidate.id, { writeEnabled: false }))
+      );
+    }
+    await store.updateGoogleCalendar(calendar.id, {
+      ...(body.selectedForAvailability !== undefined
+        ? { selectedForAvailability: body.selectedForAvailability }
+        : {}),
+      ...(body.allDayBlocksAvailability !== undefined
+        ? { allDayBlocksAvailability: body.allDayBlocksAvailability }
+        : {}),
+      ...(body.writeEnabled !== undefined ? { writeEnabled: body.writeEnabled } : {})
+    });
+    return calendarStatusPayload(userId);
+  });
+
+  app.get("/v1/calendar/rules", async (request: RyanOsRequest) => {
+    const userId = currentUserId(request) as UUID;
+    const policies = await store.listPolicies({
+      userId,
+      type: "planning",
+      scope: TIME_BLOCK_POLICY_SCOPE,
+      limit: 100
+    });
+    return { rules: policies.map(ruleView) };
+  });
+
+  app.post("/v1/calendar/rules", async (request: RyanOsRequest, reply) => {
+    const body = timeBlockRuleBodySchema.parse(request.body ?? {});
+    const userId = currentUserId(request) as UUID;
+    const rule = normalizeTimeBlockRule(body);
+    const validation = validateTimeBlockRule(rule);
+    if (validation) {
+      reply.code(400);
+      return { error: validation };
+    }
+    const target = await store.getGoogleCalendar(rule.targetCalendarId);
+    if (!target || target.userId !== userId || !target.writeEnabled) {
+      reply.code(400);
+      return { error: "Choose the user's writable target calendar." };
+    }
+    const policy = await store.upsertPolicy({
+      userId,
+      type: "planning",
+      scope: TIME_BLOCK_POLICY_SCOPE,
+      scopeRef: createId("calendar_rule"),
+      priority: 0,
+      status: body.enabled ? "active" : "disabled",
+      rules: asJsonObject(rule)
+    });
+    return ruleView(policy);
+  });
+
+  app.put("/v1/calendar/rules/:ruleId", async (request: RyanOsRequest, reply) => {
+    const params = calendarRuleParamsSchema.parse(request.params);
+    const body = timeBlockRuleBodySchema.parse(request.body ?? {});
+    const userId = currentUserId(request) as UUID;
+    const existing = await store.getPolicy(params.ruleId);
+    if (!existing || existing.userId !== userId || existing.scope !== TIME_BLOCK_POLICY_SCOPE) {
+      reply.code(404);
+      return { error: "Calendar rule not found." };
+    }
+    const rule = normalizeTimeBlockRule(body);
+    const validation = validateTimeBlockRule(rule);
+    if (validation) {
+      reply.code(400);
+      return { error: validation };
+    }
+    const target = await store.getGoogleCalendar(rule.targetCalendarId);
+    if (!target || target.userId !== userId || !target.writeEnabled) {
+      reply.code(400);
+      return { error: "Choose the user's writable target calendar." };
+    }
+    const policy = await store.upsertPolicy({
+      userId,
+      type: "planning",
+      scope: TIME_BLOCK_POLICY_SCOPE,
+      ...(existing.scopeRef ? { scopeRef: existing.scopeRef } : {}),
+      priority: existing.priority,
+      status: body.enabled ? "active" : "disabled",
+      rules: asJsonObject(rule)
+    });
+    return ruleView(policy);
+  });
+
+  app.delete("/v1/calendar/rules/:ruleId", async (request: RyanOsRequest, reply) => {
+    const params = calendarRuleParamsSchema.parse(request.params);
+    const userId = currentUserId(request) as UUID;
+    const existing = await store.getPolicy(params.ruleId);
+    if (!existing || existing.userId !== userId || existing.scope !== TIME_BLOCK_POLICY_SCOPE) {
+      reply.code(404);
+      return { error: "Calendar rule not found." };
+    }
+    const policy = await store.upsertPolicy({
+      userId,
+      type: "planning",
+      scope: TIME_BLOCK_POLICY_SCOPE,
+      ...(existing.scopeRef ? { scopeRef: existing.scopeRef } : {}),
+      priority: existing.priority,
+      status: "disabled",
+      rules: existing.rules
+    });
+    return ruleView(policy);
+  });
+
+  app.get("/v1/calendar/events", async (request: RyanOsRequest, reply) => {
+    const query = calendarRangeQuerySchema.parse(request.query);
+    const userId = currentUserId(request) as UUID;
+    const from = new Date(query.from);
+    const to = new Date(query.to);
+    if (to <= from || to.getTime() - from.getTime() > 93 * 86_400_000) {
+      reply.code(400);
+      return { error: "Calendar range must be positive and no longer than 93 days." };
+    }
+    const calendars = await store.listGoogleCalendars({
+      userId,
+      selectedForAvailability: true,
+      limit: 500
+    });
+    const events = await store.listGoogleCalendarEvents({
+      userId,
+      googleCalendarIds: calendars.map((calendar) => calendar.id),
+      startsBefore: query.to,
+      endsAfter: query.from,
+      limit: 5000
+    });
+    return { calendars, events };
+  });
+
+  app.get("/v1/calendar/events/:eventId/details", async (request: RyanOsRequest, reply) => {
+    const params = calendarEventParamsSchema.parse(request.params);
+    const userId = currentUserId(request) as UUID;
+    const event = await store.getGoogleCalendarEvent(params.eventId);
+    const calendar = event ? await store.getGoogleCalendar(event.googleCalendarId) : undefined;
+    const account = calendar ? await store.getProviderAccount(calendar.providerAccountId) : undefined;
+    if (!event || event.userId !== userId || !calendar || !account?.email) {
+      reply.code(404);
+      return { error: "Calendar event not found." };
+    }
+    try {
+      const remote = await calendarClient.getEvent({
+        accountEmail: account.email,
+        externalCalendarId: calendar.externalCalendarId,
+        externalEventId: event.externalEventId
+      });
+      return {
+        event,
+        description: remote.description,
+        attendees: remote.attendees ?? []
+      };
+    } catch (error) {
+      reply.code(503);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.post("/v1/calendar/events", async (request: RyanOsRequest, reply) => {
+    const body = calendarEventBodySchema.parse(request.body ?? {});
+    const userId = currentUserId(request) as UUID;
+    if (new Date(body.endAt) <= new Date(body.startAt)) {
+      reply.code(400);
+      return { error: "Event end must be after its start." };
+    }
+    try {
+      const event = await createPersonalCalendarEvent({
+        store,
+        client: calendarClient,
+        userId,
+        googleCalendarId: body.googleCalendarId,
+        title: body.title,
+        startAt: body.startAt,
+        endAt: body.endAt,
+        timezone: body.timezone,
+        ...(body.description !== undefined ? { description: body.description } : {}),
+        ...(body.location !== undefined ? { location: body.location } : {})
+      });
+      return { event };
+    } catch (error) {
+      reply.code(400);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.put("/v1/calendar/events/:eventId", async (request: RyanOsRequest, reply) => {
+    const params = calendarEventParamsSchema.parse(request.params);
+    const body = calendarEventPatchBodySchema.parse(request.body ?? {});
+    const userId = currentUserId(request) as UUID;
+    if (new Date(body.endAt) <= new Date(body.startAt)) {
+      reply.code(400);
+      return { error: "Event end must be after its start." };
+    }
+    try {
+      const event = await updatePersonalCalendarEvent({
+        store,
+        client: calendarClient,
+        userId,
+        eventId: params.eventId,
+        title: body.title,
+        startAt: body.startAt,
+        endAt: body.endAt,
+        timezone: body.timezone,
+        ...(body.description !== undefined ? { description: body.description } : {}),
+        ...(body.location !== undefined ? { location: body.location } : {})
+      });
+      return { event };
+    } catch (error) {
+      reply.code(400);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.delete("/v1/calendar/events/:eventId", async (request: RyanOsRequest, reply) => {
+    const params = calendarEventParamsSchema.parse(request.params);
+    try {
+      await deletePersonalCalendarEvent({
+        store,
+        client: calendarClient,
+        userId: currentUserId(request) as UUID,
+        eventId: params.eventId
+      });
+      return { status: "deleted" };
+    } catch (error) {
+      reply.code(400);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.get("/v1/calendar/plans", async (request: RyanOsRequest) => {
+    const query = calendarPlanQuerySchema.parse(request.query);
+    return calendarPlanView(store, currentUserId(request) as UUID, query.date);
+  });
+
+  app.post("/v1/calendar/plans/generate", async (request: RyanOsRequest, reply) => {
+    const body = calendarPlanGenerateBodySchema.parse(request.body ?? {});
+    try {
+      return await generateCalendarPlan({
+        store,
+        userId: currentUserId(request) as UUID,
+        dateKey: body.date,
+        ...(body.rulePolicyId ? { rulePolicyId: body.rulePolicyId } : {})
+      });
+    } catch (error) {
+      reply.code(400);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  app.patch("/v1/calendar/plans/:planId/blocks/:blockId", async (request: RyanOsRequest, reply) => {
+    const params = calendarBlockParamsSchema.parse(request.params);
+    const body = calendarBlockPatchBodySchema.parse(request.body ?? {});
+    const userId = currentUserId(request) as UUID;
+    const [plan, block] = await Promise.all([
+      store.getTimeBlockPlan(params.planId),
+      store.getTimeBlockBlock(params.blockId)
+    ]);
+    if (!plan || plan.userId !== userId || !block || block.userId !== userId || block.planId !== plan.id) {
+      reply.code(404);
+      return { error: "Time block not found." };
+    }
+    if (block.status === "published") {
+      reply.code(409);
+      return { error: "Move a published block in Google Calendar; RyanOS will preserve and pin that edit." };
+    }
+    const startAt = body.startAt ?? block.startAt;
+    const endAt = body.endAt ?? block.endAt;
+    if (new Date(endAt) <= new Date(startAt)) {
+      reply.code(400);
+      return { error: "Block end must be after its start." };
+    }
+    const updated = await store.updateTimeBlockBlock(block.id, body.removed
+      ? { status: "removed", deletedAt: nowIso() }
+      : {
+          ...(body.title !== undefined ? { title: body.title } : {}),
+          ...(body.startAt !== undefined ? { startAt: body.startAt } : {}),
+          ...(body.endAt !== undefined ? { endAt: body.endAt } : {}),
+          ...(body.pinned !== undefined ? { pinned: body.pinned } : {})
+        });
+    return { block: updated };
+  });
+
+  app.post("/v1/calendar/plans/:planId/publish", async (request: RyanOsRequest, reply) => {
+    const params = calendarPlanParamsSchema.parse(request.params);
+    try {
+      return await publishCalendarPlan({
+        store,
+        client: calendarClient,
+        userId: currentUserId(request) as UUID,
+        planId: params.planId
+      });
+    } catch (error) {
+      if (error instanceof CalendarConflictError) {
+        reply.code(409);
+        return { error: error.message, conflicts: error.conflicts };
+      }
+      reply.code(400);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
   });
 
   app.get("/v1/integrations/lottery", async (request: RyanOsRequest) => {

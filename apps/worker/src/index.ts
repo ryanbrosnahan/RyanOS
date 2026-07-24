@@ -10,6 +10,10 @@ import {
   internalLotteryCheckPath,
   signInternalLotteryCheckRequest
 } from "./internal-lottery-auth.js";
+import {
+  internalCalendarSyncPath,
+  signInternalCalendarSyncRequest
+} from "./internal-calendar-auth.js";
 
 const apiUrl = process.env.RYANOS_API_URL?.trim() || "http://api:4000";
 const codexAutomationIngestToken = process.env.RYANOS_CODEX_AUTOMATION_INGEST_TOKEN?.trim()
@@ -22,6 +26,9 @@ const emailScanIntervalMinutes = Math.min(
 const lotteryCheckEnabled = process.env.LOTTERY_INTEGRATION_ENABLED !== "false";
 const lotteryCheckIntervalMinutes = 15;
 const lotteryRefreshIntervalMinutes = 60;
+const calendarSyncEnabled = process.env.CALENDAR_INTEGRATION_ENABLED !== "false";
+const calendarSyncIntervalMinutes = 15;
+const calendarCatalogRefreshIntervalMinutes = 60;
 const rfpReportIngestEnabled = (
   process.env.CODEX_AUTOMATION_REPORT_INGEST_ENABLED
     ?? process.env.RFP_REPORT_INGEST_ENABLED
@@ -108,6 +115,11 @@ const tasks: TaskList = {
     const result = await requestLotteryCheck({ refresh: input.refresh !== false });
     helpers.logger.info(`Lottery check result: ${JSON.stringify(result)}`);
   },
+  "ryanos.calendar.sync": async (payload, helpers) => {
+    const input = asRecord(payload);
+    const result = await requestCalendarSync({ refreshCatalog: input.refreshCatalog === true });
+    helpers.logger.info(`Calendar sync result: ${JSON.stringify(result)}`);
+  },
   "ryanos.codex_automations.ingest": async (payload, helpers) => {
     const input = asRecord(payload);
     const sources = Array.isArray(input.sources)
@@ -182,6 +194,26 @@ async function requestLotteryCheck(body: Record<string, unknown>): Promise<unkno
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(`Lottery check returned HTTP ${response.status}: ${JSON.stringify(result)}`);
+  }
+  return result;
+}
+
+async function requestCalendarSync(body: Record<string, unknown>): Promise<unknown> {
+  const serializedBody = JSON.stringify(body);
+  const masterKey = await loadInternalEmailMasterKey();
+  const signed = signInternalCalendarSyncRequest(masterKey, serializedBody);
+  const response = await fetch(`${apiUrl}${internalCalendarSyncPath}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-ryanos-internal-timestamp": signed.timestamp,
+      "x-ryanos-internal-signature": signed.signature
+    },
+    body: serializedBody
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`Calendar sync returned HTTP ${response.status}: ${JSON.stringify(result)}`);
   }
   return result;
 }
@@ -272,6 +304,26 @@ if (lotteryCheckEnabled) {
   setInterval(() => {
     void runScheduledLotteryCheck();
   }, lotteryCheckIntervalMinutes * 60_000);
+}
+
+if (calendarSyncEnabled) {
+  let lastCatalogRefreshAt = 0;
+  const runScheduledCalendarSync = async () => {
+    const refreshCatalog = Date.now() - lastCatalogRefreshAt >= calendarCatalogRefreshIntervalMinutes * 60_000;
+    try {
+      const result = await requestCalendarSync({ refreshCatalog });
+      if (refreshCatalog) lastCatalogRefreshAt = Date.now();
+      console.log(`RyanOS scheduled calendar sync completed: ${JSON.stringify(result)}`);
+    } catch (err) {
+      console.error(`RyanOS scheduled calendar sync failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  setTimeout(() => {
+    void runScheduledCalendarSync();
+  }, 90_000);
+  setInterval(() => {
+    void runScheduledCalendarSync();
+  }, calendarSyncIntervalMinutes * 60_000);
 }
 
 const reportSources = configuredReportSources();

@@ -509,6 +509,102 @@ export const providerAccounts = pgTable("provider_accounts", {
   )
 }));
 
+export const googleCalendars = pgTable("google_calendars", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  providerAccountId: uuid("provider_account_id").notNull().references(() => providerAccounts.id),
+  externalCalendarId: text("external_calendar_id").notNull(),
+  name: text("name").notNull(),
+  timezone: text("timezone"),
+  accessRole: text("access_role").notNull().default("reader"),
+  backgroundColor: text("background_color"),
+  primary: boolean("primary").notNull().default(false),
+  selectedForAvailability: boolean("selected_for_availability").notNull().default(false),
+  allDayBlocksAvailability: boolean("all_day_blocks_availability").notNull().default(false),
+  writeEnabled: boolean("write_enabled").notNull().default(false),
+  status: text("status").notNull().default("active"),
+  lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+  lastError: text("last_error"),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  accountExternalIdx: uniqueIndex("google_calendars_account_external_idx")
+    .on(table.providerAccountId, table.externalCalendarId),
+  userSelectedIdx: index("google_calendars_user_selected_idx")
+    .on(table.userId, table.selectedForAvailability)
+}));
+
+export const googleCalendarEvents = pgTable("google_calendar_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  providerAccountId: uuid("provider_account_id").notNull().references(() => providerAccounts.id),
+  googleCalendarId: uuid("google_calendar_id").notNull().references(() => googleCalendars.id),
+  externalEventId: text("external_event_id").notNull(),
+  iCalUid: text("ical_uid"),
+  title: text("title").notNull(),
+  startAt: timestamp("start_at", { withTimezone: true }).notNull(),
+  endAt: timestamp("end_at", { withTimezone: true }).notNull(),
+  allDay: boolean("all_day").notNull().default(false),
+  transparency: text("transparency").notNull().default("opaque"),
+  status: text("status").notNull().default("confirmed"),
+  location: text("location"),
+  htmlLink: text("html_link"),
+  recurringEventId: text("recurring_event_id"),
+  etag: text("etag"),
+  ryanosOwned: boolean("ryanos_owned").notNull().default(false),
+  syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  calendarExternalIdx: uniqueIndex("google_calendar_events_calendar_external_idx")
+    .on(table.googleCalendarId, table.externalEventId),
+  userRangeIdx: index("google_calendar_events_user_range_idx")
+    .on(table.userId, table.startAt, table.endAt)
+}));
+
+export const timeBlockPlans = pgTable("time_block_plans", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  dateKey: text("date_key").notNull(),
+  timezone: text("timezone").notNull(),
+  status: text("status").notNull().default("draft"),
+  rulePolicyId: uuid("rule_policy_id").references(() => policies.id),
+  generatedAt: timestamp("generated_at", { withTimezone: true }).notNull().defaultNow(),
+  publishedAt: timestamp("published_at", { withTimezone: true }),
+  error: text("error"),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  userDateIdx: uniqueIndex("time_block_plans_user_date_idx")
+    .on(table.userId, table.dateKey)
+    .where(sql`${table.deletedAt} is null`)
+}));
+
+export const timeBlockBlocks = pgTable("time_block_blocks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  planId: uuid("plan_id").notNull().references(() => timeBlockPlans.id),
+  itemId: uuid("item_id").references(() => items.id),
+  googleCalendarId: uuid("google_calendar_id").notNull().references(() => googleCalendars.id),
+  title: text("title").notNull(),
+  startAt: timestamp("start_at", { withTimezone: true }).notNull(),
+  endAt: timestamp("end_at", { withTimezone: true }).notNull(),
+  status: text("status").notNull().default("draft"),
+  pinned: boolean("pinned").notNull().default(false),
+  externalEventId: text("external_event_id"),
+  error: text("error"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  metadata: jsonb("metadata").notNull().default({}),
+  ...timestamps,
+  ...softDelete
+}, (table) => ({
+  planOrderIdx: index("time_block_blocks_plan_order_idx").on(table.planId, table.sortOrder),
+  userItemIdx: index("time_block_blocks_user_item_idx").on(table.userId, table.itemId)
+}));
+
 export const userIntegrationSettings = pgTable("user_integration_settings", {
   userId: uuid("user_id").notNull().references(() => users.id),
   integrationId: text("integration_id").notNull(),

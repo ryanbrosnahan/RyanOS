@@ -38,3 +38,65 @@ select {
 .ryanos-clamp-3 {
   -webkit-line-clamp: 3;
 }
+
+.icon-button {
+  display: inline-flex;
+  height: 2.25rem;
+  width: 2.25rem;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d6d3d1;
+  border-radius: 0.375rem;
+  background: white;
+  color: #57534e;
+}
+
+.icon-button:hover {
+  background: #f5f5f4;
+  color: #0c0a09;
+}
+
+.primary-button,
+.secondary-button {
+  display: inline-flex;
+  height: 2.25rem;
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: 0.375rem;
+  padding: 0 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.primary-button {
+  background: #0c0a09;
+  color: white;
+}
+
+.secondary-button {
+  border: 1px solid #d6d3d1;
+  background: white;
+  color: #44403c;
+}
+
+.primary-button:disabled,
+.secondary-button:disabled,
+.icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.field {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 2.5rem;
+  margin-top: 0.25rem;
+  border: 1px solid #d6d3d1;
+  border-radius: 0.375rem;
+  background: white;
+  padding: 0 0.75rem;
+  color: #1c1917;
+  font-size: 0.875rem;
+}

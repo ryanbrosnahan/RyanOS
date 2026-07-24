@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, ilike, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
   AuditLog,
@@ -20,6 +20,12 @@ import type {
   EmailTriageDecisionUpsertData,
   ExternalSource,
   ExternalSourceUpsertData,
+  GoogleCalendar,
+  GoogleCalendarEvent,
+  GoogleCalendarEventPatch,
+  GoogleCalendarEventUpsertData,
+  GoogleCalendarPatch,
+  GoogleCalendarUpsertData,
   Item,
   ItemChecklistItem,
   ItemChecklistItemCreateData,
@@ -69,6 +75,12 @@ import type {
   SearchMatch,
   SourceLink,
   SourceLinkCreateData,
+  TimeBlockBlock,
+  TimeBlockBlockCreateData,
+  TimeBlockBlockPatch,
+  TimeBlockPlan,
+  TimeBlockPlanPatch,
+  TimeBlockPlanUpsertData,
   UserIntegrationSetting,
   UserIntegrationSettingSummary,
   UserIntegrationSettingUpsertData,
@@ -471,6 +483,101 @@ function providerAccountFromRow(row: typeof schema.providerAccounts.$inferSelect
   const deletedAt = toIso(row.deletedAt);
   if (deletedAt !== undefined) account.deletedAt = deletedAt;
   return account;
+}
+
+function googleCalendarFromRow(row: typeof schema.googleCalendars.$inferSelect): GoogleCalendar {
+  const calendar: GoogleCalendar = {
+    id: row.id,
+    userId: row.userId,
+    providerAccountId: row.providerAccountId,
+    externalCalendarId: row.externalCalendarId,
+    name: row.name,
+    accessRole: row.accessRole,
+    primary: row.primary,
+    selectedForAvailability: row.selectedForAvailability,
+    allDayBlocksAvailability: row.allDayBlocksAvailability,
+    writeEnabled: row.writeEnabled,
+    status: row.status as GoogleCalendar["status"],
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.timezone !== null) calendar.timezone = row.timezone;
+  if (row.backgroundColor !== null) calendar.backgroundColor = row.backgroundColor;
+  if (row.lastSyncedAt !== null) calendar.lastSyncedAt = row.lastSyncedAt.toISOString();
+  if (row.lastError !== null) calendar.lastError = row.lastError;
+  if (row.deletedAt !== null) calendar.deletedAt = row.deletedAt.toISOString();
+  return calendar;
+}
+
+function googleCalendarEventFromRow(row: typeof schema.googleCalendarEvents.$inferSelect): GoogleCalendarEvent {
+  const event: GoogleCalendarEvent = {
+    id: row.id,
+    userId: row.userId,
+    providerAccountId: row.providerAccountId,
+    googleCalendarId: row.googleCalendarId,
+    externalEventId: row.externalEventId,
+    title: row.title,
+    startAt: row.startAt.toISOString(),
+    endAt: row.endAt.toISOString(),
+    allDay: row.allDay,
+    transparency: row.transparency as GoogleCalendarEvent["transparency"],
+    status: row.status,
+    ryanosOwned: row.ryanosOwned,
+    syncedAt: row.syncedAt.toISOString(),
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.iCalUid !== null) event.iCalUid = row.iCalUid;
+  if (row.location !== null) event.location = row.location;
+  if (row.htmlLink !== null) event.htmlLink = row.htmlLink;
+  if (row.recurringEventId !== null) event.recurringEventId = row.recurringEventId;
+  if (row.etag !== null) event.etag = row.etag;
+  if (row.deletedAt !== null) event.deletedAt = row.deletedAt.toISOString();
+  return event;
+}
+
+function timeBlockPlanFromRow(row: typeof schema.timeBlockPlans.$inferSelect): TimeBlockPlan {
+  const plan: TimeBlockPlan = {
+    id: row.id,
+    userId: row.userId,
+    dateKey: row.dateKey,
+    timezone: row.timezone,
+    status: row.status as TimeBlockPlan["status"],
+    generatedAt: row.generatedAt.toISOString(),
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.rulePolicyId !== null) plan.rulePolicyId = row.rulePolicyId;
+  if (row.publishedAt !== null) plan.publishedAt = row.publishedAt.toISOString();
+  if (row.error !== null) plan.error = row.error;
+  if (row.deletedAt !== null) plan.deletedAt = row.deletedAt.toISOString();
+  return plan;
+}
+
+function timeBlockBlockFromRow(row: typeof schema.timeBlockBlocks.$inferSelect): TimeBlockBlock {
+  const block: TimeBlockBlock = {
+    id: row.id,
+    userId: row.userId,
+    planId: row.planId,
+    googleCalendarId: row.googleCalendarId,
+    title: row.title,
+    startAt: row.startAt.toISOString(),
+    endAt: row.endAt.toISOString(),
+    status: row.status as TimeBlockBlock["status"],
+    pinned: row.pinned,
+    sortOrder: row.sortOrder,
+    metadata: asJsonObject(row.metadata),
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+  if (row.itemId !== null) block.itemId = row.itemId;
+  if (row.externalEventId !== null) block.externalEventId = row.externalEventId;
+  if (row.error !== null) block.error = row.error;
+  if (row.deletedAt !== null) block.deletedAt = row.deletedAt.toISOString();
+  return block;
 }
 
 function userIntegrationSettingFromRow(row: typeof schema.userIntegrationSettings.$inferSelect): UserIntegrationSetting {
@@ -1461,6 +1568,37 @@ export class PostgresRyanStore implements RyanStore {
     return policyFromRow(row);
   }
 
+  async getPolicy(policyId: UUID): Promise<Policy | undefined> {
+    const row = await this.db.query.policies.findFirst({
+      where: eq(schema.policies.id, policyId)
+    });
+    return row ? policyFromRow(row) : undefined;
+  }
+
+  async listPolicies(filters: {
+    userId: UUID;
+    type?: Policy["type"];
+    scope?: string;
+    statuses?: Policy["status"][];
+    limit?: number;
+  }): Promise<Policy[]> {
+    const userId = await this.resolveUserId(filters.userId);
+    const conditions = [
+      eq(schema.policies.userId, userId),
+      isNull(schema.policies.deletedAt)
+    ];
+    if (filters.type !== undefined) conditions.push(eq(schema.policies.type, filters.type));
+    if (filters.scope !== undefined) conditions.push(eq(schema.policies.scope, filters.scope));
+    if (filters.statuses !== undefined) conditions.push(inArray(schema.policies.status, filters.statuses));
+    const rows = await this.db
+      .select()
+      .from(schema.policies)
+      .where(and(...conditions))
+      .orderBy(desc(schema.policies.updatedAt))
+      .limit(Math.min(Math.max(filters.limit ?? 100, 1), 500));
+    return rows.map(policyFromRow);
+  }
+
   async getDailyPlan(userId: UUID, dateKey: string): Promise<DailyPlan | undefined> {
     const resolvedUserId = await this.resolveUserId(userId);
     const row = await this.db.query.dailyPlans.findFirst({
@@ -1654,6 +1792,370 @@ export class PostgresRyanStore implements RyanStore {
       accountCount: Number(row.accountCount),
       userCount: Number(row.userCount)
     }));
+  }
+
+  async upsertGoogleCalendar(data: GoogleCalendarUpsertData): Promise<GoogleCalendar> {
+    const userId = await this.resolveUserId(data.userId);
+    const existing = await this.db.query.googleCalendars.findFirst({
+      where: and(
+        eq(schema.googleCalendars.providerAccountId, data.providerAccountId),
+        eq(schema.googleCalendars.externalCalendarId, data.externalCalendarId)
+      )
+    });
+    const values: typeof schema.googleCalendars.$inferInsert = {
+      userId,
+      providerAccountId: data.providerAccountId,
+      externalCalendarId: data.externalCalendarId,
+      name: data.name,
+      timezone: data.timezone ?? existing?.timezone ?? null,
+      accessRole: data.accessRole ?? existing?.accessRole ?? "reader",
+      backgroundColor: data.backgroundColor ?? existing?.backgroundColor ?? null,
+      primary: data.primary ?? existing?.primary ?? false,
+      selectedForAvailability: data.selectedForAvailability ?? existing?.selectedForAvailability ?? false,
+      allDayBlocksAvailability: data.allDayBlocksAvailability ?? existing?.allDayBlocksAvailability ?? false,
+      writeEnabled: data.writeEnabled ?? existing?.writeEnabled ?? false,
+      status: data.status ?? existing?.status ?? "active",
+      lastSyncedAt: data.lastSyncedAt !== undefined ? new Date(data.lastSyncedAt) : existing?.lastSyncedAt ?? null,
+      lastError: data.lastError ?? existing?.lastError ?? null,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      deletedAt: null,
+      updatedAt: new Date()
+    };
+    if (existing) {
+      const [row] = await this.db
+        .update(schema.googleCalendars)
+        .set(values)
+        .where(eq(schema.googleCalendars.id, existing.id))
+        .returning();
+      if (!row) throw new Error(`Google calendar not found: ${existing.id}`);
+      return googleCalendarFromRow(row);
+    }
+    const [row] = await this.db.insert(schema.googleCalendars).values(values).returning();
+    if (!row) throw new Error("Failed to upsert Google calendar");
+    return googleCalendarFromRow(row);
+  }
+
+  async updateGoogleCalendar(calendarId: UUID, patch: GoogleCalendarPatch): Promise<GoogleCalendar> {
+    const values: Partial<typeof schema.googleCalendars.$inferInsert> = {
+      updatedAt: new Date()
+    };
+    if (patch.name !== undefined) values.name = patch.name;
+    if (patch.timezone !== undefined) values.timezone = patch.timezone;
+    if (patch.accessRole !== undefined) values.accessRole = patch.accessRole;
+    if (patch.backgroundColor !== undefined) values.backgroundColor = patch.backgroundColor;
+    if (patch.primary !== undefined) values.primary = patch.primary;
+    if (patch.selectedForAvailability !== undefined) values.selectedForAvailability = patch.selectedForAvailability;
+    if (patch.allDayBlocksAvailability !== undefined) values.allDayBlocksAvailability = patch.allDayBlocksAvailability;
+    if (patch.writeEnabled !== undefined) values.writeEnabled = patch.writeEnabled;
+    if (patch.status !== undefined) values.status = patch.status;
+    if (patch.lastSyncedAt !== undefined) values.lastSyncedAt = new Date(patch.lastSyncedAt);
+    if (patch.lastError !== undefined) values.lastError = patch.lastError;
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    if (patch.deletedAt !== undefined) values.deletedAt = patch.deletedAt === null ? null : new Date(patch.deletedAt);
+    const [row] = await this.db
+      .update(schema.googleCalendars)
+      .set(values)
+      .where(eq(schema.googleCalendars.id, calendarId))
+      .returning();
+    if (!row) throw new Error(`Google calendar not found: ${calendarId}`);
+    return googleCalendarFromRow(row);
+  }
+
+  async getGoogleCalendar(calendarId: UUID): Promise<GoogleCalendar | undefined> {
+    const row = await this.db.query.googleCalendars.findFirst({
+      where: eq(schema.googleCalendars.id, calendarId)
+    });
+    return row ? googleCalendarFromRow(row) : undefined;
+  }
+
+  async listGoogleCalendars(filters: {
+    userId: UUID;
+    providerAccountId?: UUID;
+    selectedForAvailability?: boolean;
+    limit?: number;
+  }): Promise<GoogleCalendar[]> {
+    const userId = await this.resolveUserId(filters.userId);
+    const conditions = [
+      eq(schema.googleCalendars.userId, userId),
+      isNull(schema.googleCalendars.deletedAt)
+    ];
+    if (filters.providerAccountId !== undefined) {
+      conditions.push(eq(schema.googleCalendars.providerAccountId, filters.providerAccountId));
+    }
+    if (filters.selectedForAvailability !== undefined) {
+      conditions.push(eq(schema.googleCalendars.selectedForAvailability, filters.selectedForAvailability));
+    }
+    const rows = await this.db
+      .select()
+      .from(schema.googleCalendars)
+      .where(and(...conditions))
+      .orderBy(desc(schema.googleCalendars.primary), asc(schema.googleCalendars.name))
+      .limit(Math.min(Math.max(filters.limit ?? 200, 1), 500));
+    return rows.map(googleCalendarFromRow);
+  }
+
+  async upsertGoogleCalendarEvent(data: GoogleCalendarEventUpsertData): Promise<GoogleCalendarEvent> {
+    const userId = await this.resolveUserId(data.userId);
+    const existing = await this.db.query.googleCalendarEvents.findFirst({
+      where: and(
+        eq(schema.googleCalendarEvents.googleCalendarId, data.googleCalendarId),
+        eq(schema.googleCalendarEvents.externalEventId, data.externalEventId)
+      )
+    });
+    const values: typeof schema.googleCalendarEvents.$inferInsert = {
+      userId,
+      providerAccountId: data.providerAccountId,
+      googleCalendarId: data.googleCalendarId,
+      externalEventId: data.externalEventId,
+      iCalUid: data.iCalUid ?? existing?.iCalUid ?? null,
+      title: data.title,
+      startAt: new Date(data.startAt),
+      endAt: new Date(data.endAt),
+      allDay: data.allDay ?? existing?.allDay ?? false,
+      transparency: data.transparency ?? existing?.transparency ?? "opaque",
+      status: data.status ?? existing?.status ?? "confirmed",
+      location: data.location ?? existing?.location ?? null,
+      htmlLink: data.htmlLink ?? existing?.htmlLink ?? null,
+      recurringEventId: data.recurringEventId ?? existing?.recurringEventId ?? null,
+      etag: data.etag ?? existing?.etag ?? null,
+      ryanosOwned: data.ryanosOwned ?? existing?.ryanosOwned ?? false,
+      syncedAt: new Date(data.syncedAt ?? new Date().toISOString()),
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      deletedAt: null,
+      updatedAt: new Date()
+    };
+    if (existing) {
+      const [row] = await this.db
+        .update(schema.googleCalendarEvents)
+        .set(values)
+        .where(eq(schema.googleCalendarEvents.id, existing.id))
+        .returning();
+      if (!row) throw new Error(`Google calendar event not found: ${existing.id}`);
+      return googleCalendarEventFromRow(row);
+    }
+    const [row] = await this.db.insert(schema.googleCalendarEvents).values(values).returning();
+    if (!row) throw new Error("Failed to upsert Google calendar event");
+    return googleCalendarEventFromRow(row);
+  }
+
+  async updateGoogleCalendarEvent(eventId: UUID, patch: GoogleCalendarEventPatch): Promise<GoogleCalendarEvent> {
+    const values: Partial<typeof schema.googleCalendarEvents.$inferInsert> = { updatedAt: new Date() };
+    if (patch.title !== undefined) values.title = patch.title;
+    if (patch.startAt !== undefined) values.startAt = new Date(patch.startAt);
+    if (patch.endAt !== undefined) values.endAt = new Date(patch.endAt);
+    if (patch.allDay !== undefined) values.allDay = patch.allDay;
+    if (patch.transparency !== undefined) values.transparency = patch.transparency;
+    if (patch.status !== undefined) values.status = patch.status;
+    if (patch.location !== undefined) values.location = patch.location;
+    if (patch.htmlLink !== undefined) values.htmlLink = patch.htmlLink;
+    if (patch.recurringEventId !== undefined) values.recurringEventId = patch.recurringEventId;
+    if (patch.etag !== undefined) values.etag = patch.etag;
+    if (patch.ryanosOwned !== undefined) values.ryanosOwned = patch.ryanosOwned;
+    if (patch.syncedAt !== undefined) values.syncedAt = new Date(patch.syncedAt);
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    if (patch.deletedAt !== undefined) values.deletedAt = patch.deletedAt === null ? null : new Date(patch.deletedAt);
+    const [row] = await this.db
+      .update(schema.googleCalendarEvents)
+      .set(values)
+      .where(eq(schema.googleCalendarEvents.id, eventId))
+      .returning();
+    if (!row) throw new Error(`Google calendar event not found: ${eventId}`);
+    return googleCalendarEventFromRow(row);
+  }
+
+  async getGoogleCalendarEvent(eventId: UUID): Promise<GoogleCalendarEvent | undefined> {
+    const row = await this.db.query.googleCalendarEvents.findFirst({
+      where: eq(schema.googleCalendarEvents.id, eventId)
+    });
+    return row ? googleCalendarEventFromRow(row) : undefined;
+  }
+
+  async findGoogleCalendarEvent(googleCalendarId: UUID, externalEventId: string): Promise<GoogleCalendarEvent | undefined> {
+    const row = await this.db.query.googleCalendarEvents.findFirst({
+      where: and(
+        eq(schema.googleCalendarEvents.googleCalendarId, googleCalendarId),
+        eq(schema.googleCalendarEvents.externalEventId, externalEventId)
+      )
+    });
+    return row ? googleCalendarEventFromRow(row) : undefined;
+  }
+
+  async listGoogleCalendarEvents(filters: {
+    userId: UUID;
+    googleCalendarIds?: UUID[];
+    startsBefore?: string;
+    endsAfter?: string;
+    includeDeleted?: boolean;
+    limit?: number;
+  }): Promise<GoogleCalendarEvent[]> {
+    if (filters.googleCalendarIds?.length === 0) return [];
+    const userId = await this.resolveUserId(filters.userId);
+    const conditions = [eq(schema.googleCalendarEvents.userId, userId)];
+    if (!filters.includeDeleted) conditions.push(isNull(schema.googleCalendarEvents.deletedAt));
+    if (filters.googleCalendarIds !== undefined) {
+      conditions.push(inArray(schema.googleCalendarEvents.googleCalendarId, filters.googleCalendarIds));
+    }
+    if (filters.startsBefore !== undefined) {
+      conditions.push(lt(schema.googleCalendarEvents.startAt, new Date(filters.startsBefore)));
+    }
+    if (filters.endsAfter !== undefined) {
+      conditions.push(gt(schema.googleCalendarEvents.endAt, new Date(filters.endsAfter)));
+    }
+    const rows = await this.db
+      .select()
+      .from(schema.googleCalendarEvents)
+      .where(and(...conditions))
+      .orderBy(asc(schema.googleCalendarEvents.startAt))
+      .limit(Math.min(Math.max(filters.limit ?? 1000, 1), 5000));
+    return rows.map(googleCalendarEventFromRow);
+  }
+
+  async upsertTimeBlockPlan(data: TimeBlockPlanUpsertData): Promise<TimeBlockPlan> {
+    const userId = await this.resolveUserId(data.userId);
+    const existing = await this.db.query.timeBlockPlans.findFirst({
+      where: and(
+        eq(schema.timeBlockPlans.userId, userId),
+        eq(schema.timeBlockPlans.dateKey, data.dateKey),
+        isNull(schema.timeBlockPlans.deletedAt)
+      )
+    });
+    const values: typeof schema.timeBlockPlans.$inferInsert = {
+      userId,
+      dateKey: data.dateKey,
+      timezone: data.timezone,
+      status: data.status,
+      rulePolicyId: data.rulePolicyId ?? existing?.rulePolicyId ?? null,
+      generatedAt: new Date(data.generatedAt ?? new Date().toISOString()),
+      publishedAt: data.publishedAt !== undefined ? new Date(data.publishedAt) : existing?.publishedAt ?? null,
+      error: data.error ?? existing?.error ?? null,
+      metadata: data.metadata ?? existing?.metadata ?? {},
+      updatedAt: new Date()
+    };
+    if (existing) {
+      const [row] = await this.db
+        .update(schema.timeBlockPlans)
+        .set(values)
+        .where(eq(schema.timeBlockPlans.id, existing.id))
+        .returning();
+      if (!row) throw new Error(`Time block plan not found: ${existing.id}`);
+      return timeBlockPlanFromRow(row);
+    }
+    const [row] = await this.db.insert(schema.timeBlockPlans).values(values).returning();
+    if (!row) throw new Error("Failed to upsert time block plan");
+    return timeBlockPlanFromRow(row);
+  }
+
+  async updateTimeBlockPlan(planId: UUID, patch: TimeBlockPlanPatch): Promise<TimeBlockPlan> {
+    const values: Partial<typeof schema.timeBlockPlans.$inferInsert> = { updatedAt: new Date() };
+    if (patch.timezone !== undefined) values.timezone = patch.timezone;
+    if (patch.status !== undefined) values.status = patch.status;
+    if (patch.rulePolicyId !== undefined) values.rulePolicyId = patch.rulePolicyId;
+    if (patch.generatedAt !== undefined) values.generatedAt = new Date(patch.generatedAt);
+    if (patch.publishedAt !== undefined) values.publishedAt = new Date(patch.publishedAt);
+    if (patch.error !== undefined) values.error = patch.error;
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    if (patch.deletedAt !== undefined) values.deletedAt = patch.deletedAt === null ? null : new Date(patch.deletedAt);
+    const [row] = await this.db
+      .update(schema.timeBlockPlans)
+      .set(values)
+      .where(eq(schema.timeBlockPlans.id, planId))
+      .returning();
+    if (!row) throw new Error(`Time block plan not found: ${planId}`);
+    return timeBlockPlanFromRow(row);
+  }
+
+  async getTimeBlockPlan(planId: UUID): Promise<TimeBlockPlan | undefined> {
+    const row = await this.db.query.timeBlockPlans.findFirst({
+      where: eq(schema.timeBlockPlans.id, planId)
+    });
+    return row ? timeBlockPlanFromRow(row) : undefined;
+  }
+
+  async findTimeBlockPlan(userId: UUID, dateKey: string): Promise<TimeBlockPlan | undefined> {
+    const resolvedUserId = await this.resolveUserId(userId);
+    const row = await this.db.query.timeBlockPlans.findFirst({
+      where: and(
+        eq(schema.timeBlockPlans.userId, resolvedUserId),
+        eq(schema.timeBlockPlans.dateKey, dateKey),
+        isNull(schema.timeBlockPlans.deletedAt)
+      )
+    });
+    return row ? timeBlockPlanFromRow(row) : undefined;
+  }
+
+  async createTimeBlockBlock(data: TimeBlockBlockCreateData): Promise<TimeBlockBlock> {
+    const userId = await this.resolveUserId(data.userId);
+    const [row] = await this.db
+      .insert(schema.timeBlockBlocks)
+      .values({
+        userId,
+        planId: data.planId,
+        itemId: data.itemId ?? null,
+        googleCalendarId: data.googleCalendarId,
+        title: data.title,
+        startAt: new Date(data.startAt),
+        endAt: new Date(data.endAt),
+        status: data.status ?? "draft",
+        pinned: data.pinned ?? false,
+        externalEventId: data.externalEventId ?? null,
+        error: data.error ?? null,
+        sortOrder: data.sortOrder ?? 0,
+        metadata: data.metadata ?? {}
+      })
+      .returning();
+    if (!row) throw new Error("Failed to create time block");
+    return timeBlockBlockFromRow(row);
+  }
+
+  async updateTimeBlockBlock(blockId: UUID, patch: TimeBlockBlockPatch): Promise<TimeBlockBlock> {
+    const values: Partial<typeof schema.timeBlockBlocks.$inferInsert> = { updatedAt: new Date() };
+    if (patch.itemId !== undefined) values.itemId = patch.itemId;
+    if (patch.title !== undefined) values.title = patch.title;
+    if (patch.startAt !== undefined) values.startAt = new Date(patch.startAt);
+    if (patch.endAt !== undefined) values.endAt = new Date(patch.endAt);
+    if (patch.status !== undefined) values.status = patch.status;
+    if (patch.pinned !== undefined) values.pinned = patch.pinned;
+    if (patch.externalEventId !== undefined) values.externalEventId = patch.externalEventId;
+    if (patch.error !== undefined) values.error = patch.error;
+    if (patch.sortOrder !== undefined) values.sortOrder = patch.sortOrder;
+    if (patch.metadata !== undefined) values.metadata = patch.metadata;
+    if (patch.deletedAt !== undefined) values.deletedAt = patch.deletedAt === null ? null : new Date(patch.deletedAt);
+    const [row] = await this.db
+      .update(schema.timeBlockBlocks)
+      .set(values)
+      .where(eq(schema.timeBlockBlocks.id, blockId))
+      .returning();
+    if (!row) throw new Error(`Time block not found: ${blockId}`);
+    return timeBlockBlockFromRow(row);
+  }
+
+  async getTimeBlockBlock(blockId: UUID): Promise<TimeBlockBlock | undefined> {
+    const row = await this.db.query.timeBlockBlocks.findFirst({
+      where: eq(schema.timeBlockBlocks.id, blockId)
+    });
+    return row ? timeBlockBlockFromRow(row) : undefined;
+  }
+
+  async listTimeBlockBlocks(filters: {
+    userId: UUID;
+    planId?: UUID;
+    itemId?: UUID;
+    limit?: number;
+  }): Promise<TimeBlockBlock[]> {
+    const userId = await this.resolveUserId(filters.userId);
+    const conditions = [
+      eq(schema.timeBlockBlocks.userId, userId),
+      isNull(schema.timeBlockBlocks.deletedAt)
+    ];
+    if (filters.planId !== undefined) conditions.push(eq(schema.timeBlockBlocks.planId, filters.planId));
+    if (filters.itemId !== undefined) conditions.push(eq(schema.timeBlockBlocks.itemId, filters.itemId));
+    const rows = await this.db
+      .select()
+      .from(schema.timeBlockBlocks)
+      .where(and(...conditions))
+      .orderBy(asc(schema.timeBlockBlocks.startAt), asc(schema.timeBlockBlocks.sortOrder))
+      .limit(Math.min(Math.max(filters.limit ?? 500, 1), 2000));
+    return rows.map(timeBlockBlockFromRow);
   }
 
   async getUserIntegrationSetting(userId: UUID, integrationId: string): Promise<UserIntegrationSetting | undefined> {
