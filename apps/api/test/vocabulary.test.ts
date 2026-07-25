@@ -1,4 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+import type {
+  AiProvider,
+  AiProviderResult,
+  AiProviderStatus,
+  IncomingMessage,
+  PublicToolDefinition
+} from "@ryanos/ai";
 import { InMemoryRyanStore } from "@ryanos/core";
 import { buildApp } from "../src/app.js";
 
@@ -24,6 +31,41 @@ type VocabularyPayload = {
     context?: string;
   }>>;
 };
+
+class VocabularyAiProvider implements AiProvider {
+  readonly name = "test-vocabulary-ai";
+  readonly mode = "test";
+
+  async getStatus(): Promise<AiProviderStatus> {
+    return {
+      name: this.name,
+      mode: this.mode,
+      ready: true,
+      setupRequired: false,
+      setupActions: [],
+      warnings: []
+    };
+  }
+
+  async interpret(message: IncomingMessage, _tools: PublicToolDefinition[]): Promise<AiProviderResult> {
+    const term = message.text.match(/^Term: (.+)$/m)?.[1] ?? "unknown";
+    return {
+      text: "Drafted.",
+      toolCalls: [{
+        name: "vocabulary.addEntries",
+        input: {
+          entries: [{
+            term,
+            languageCode: "en",
+            category: "medical",
+            definition: "An abnormal unpleasant sensation, such as burning, tingling, or pain.",
+            tags: ["medical"]
+          }]
+        }
+      }]
+    };
+  }
+}
 
 describe("vocabulary API", () => {
   it("quick-adds vocabulary entries with encounters", async () => {
@@ -183,5 +225,38 @@ describe("vocabulary API", () => {
         category: "medical"
       })
     ]);
+  });
+
+  it("retries an AI definition for an existing entry without one", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const app = buildApp({ ai: new VocabularyAiProvider() });
+    const added = await app.inject({
+      method: "POST",
+      url: "/v1/vocabulary/entries",
+      payload: {
+        userId: "local-owner",
+        term: "dysesthesia",
+        category: "medical",
+        draftWithAi: false
+      }
+    });
+    const entry = (added.json() as { entry: VocabularyEntry }).entry;
+
+    const drafted = await app.inject({
+      method: "POST",
+      url: `/v1/vocabulary/entries/${entry.id}/draft`,
+      payload: {}
+    });
+    const payload = drafted.json() as VocabularyPayload & { entry: VocabularyEntry };
+    await app.close();
+
+    expect(drafted.statusCode).toBe(200);
+    expect(payload.entry).toMatchObject({
+      id: entry.id,
+      term: "dysesthesia",
+      category: "medical",
+      definition: "An abnormal unpleasant sensation, such as burning, tingling, or pain.",
+      definitionSource: "ai_draft"
+    });
   });
 });

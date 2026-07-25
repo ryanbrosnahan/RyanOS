@@ -5596,38 +5596,48 @@ export function buildApp(options: {
 
   async function tryVocabularyAiDraft(
     body: z.infer<typeof vocabularyCreateEntryBodySchema>,
-    sourceDefault: string
+    sourceDefault: string,
+    strict = false
   ) {
     if (!body.draftWithAi || body.definition !== undefined) return undefined;
-    if (!(await integrationEnabled(body.userId, "ai"))) return undefined;
-    const status = await ai.getStatus();
-    if (!status.ready || ai.name === "none") return undefined;
-    const vocabularyTool = tools.list().find((tool) => tool.name === "vocabulary.addEntries");
-    if (!vocabularyTool) return undefined;
-    const message: IncomingMessage = {
-      id: `vocabulary:${crypto.randomUUID()}`,
-      provider: "system",
-      chatId: "vocabulary-draft",
-      userId: body.userId,
-      text: [
-        `Save this vocabulary entry and draft a concise editable definition.`,
-        `Term: ${body.term.trim()}`,
-        `Language: ${normalizeLanguageCode(body.languageCode)}`,
-        body.category ? `Category: ${body.category}` : undefined,
-        body.context ? `Context: ${body.context}` : undefined,
-        body.sourceTitle ? `Source title: ${body.sourceTitle}` : undefined
-      ].filter(Boolean).join("\n"),
-      timestamp: nowIso(),
-      attachments: [],
-      metadata: {
-        kind: "vocabulary_draft",
-        source: sourceDefault
-      }
-    };
     try {
+      if (!(await integrationEnabled(body.userId, "ai"))) {
+        throw new Error("The AI integration is disabled.");
+      }
+      const status = await ai.getStatus();
+      if (!status.ready || ai.name === "none") {
+        throw new Error(status.warnings[0] ?? "The AI provider is not ready.");
+      }
+      const vocabularyTool = tools.list().find((tool) => tool.name === "vocabulary.addEntries");
+      if (!vocabularyTool) throw new Error("The vocabulary drafting tool is unavailable.");
+      const message: IncomingMessage = {
+        id: `vocabulary:${crypto.randomUUID()}`,
+        provider: "system",
+        chatId: "vocabulary-draft",
+        userId: body.userId,
+        text: [
+          `Call vocabulary.addEntries exactly once for the term below.`,
+          `Include a concise editable definition. Do not return prose instead of the tool call.`,
+          `Preserve the supplied term exactly. If its spelling or meaning is uncertain, give a cautious definition and note the uncertainty.`,
+          `Term: ${body.term.trim()}`,
+          `Language: ${normalizeLanguageCode(body.languageCode)}`,
+          body.category ? `Category: ${body.category}` : undefined,
+          body.context ? `Context: ${body.context}` : undefined,
+          body.sourceTitle ? `Source title: ${body.sourceTitle}` : undefined
+        ].filter(Boolean).join("\n"),
+        timestamp: nowIso(),
+        attachments: [],
+        metadata: {
+          kind: "vocabulary_draft",
+          source: sourceDefault
+        }
+      };
       const interpreted = await ai.interpret(message, [vocabularyTool]);
       const toolCall = interpreted.toolCalls.find((call) => call.name === "vocabulary.addEntries");
-      if (!toolCall) return undefined;
+      if (!toolCall) {
+        const warning = interpreted.warnings?.[0];
+        throw new Error(warning ?? "The AI provider did not return a vocabulary definition.");
+      }
       const result = await tools.execute(
         toolCall.name,
         enrichToolInput(
@@ -5641,22 +5651,37 @@ export function buildApp(options: {
           0
         )
       );
-      if (result.status !== "applied") return undefined;
+      if (result.status !== "applied") {
+        throw new Error(result.messageForUser || `Vocabulary tool returned ${result.status}.`);
+      }
       const entry = await store.findVocabularyEntry(
         body.userId,
         normalizeLanguageCode(body.languageCode),
         normalizeVocabularyTerm(body.term)
       );
+      if (!entry?.definition?.trim()) {
+        throw new Error("The AI response did not include a definition for the supplied term.");
+      }
       return {
         result,
-        entry: entry ? vocabularyEntryView(entry) : undefined,
+        entry: vocabularyEntryView(entry),
         ...(await vocabularyListPayload({
           userId: body.userId,
           status: "active",
           limit: 50
         }))
       };
-    } catch {
+    } catch (error) {
+      app.log.warn(
+        {
+          err: error,
+          userId: body.userId,
+          term: body.term.trim(),
+          source: sourceDefault
+        },
+        "Vocabulary AI draft failed"
+      );
+      if (strict) throw error;
       return undefined;
     }
   }
@@ -5808,6 +5833,44 @@ export function buildApp(options: {
   app.post("/v1/vocabulary/entries", async (request) => {
     const body = vocabularyCreateEntryBodySchema.parse(request.body);
     return createVocabularyEntryPayload(body, "web");
+  });
+
+  app.post("/v1/vocabulary/entries/:entryId/draft", async (request: RyanOsRequest, reply) => {
+    const params = vocabularyEntryParamsSchema.parse(request.params);
+    const userId = currentUserId(request);
+    const existing = await store.getVocabularyEntry(params.entryId);
+    if (!existing || existing.userId !== userId || existing.deletedAt !== undefined) {
+      reply.code(404);
+      return { error: "Vocabulary entry not found" };
+    }
+    if (existing.definition?.trim()) {
+      return {
+        entry: vocabularyEntryView(existing),
+        ...(await vocabularyListPayload({
+          userId,
+          status: "active",
+          limit: 50
+        }))
+      };
+    }
+    try {
+      const body = vocabularyCreateEntryBodySchema.parse({
+        userId,
+        term: existing.term,
+        languageCode: existing.languageCode,
+        category: existing.category,
+        tags: existing.tags,
+        sourceType: "vocabulary_draft",
+        sourceTitle: "Definition retry",
+        draftWithAi: true
+      });
+      return await tryVocabularyAiDraft(body, "vocabulary_draft", true);
+    } catch (error) {
+      reply.code(503);
+      return {
+        error: error instanceof Error ? error.message : "Definition drafting failed."
+      };
+    }
   });
 
   app.patch("/v1/vocabulary/entries/:entryId", async (request, reply) => {

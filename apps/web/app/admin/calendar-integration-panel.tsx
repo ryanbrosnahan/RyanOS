@@ -220,6 +220,7 @@ export function CalendarIntegrationPanel({ calendar, onRefresh }: Props) {
                 <label className="flex items-center gap-2 text-sm text-stone-700">
                   <input
                     type="checkbox"
+                    aria-label={`${account.email || account.displayName || "Google Calendar"} account enabled`}
                     checked={account.settings.enabled}
                     onChange={(event) => void mutate(
                       `account:${account.id}`,
@@ -255,6 +256,7 @@ export function CalendarIntegrationPanel({ calendar, onRefresh }: Props) {
                       </div>
                       <CalendarToggle
                         label="Availability"
+                        ariaLabel={`${entry.name} availability`}
                         checked={entry.selectedForAvailability}
                         disabled={busy !== null}
                         onChange={(checked) => void mutate(
@@ -269,6 +271,7 @@ export function CalendarIntegrationPanel({ calendar, onRefresh }: Props) {
                       />
                       <CalendarToggle
                         label="All-day busy"
+                        ariaLabel={`${entry.name} all-day busy`}
                         checked={entry.allDayBlocksAvailability}
                         disabled={busy !== null}
                         onChange={(checked) => void mutate(
@@ -283,6 +286,7 @@ export function CalendarIntegrationPanel({ calendar, onRefresh }: Props) {
                       />
                       <CalendarToggle
                         label="Write target"
+                        ariaLabel={`${entry.name} write target`}
                         checked={entry.writeEnabled}
                         disabled={busy !== null || !writable}
                         onChange={(checked) => void mutate(
@@ -314,6 +318,7 @@ export function CalendarIntegrationPanel({ calendar, onRefresh }: Props) {
 
 function CalendarToggle(props: {
   label: string;
+  ariaLabel: string;
   checked: boolean;
   disabled: boolean;
   onChange: (checked: boolean) => void;
@@ -322,6 +327,7 @@ function CalendarToggle(props: {
     <label className="flex items-center gap-2 whitespace-nowrap text-xs text-stone-600">
       <input
         type="checkbox"
+        aria-label={props.ariaLabel}
         checked={props.checked}
         disabled={props.disabled}
         onChange={(event) => props.onChange(event.target.checked)}

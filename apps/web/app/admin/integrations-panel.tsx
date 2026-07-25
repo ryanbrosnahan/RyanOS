@@ -261,17 +261,31 @@ const iconByIntegration = {
   lottery: Ticket
 } satisfies Record<Integration["id"], typeof Brain>;
 
-const adminExpandedIntegrationStorageKey = "ryanos.admin.expandedIntegration";
+const adminExpandedIntegrationStorageKey = "ryanos.admin.expandedIntegrations";
+const legacyAdminExpandedIntegrationStorageKey = "ryanos.admin.expandedIntegration";
 const integrationIds = ["ai", "telegram", "gmail", "calendar", "codex_rfp", "lottery"] as const satisfies readonly Integration["id"][];
 
 function isIntegrationId(value: string | null): value is Integration["id"] {
   return integrationIds.includes(value as Integration["id"]);
 }
 
-function initialExpandedIntegration(): Integration["id"] | null {
-  if (typeof window === "undefined") return null;
+function initialExpandedIntegrations(): Set<Integration["id"]> {
+  if (typeof window === "undefined") return new Set();
   const stored = window.localStorage.getItem(adminExpandedIntegrationStorageKey);
-  return isIntegrationId(stored) ? stored : null;
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored) as unknown;
+      if (Array.isArray(parsed)) {
+        return new Set(parsed.filter((value): value is Integration["id"] =>
+          typeof value === "string" && isIntegrationId(value)
+        ));
+      }
+    } catch {
+      if (isIntegrationId(stored)) return new Set([stored]);
+    }
+  }
+  const legacyStored = window.localStorage.getItem(legacyAdminExpandedIntegrationStorageKey);
+  return isIntegrationId(legacyStored) ? new Set([legacyStored]) : new Set();
 }
 
 async function readResponseMessage(response: Response): Promise<string> {
@@ -288,6 +302,9 @@ async function readResponseMessage(response: Response): Promise<string> {
 function statusLabel(integration: Integration): string {
   if (!integration.enabled) return "Disabled";
   if (integration.effectiveReady) return "Ready";
+  if (integration.id === "lottery" && integration.lottery?.health.status === "degraded") {
+    return "Degraded";
+  }
   if (integration.setupRequired) return "Needs setup";
   if (!integration.configured) return "Not configured";
   return "Not ready";
@@ -296,6 +313,9 @@ function statusLabel(integration: Integration): string {
 function statusTone(integration: Integration): string {
   if (!integration.enabled) return "bg-stone-100 text-stone-700";
   if (integration.effectiveReady) return "bg-emerald-50 text-emerald-800";
+  if (integration.id === "lottery" && integration.lottery?.health.status === "degraded") {
+    return "bg-amber-50 text-amber-900";
+  }
   if (integration.setupRequired) return "bg-amber-50 text-amber-900";
   return "bg-stone-100 text-stone-700";
 }
@@ -468,7 +488,7 @@ function SetupActions({ actions, warnings }: { actions: SetupAction[]; warnings:
 export function AdminOperationsPanel() {
   const [payload, setPayload] = useState<IntegrationsResponse | null>(null);
   const [androidManifest, setAndroidManifest] = useState<AndroidManifest | null>(null);
-  const [expanded, setExpanded] = useState<Integration["id"] | null>(() => initialExpandedIntegration());
+  const [expanded, setExpanded] = useState<Set<Integration["id"]>>(() => initialExpandedIntegrations());
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -551,14 +571,20 @@ export function AdminOperationsPanel() {
     }
   }
 
-  function updateExpandedIntegration(nextExpanded: Integration["id"] | null) {
-    setExpanded(nextExpanded);
-    if (typeof window === "undefined") return;
-    if (nextExpanded) {
-      window.localStorage.setItem(adminExpandedIntegrationStorageKey, nextExpanded);
-    } else {
-      window.localStorage.removeItem(adminExpandedIntegrationStorageKey);
-    }
+  function toggleExpandedIntegration(integrationId: Integration["id"]) {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(integrationId)) {
+        next.delete(integrationId);
+      } else {
+        next.add(integrationId);
+      }
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(adminExpandedIntegrationStorageKey, JSON.stringify([...next]));
+        window.localStorage.removeItem(legacyAdminExpandedIntegrationStorageKey);
+      }
+      return next;
+    });
   }
 
   async function toggleGmailAccount(account: GmailAccount) {
@@ -1034,7 +1060,7 @@ export function AdminOperationsPanel() {
         <div className="mt-4 divide-y divide-stone-200">
           {integrations.map((integration) => {
             const Icon = iconByIntegration[integration.id];
-            const open = expanded === integration.id;
+            const open = expanded.has(integration.id);
             const automationEndpoint = integration.id === "codex_rfp" ? absoluteEndpoint(integration.endpointPath) : "";
             return (
               <div
@@ -1074,7 +1100,7 @@ export function AdminOperationsPanel() {
                     />
                     <button
                       type="button"
-                      onClick={() => updateExpandedIntegration(open ? null : integration.id)}
+                      onClick={() => toggleExpandedIntegration(integration.id)}
                       aria-label={`${open ? "Close" : "Open"} ${integration.name} settings`}
                       className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-300 px-2 text-sm font-medium text-stone-700 hover:bg-stone-100"
                     >

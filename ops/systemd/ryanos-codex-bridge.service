@@ -8,6 +8,7 @@ Type=simple
 WorkingDirectory=/opt/ryanos
 EnvironmentFile=/opt/ryanos/.env
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+Environment=RYANOS_CODEX_COMMAND=/opt/ryanos/node_modules/.bin/codex
 ExecStart=/usr/bin/env pnpm codex:bridge
 Restart=on-failure
 RestartSec=5

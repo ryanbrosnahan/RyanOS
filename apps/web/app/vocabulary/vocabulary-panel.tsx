@@ -7,6 +7,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Sparkles,
   Trash2,
   X
 } from "lucide-react";
@@ -261,6 +262,27 @@ export function VocabularyPanel() {
       setData(await response.json());
       setEditingId(null);
       setEditState(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function draftDefinition(entry: VocabularyEntry) {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await apiFetch(apiPath(`/v1/vocabulary/entries/${entry.id}/draft`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(payload.error ?? `Vocabulary API ${response.status}`);
+      }
+      setData(await response.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -551,9 +573,22 @@ export function VocabularyPanel() {
                       </div>
                     </div>
 
-                    <p className="text-sm leading-6 text-stone-800">
-                      {entry.definition?.trim() || "No definition yet."}
-                    </p>
+                    {entry.definition?.trim() ? (
+                      <p className="text-sm leading-6 text-stone-800">{entry.definition}</p>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm leading-6 text-stone-500">No definition yet.</p>
+                        <button
+                          type="button"
+                          onClick={() => void draftDefinition(entry)}
+                          disabled={busy}
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-stone-300 bg-white px-2 text-xs font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-60"
+                        >
+                          <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+                          Draft definition
+                        </button>
+                      </div>
+                    )}
 
                     {entry.translation ? (
                       <p className="text-sm text-stone-600">

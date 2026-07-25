@@ -114,6 +114,14 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
     echo 'Missing $REMOTE_DIR/secrets/master-key. Generate or restore it before deploying.' >&2
     exit 1
   fi
+  pnpm install --frozen-lockfile
+  pnpm --filter @ryanos/ai build
+  test -x node_modules/.bin/codex
+  mkdir -p \"\$HOME/.config/systemd/user\"
+  cp ops/systemd/ryanos-codex-bridge.service \"\$HOME/.config/systemd/user/\"
+  systemctl --user daemon-reload
+  systemctl --user restart ryanos-codex-bridge.service
+  systemctl --user is-active --quiet ryanos-codex-bridge.service
   mkdir -p releases/android
   docker compose -f '$COMPOSE_FILE' build
   docker compose -f '$COMPOSE_FILE' up -d postgres

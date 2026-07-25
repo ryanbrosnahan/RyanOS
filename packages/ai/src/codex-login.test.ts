@@ -60,6 +60,28 @@ async function createFakeCodexCommand(): Promise<string> {
   return path;
 }
 
+async function createOutdatedFakeCodexCommand(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "fake-old-codex-"));
+  const path = join(dir, "codex");
+  await writeFile(
+    path,
+    [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "if [[ \"${1:-}\" == \"--version\" ]]; then echo 'codex 0.1.0'; exit 0; fi",
+      "if [[ \"${1:-}\" == \"login\" && \"${2:-}\" == \"status\" ]]; then echo 'logged in'; exit 0; fi",
+      "if [[ \"${1:-}\" == \"exec\" ]]; then",
+      "  printf '%1200s' '' | tr ' ' x >&2",
+      "  echo 'The selected model requires a newer version of Codex.' >&2",
+      "  exit 1",
+      "fi",
+      "exit 1"
+    ].join("\n")
+  );
+  await chmod(path, 0o755);
+  return path;
+}
+
 describe("CodexLoginAiProvider", () => {
   it("includes tool input schemas in the Codex prompt", () => {
     const prompt = buildCodexPrompt(message, [
@@ -123,5 +145,19 @@ describe("CodexLoginAiProvider", () => {
         }
       }
     ]);
+  });
+
+  it("preserves the actionable tail of long Codex CLI errors", async () => {
+    const codexCommand = await createOutdatedFakeCodexCommand();
+    const provider = new CodexLoginAiProvider({
+      codexCommand,
+      timeoutMs: 5_000
+    });
+
+    const result = await provider.interpret(message, tools);
+
+    expect(result.toolCalls).toEqual([]);
+    expect(result.warnings?.[0]).toContain("requires a newer version of Codex");
+    expect(result.warnings?.[0]?.length).toBeLessThanOrEqual(1_000);
   });
 });

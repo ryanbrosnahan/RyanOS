@@ -399,9 +399,10 @@ function conciseBridgeError(value: string | undefined, fallback = "unknown error
   const normalized = (value ?? fallback).replace(/\s+/g, " ").trim();
   if (normalized.length === 0) return fallback;
   const maxLength = 900;
-  return normalized.length > maxLength
-    ? `${normalized.slice(0, maxLength - 1)}...`
-    : normalized;
+  if (normalized.length <= maxLength) return normalized;
+  const prefixLength = 280;
+  const suffixLength = maxLength - prefixLength - 5;
+  return `${normalized.slice(0, prefixLength)} ... ${normalized.slice(-suffixLength)}`;
 }
 
 export class CodexLoginAiProvider implements AiProvider {
