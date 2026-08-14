@@ -123,7 +123,9 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
   systemctl --user restart ryanos-codex-bridge.service
   systemctl --user is-active --quiet ryanos-codex-bridge.service
   mkdir -p releases/android
-  docker compose -f '$COMPOSE_FILE' build
+  # Every application service uses the same ryanos-app:server image. Build it
+  # once so Compose does not start redundant BuildKit sessions for each service.
+  docker compose -f '$COMPOSE_FILE' build api
   docker compose -f '$COMPOSE_FILE' up -d postgres
   scripts/ensure-postgres-docker-auth.sh '$COMPOSE_FILE'
   docker compose -f '$COMPOSE_FILE' run --rm migrate
