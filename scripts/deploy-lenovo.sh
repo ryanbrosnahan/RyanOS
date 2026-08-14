@@ -8,6 +8,7 @@ COMPOSE_FILE="${RYANOS_DEPLOY_COMPOSE_FILE:-docker-compose.server.yml}"
 SSH_OPTS=(-o BatchMode=yes -o IdentitiesOnly=yes)
 ANDROID_APK_PATH=""
 ANDROID_MANIFEST_PATH=""
+IMAGE_ARCHIVE_PATH=""
 ANDROID_STUDIO_JBR="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,6 +19,9 @@ cd "$repo_dir"
 cleanup() {
   if [ -n "${ANDROID_MANIFEST_PATH:-}" ]; then
     rm -f "$ANDROID_MANIFEST_PATH"
+  fi
+  if [ -n "${IMAGE_ARCHIVE_PATH:-}" ]; then
+    rm -f "$IMAGE_ARCHIVE_PATH"
   fi
 }
 trap cleanup EXIT
@@ -55,12 +59,42 @@ if ! git merge-base --is-ancestor "origin/$BRANCH" "HEAD"; then
   exit 1
 fi
 
+DEPLOY_SHA="$(git rev-parse --short=12 HEAD)"
+REMOTE_IMAGE_ARCHIVE="/tmp/ryanos-image-$DEPLOY_SHA.tar.gz"
+
+# Refuse before doing expensive local work if the production host is guarded
+# or Docker is unavailable. The guard marker also prevents a Docker client from
+# hanging while a deliberately paused daemon is awaiting review.
+ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
+  if [ -e /run/docker-churn-guard.tripped ]; then
+    echo 'Docker churn guard is tripped. Review its evidence and reset it before deploying.' >&2
+    exit 1
+  fi
+  systemctl is-active --quiet docker.service || {
+    echo 'Docker is not active on the Lenovo.' >&2
+    exit 1
+  }
+  docker info >/dev/null
+"
+
 pnpm test
 pnpm typecheck
 BETTER_AUTH_URL="${BETTER_AUTH_URL:-https://ryanos.localhost.invalid}" \
 BETTER_AUTH_SECRET="${BETTER_AUTH_SECRET:-local-compose-config-placeholder-secret}" \
 RYANOS_INVITE_CODES="${RYANOS_INVITE_CODES:-local-compose-config-placeholder}" \
 docker compose -f "$COMPOSE_FILE" config >/dev/null
+
+# Build on the developer Mac and transfer the finished Linux image. BuildKit
+# network churn on the Lenovo has been associated with host instability, so a
+# production deployment must never build an application image there.
+DOCKER_DEFAULT_PLATFORM=linux/amd64 \
+BETTER_AUTH_URL="${BETTER_AUTH_URL:-https://ryanos.localhost.invalid}" \
+BETTER_AUTH_SECRET="${BETTER_AUTH_SECRET:-local-compose-config-placeholder-secret}" \
+RYANOS_INVITE_CODES="${RYANOS_INVITE_CODES:-local-compose-config-placeholder}" \
+docker compose -f "$COMPOSE_FILE" build api
+docker image tag ryanos-app:server "ryanos-app:server-$DEPLOY_SHA"
+IMAGE_ARCHIVE_PATH="$(mktemp -t ryanos-image.XXXXXX)"
+docker image save ryanos-app:server "ryanos-app:server-$DEPLOY_SHA" | gzip -1 >"$IMAGE_ARCHIVE_PATH"
 
 if [ "${RYANOS_DEPLOY_ANDROID_APK:-1}" != "0" ]; then
   if [ ! -x apps/android/gradlew ]; then
@@ -97,7 +131,23 @@ if [ "${RYANOS_DEPLOY_ANDROID_APK:-1}" != "0" ]; then
   printf '}\n' >> "$ANDROID_MANIFEST_PATH"
 fi
 
+scp "${SSH_OPTS[@]}" "$IMAGE_ARCHIVE_PATH" "$REMOTE:$REMOTE_IMAGE_ARCHIVE"
+
 ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
+  remote_image_archive='$REMOTE_IMAGE_ARCHIVE'
+  cleanup_remote_image() {
+    rm -f \"\$remote_image_archive\"
+  }
+  trap cleanup_remote_image EXIT
+
+  if [ -e /run/docker-churn-guard.tripped ]; then
+    echo 'Docker churn guard tripped while the release was being prepared; deployment stopped safely.' >&2
+    exit 1
+  fi
+  systemctl is-active --quiet docker.service || {
+    echo 'Docker stopped while the release was being prepared; deployment stopped safely.' >&2
+    exit 1
+  }
   if [ ! -d '$REMOTE_DIR/.git' ]; then
     echo 'Missing repo at $REMOTE_DIR. Clone git@github.com:ryanbrosnahan/RyanOS.git there first.' >&2
     exit 1
@@ -123,11 +173,35 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
   systemctl --user restart ryanos-codex-bridge.service
   systemctl --user is-active --quiet ryanos-codex-bridge.service
   mkdir -p releases/android
-  # Every application service uses the same ryanos-app:server image. Build it
-  # once so Compose does not start redundant BuildKit sessions for each service.
-  docker compose -f '$COMPOSE_FILE' build api
+
+  # Preserve the prior application image for a fast code rollback, then load
+  # the exact image built and tested on the developer machine.
+  rollback_tag=\"ryanos-app:rollback-\$(date -u +%Y%m%dT%H%M%SZ)\"
+  if docker image inspect ryanos-app:server >/dev/null 2>&1; then
+    docker image tag ryanos-app:server "\$rollback_tag"
+  else
+    rollback_tag='none'
+  fi
+  chmod 0600 "\$remote_image_archive"
+  gzip -dc "\$remote_image_archive" | docker image load >/dev/null
+  docker image inspect 'ryanos-app:server-$DEPLOY_SHA' >/dev/null
+  docker image tag 'ryanos-app:server-$DEPLOY_SHA' ryanos-app:server
+
   docker compose -f '$COMPOSE_FILE' up -d postgres
   scripts/ensure-postgres-docker-auth.sh '$COMPOSE_FILE'
+
+  # The database dump contains encrypted application fields. It and the key
+  # copy are still personal data, so keep the deployment backup owner-only.
+  umask 077
+  backup_dir=\"backups/pre-deploy-$DEPLOY_SHA-\$(date -u +%Y%m%dT%H%M%SZ)\"
+  mkdir -p "\$backup_dir"
+  chmod 0700 "\$backup_dir"
+  docker compose -f '$COMPOSE_FILE' exec -T postgres sh -c \
+    'exec pg_dump -Fc -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"' \
+    >"\$backup_dir/postgres.dump"
+  test -s "\$backup_dir/postgres.dump"
+  install -m 0600 secrets/master-key "\$backup_dir/master-key"
+
   docker compose -f '$COMPOSE_FILE' run --rm migrate
   compose_profile_args=''
   compose_services='api web worker'
@@ -135,9 +209,19 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
     compose_profile_args='--profile telegram'
     compose_services=\"\$compose_services telegram-poller\"
   fi
-  docker compose -f '$COMPOSE_FILE' \$compose_profile_args up -d --remove-orphans \$compose_services
+  docker compose -f '$COMPOSE_FILE' \$compose_profile_args up -d --no-build --remove-orphans \$compose_services
   docker compose -f '$COMPOSE_FILE' ps
-  curl -fsS http://127.0.0.1:\${WEB_PORT:-3100}/api/health
+  health_url=\"http://127.0.0.1:\${WEB_PORT:-3100}/api/health\"
+  for attempt in \$(seq 1 30); do
+    if curl -fsS --max-time 5 \"\$health_url\" >/dev/null; then
+      printf 'Deployment %s is healthy. Backup: %s. Rollback image: %s.\n' \
+        '$DEPLOY_SHA' \"\$backup_dir\" \"\$rollback_tag\"
+      exit 0
+    fi
+    sleep 2
+  done
+  echo \"Deployment health check failed. Data backup: \$backup_dir; prior image: \$rollback_tag\" >&2
+  exit 1
 "
 
 if [ -n "$ANDROID_APK_PATH" ]; then

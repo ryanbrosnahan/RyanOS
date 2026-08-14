@@ -5,9 +5,11 @@ dist/
 coverage/
 *.tsbuildinfo
 .env
+.env.*
 .env.local
 .env.*.local
 secrets/
+backups/
 releases/
 *.log
 *.pid

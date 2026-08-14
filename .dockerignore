@@ -8,8 +8,12 @@ dist/
 coverage/
 *.tsbuildinfo
 .env
+.env.*
 .env.local
 .env.*.local
 secrets/
+backups/
+releases/
+.gogcli/
 *.log
 .DS_Store
