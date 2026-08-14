@@ -21,6 +21,7 @@ import {
   PawPrint,
   Pencil,
   Plane,
+  Plus,
   RefreshCw,
   RotateCcw,
   Sparkles,
@@ -137,6 +138,11 @@ type TaxonomyResponse = {
 
 type ToggleResponse = {
   item?: Item;
+};
+
+type CreateItemResponse = {
+  item?: Item;
+  result?: ToolResultResponse;
 };
 
 type ToolResultResponse = {
@@ -407,6 +413,8 @@ export function ItemsPanel() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
+  const [showCreateTask, setShowCreateTask] = useState(false);
+  const [newTaskTitle, setNewTaskTitle] = useState("");
   const [editingScopeItemId, setEditingScopeItemId] = useState<string | null>(null);
   const [expandedDetailItemIds, setExpandedDetailItemIds] = useState<Set<string>>(new Set());
   const [detailIntents, setDetailIntents] = useState<Record<string, ItemDetailIntent>>({});
@@ -494,6 +502,71 @@ export function ItemsPanel() {
       } else {
         await loadDashboard({ background: true });
       }
+      window.dispatchEvent(new Event("ryanos-focus-refresh"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPendingKey(null);
+    }
+  }
+
+  async function createTask(starred: boolean) {
+    const title = newTaskTitle.trim();
+    if (!title) return;
+
+    const key = "new:task";
+    setPendingKey(key);
+    setError(null);
+    try {
+      const createResponse = await apiFetch(apiPath("/v1/mobile/items"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          timezone,
+          date: dashboardDate ?? undefined,
+          title,
+          kind: "task",
+          priority: "normal"
+        })
+      });
+      const createPayload = (await createResponse.json()) as CreateItemResponse;
+      if (!createResponse.ok) {
+        throw new Error(
+          createPayload.result
+            ? updateErrorMessage(createPayload.result, `Task creation returned ${createResponse.status}`)
+            : `Task creation returned ${createResponse.status}`
+        );
+      }
+      if (!createPayload.item) throw new Error("Task was created but was not returned by the server.");
+
+      if (starred) {
+        const starResponse = await apiFetch(
+          apiPath(`/v1/items/${encodeURIComponent(createPayload.item.id)}/star`),
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              starred: true,
+              timezone
+            })
+          }
+        );
+        if (!starResponse.ok) {
+          setNewTaskTitle("");
+          setShowCreateTask(false);
+          await loadDashboard({ background: true });
+          window.dispatchEvent(new Event("ryanos-focus-refresh"));
+          throw new Error(`Task was created, but adding it to Today's Focus returned ${starResponse.status}`);
+        }
+      }
+
+      setNewTaskTitle("");
+      setShowCreateTask(false);
+      await loadDashboard({ background: true });
       window.dispatchEvent(new Event("ryanos-focus-refresh"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -784,20 +857,79 @@ export function ItemsPanel() {
           <CheckCircle2 className="h-5 w-5 text-sky-700" aria-hidden="true" />
           <h2 className="text-lg font-semibold text-stone-950">Open items</h2>
         </div>
-        <button
-          type="button"
-          onClick={() => void loadDashboard()}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-stone-300 text-stone-700 hover:bg-stone-100"
-          aria-label="Refresh open items"
-          title="Refresh open items"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading || refreshing ? "animate-spin" : ""}`} aria-hidden="true" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowCreateTask((current) => !current)}
+            className={`inline-flex h-8 w-8 items-center justify-center rounded-md border transition-colors ${
+              showCreateTask
+                ? "border-stone-900 bg-stone-900 text-white"
+                : "border-stone-300 text-stone-700 hover:bg-stone-100"
+            }`}
+            aria-label={showCreateTask ? "Close add task form" : "Add task"}
+            title={showCreateTask ? "Close add task form" : "Add task"}
+            aria-expanded={showCreateTask}
+          >
+            <Plus className={`h-4 w-4 transition-transform ${showCreateTask ? "rotate-45" : ""}`} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={() => void loadDashboard()}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-stone-300 text-stone-700 hover:bg-stone-100"
+            aria-label="Refresh open items"
+            title="Refresh open items"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading || refreshing ? "animate-spin" : ""}`} aria-hidden="true" />
+          </button>
+        </div>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-stone-500">
         <span>Auto-refreshes every 30 seconds</span>
         {lastUpdatedAt ? <span>Updated {formatDate(lastUpdatedAt)} {new Date(lastUpdatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span> : null}
       </div>
+
+      {showCreateTask ? (
+        <form
+          className="mt-3 flex flex-col gap-2 border-t border-stone-200 pt-3 sm:flex-row sm:items-center"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void createTask(false);
+          }}
+        >
+          <label htmlFor="new-task-title" className="sr-only">
+            Task title
+          </label>
+          <input
+            id="new-task-title"
+            type="text"
+            value={newTaskTitle}
+            onChange={(event) => setNewTaskTitle(event.target.value)}
+            placeholder="What needs doing?"
+            autoFocus
+            disabled={pendingKey === "new:task"}
+            className="h-10 min-w-0 flex-1 rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none placeholder:text-stone-400 focus:border-sky-600 focus:ring-2 focus:ring-sky-100 disabled:bg-stone-100"
+          />
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="submit"
+              disabled={!newTaskTitle.trim() || pendingKey === "new:task"}
+              className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-md bg-stone-900 px-3 text-sm font-medium text-white hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none"
+            >
+              <Plus className="h-4 w-4" aria-hidden="true" />
+              Add task
+            </button>
+            <button
+              type="button"
+              onClick={() => void createTask(true)}
+              disabled={!newTaskTitle.trim() || pendingKey === "new:task"}
+              className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 text-sm font-medium text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50 sm:flex-none"
+            >
+              <Star className="h-4 w-4 fill-current" aria-hidden="true" />
+              Add to Today&apos;s Focus
+            </button>
+          </div>
+        </form>
+      ) : null}
 
       {error ? <p className="mt-3 text-sm leading-6 text-rose-700">{error}</p> : null}
 
