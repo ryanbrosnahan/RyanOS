@@ -4,6 +4,10 @@ RyanOS can run from the Lenovo home server while code edits continue on this
 laptop. The server deployment is private to Tailscale and exposes only the web
 service through Tailscale Serve.
 
+For outages, Docker churn-guard trips, or NetworkManager/D-Bus saturation, use
+the state-preserving procedure in [Home Server Recovery](HOME_SERVER_RECOVERY.md)
+before deploying or restarting production services.
+
 ## One-time SSH setup
 
 The local SSH alias should use the dedicated Lenovo key:

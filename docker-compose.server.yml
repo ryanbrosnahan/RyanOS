@@ -138,6 +138,7 @@ services:
   telegram-poller:
     <<: *app-service
     container_name: ryanos-telegram-poller
+    restart: "on-failure:5"
     profiles: ["telegram"]
     environment:
       <<: *app-env
@@ -149,6 +150,8 @@ services:
       TELEGRAM_POLL_LIMIT: ${TELEGRAM_POLL_LIMIT:-20}
       TELEGRAM_SEND_TYPING: ${TELEGRAM_SEND_TYPING:-true}
       TELEGRAM_TYPING_INTERVAL_MS: ${TELEGRAM_TYPING_INTERVAL_MS:-4500}
+      TELEGRAM_RETRY_BASE_MS: ${TELEGRAM_RETRY_BASE_MS:-1000}
+      TELEGRAM_RETRY_MAX_MS: ${TELEGRAM_RETRY_MAX_MS:-60000}
     volumes:
       - ./secrets:/app/secrets:ro
     depends_on:

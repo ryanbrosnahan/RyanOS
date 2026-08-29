@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 import { createDb } from "@ryanos/db";
+import { setTimeout as sleepTimer } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { resolveTelegramBotToken } from "./telegram-credentials.js";
 
 type TelegramPollResponse = {
   ok?: boolean;
   description?: string;
+  parameters?: {
+    retry_after?: number;
+  };
   result?: Array<{
     update_id: number;
     [key: string]: unknown;
@@ -27,50 +32,194 @@ const pollLimit = Number(process.env.TELEGRAM_POLL_LIMIT ?? "20");
 const sendTyping =
   (process.env.TELEGRAM_SEND_TYPING ?? "true").trim().toLowerCase() !== "false";
 const typingIntervalMs = Number(process.env.TELEGRAM_TYPING_INTERVAL_MS ?? "4500");
+const retryBaseMs = Number(process.env.TELEGRAM_RETRY_BASE_MS ?? "1000");
+const retryMaxMs = Number(process.env.TELEGRAM_RETRY_MAX_MS ?? "60000");
 
 let shuttingDown = false;
+const shutdownController = new AbortController();
 
-process.once("SIGINT", () => {
+function beginShutdown() {
   shuttingDown = true;
-});
-process.once("SIGTERM", () => {
-  shuttingDown = true;
-});
+  shutdownController.abort();
+}
+
+process.once("SIGINT", beginShutdown);
+process.once("SIGTERM", beginShutdown);
+
+export class PollingStoppedError extends Error {
+  constructor() {
+    super("Telegram polling stopped");
+    this.name = "PollingStoppedError";
+  }
+}
+
+export class RetriableRequestError extends Error {
+  readonly retryAfterMs: number | undefined;
+
+  constructor(message: string, retryAfterMs?: number) {
+    super(message);
+    this.name = "RetriableRequestError";
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+type RetryOperationOptions<T> = {
+  operation: string;
+  run: () => Promise<T>;
+  shouldStop: () => boolean;
+  sleep: (delayMs: number) => Promise<void>;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  random?: () => number;
+  onRetry?: (input: {
+    operation: string;
+    attempt: number;
+    delayMs: number;
+    error: unknown;
+  }) => void;
+};
+
+export function retryDelayMs(
+  error: unknown,
+  attempt: number,
+  baseDelayMs = 1_000,
+  maxDelayMs = 60_000,
+  random: () => number = Math.random
+): number {
+  const exponent = Math.min(Math.max(attempt - 1, 0), 10);
+  const boundedBase = Math.min(maxDelayMs, baseDelayMs * 2 ** exponent);
+  const jittered = Math.min(maxDelayMs, boundedBase + Math.floor(boundedBase * 0.2 * random()));
+  return Math.max(error instanceof RetriableRequestError ? error.retryAfterMs ?? 0 : 0, jittered);
+}
+
+export async function retryOperation<T>(options: RetryOperationOptions<T>): Promise<T> {
+  let attempt = 0;
+  while (!options.shouldStop()) {
+    try {
+      return await options.run();
+    } catch (error) {
+      if (!(error instanceof RetriableRequestError)) throw error;
+      attempt += 1;
+      const delayMs = retryDelayMs(
+        error,
+        attempt,
+        options.baseDelayMs,
+        options.maxDelayMs,
+        options.random
+      );
+      options.onRetry?.({ operation: options.operation, attempt, delayMs, error });
+      await options.sleep(delayMs);
+    }
+  }
+  throw new PollingStoppedError();
+}
+
+function retryableStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+async function waitForRetry(delayMs: number): Promise<void> {
+  if (shuttingDown) return;
+  try {
+    await sleepTimer(delayMs, undefined, { signal: shutdownController.signal });
+  } catch (error) {
+    if (!(error instanceof Error) || error.name !== "AbortError") throw error;
+  }
+}
+
+function retryLog(input: {
+  operation: string;
+  attempt: number;
+  delayMs: number;
+  error: unknown;
+}) {
+  console.error(
+    JSON.stringify({
+      status: "retrying",
+      operation: input.operation,
+      attempt: input.attempt,
+      delayMs: input.delayMs,
+      error: input.error instanceof Error ? input.error.message : String(input.error)
+    })
+  );
+}
+
+function withRetry<T>(operation: string, run: () => Promise<T>): Promise<T> {
+  return retryOperation({
+    operation,
+    run,
+    shouldStop: () => shuttingDown,
+    sleep: waitForRetry,
+    baseDelayMs: retryBaseMs,
+    maxDelayMs: retryMaxMs,
+    onRetry: retryLog
+  });
+}
 
 async function telegramApi<T>(
   token: string,
   method: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  fetchFn: typeof fetch = fetch
 ): Promise<T> {
-  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
-  const body = (await response.json().catch(() => ({}))) as { ok?: boolean; description?: string };
+  let response: Response;
+  try {
+    response = await fetchFn(`https://api.telegram.org/bot${token}/${method}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    throw new RetriableRequestError(
+      `Telegram ${method} request failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const body = (await response.json().catch(() => ({}))) as {
+    ok?: boolean;
+    description?: string;
+    parameters?: { retry_after?: number };
+  };
   if (!response.ok || body.ok !== true) {
-    throw new Error(
+    const message =
       `Telegram ${method} failed with HTTP ${response.status}: ${
         body.description ?? response.statusText
-      }`
-    );
+      }`;
+    if (retryableStatus(response.status)) {
+      const retryAfterSeconds = body.parameters?.retry_after;
+      throw new RetriableRequestError(
+        message,
+        typeof retryAfterSeconds === "number" && retryAfterSeconds >= 0
+          ? retryAfterSeconds * 1_000
+          : undefined
+      );
+    }
+    throw new Error(message);
   }
   return body as T;
 }
 
 async function forwardUpdate(update: Record<string, unknown>) {
-  const response = await fetch(`${apiUrl}/v1/inbound/telegram`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(update)
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${apiUrl}/v1/inbound/telegram`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(update)
+    });
+  } catch (error) {
+    throw new RetriableRequestError(
+      `RyanOS inbound request failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
   const body = (await response.json().catch(() => ({}))) as unknown;
   if (!response.ok) {
-    throw new Error(`RyanOS inbound returned HTTP ${response.status}: ${JSON.stringify(body)}`);
+    const message = `RyanOS inbound returned HTTP ${response.status}: ${JSON.stringify(body)}`;
+    if (retryableStatus(response.status)) throw new RetriableRequestError(message);
+    throw new Error(message);
   }
   return body;
 }
@@ -131,7 +280,9 @@ async function main() {
       );
     }
 
-    const bot = await telegramApi<TelegramGetMeResponse>(tokenResolution.token, "getMe", {});
+    const bot = await withRetry("telegram.getMe", () =>
+      telegramApi<TelegramGetMeResponse>(tokenResolution.token!, "getMe", {})
+    );
     const username = bot.result?.username;
     console.log(
       username
@@ -139,22 +290,28 @@ async function main() {
         : "RyanOS Telegram poller connected. Open your bot in Telegram and send /start."
     );
 
-    await telegramApi(tokenResolution.token, "deleteWebhook", {
-      drop_pending_updates: false
-    });
+    await withRetry("telegram.deleteWebhook", () =>
+      telegramApi(tokenResolution.token!, "deleteWebhook", {
+        drop_pending_updates: false
+      })
+    );
 
     let offset = Number(process.env.TELEGRAM_POLL_OFFSET ?? "0") || undefined;
     while (!shuttingDown) {
-      const body = await telegramApi<TelegramPollResponse>(tokenResolution.token, "getUpdates", {
-        ...(offset === undefined ? {} : { offset }),
-        timeout: pollTimeoutSeconds,
-        limit: pollLimit,
-        allowed_updates: ["message", "edited_message", "channel_post"]
-      });
+      const body = await withRetry("telegram.getUpdates", () =>
+        telegramApi<TelegramPollResponse>(tokenResolution.token!, "getUpdates", {
+          ...(offset === undefined ? {} : { offset }),
+          timeout: pollTimeoutSeconds,
+          limit: pollLimit,
+          allowed_updates: ["message", "edited_message", "channel_post"]
+        })
+      );
 
       for (const update of body.result ?? []) {
         try {
-          const result = await forwardUpdateWithTyping(tokenResolution.token, update);
+          const result = await withRetry(`ryanos.forwardUpdate.${update.update_id}`, () =>
+            forwardUpdateWithTyping(tokenResolution.token!, update)
+          );
           console.log(
             JSON.stringify(
               {
@@ -166,21 +323,21 @@ async function main() {
               2
             )
           );
-        } catch (err) {
+        } catch (error) {
+          if (error instanceof PollingStoppedError) throw error;
           console.error(
             JSON.stringify(
               {
-                status: "failed",
+                status: "permanent_delivery_failure",
                 updateId: update.update_id,
-                error: err instanceof Error ? err.message : String(err)
+                error: error instanceof Error ? error.message : String(error)
               },
               null,
               2
             )
           );
-        } finally {
-          offset = update.update_id + 1;
         }
+        offset = update.update_id + 1;
       }
     }
   } finally {
@@ -188,7 +345,11 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exitCode = 1;
-});
+const entrypoint = process.argv[1];
+if (entrypoint && import.meta.url === pathToFileURL(entrypoint).href) {
+  main().catch((error) => {
+    if (error instanceof PollingStoppedError) return;
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
