@@ -45,57 +45,40 @@ ssh lenovo 'pid="$(systemctl show -p MainPID --value docker.service)"; grep -E "
 
 ## Remote recovery
 
-After receiving operator approval, paste this into an SSH session on Lenovo.
-The recovery probes NetworkManager before resuming Docker and probes it again
-afterward. If the post-resume probe fails, the unit pauses Docker again:
+Stage the reviewed `scripts/recover-paused-docker.sh` on Lenovo before asking
+for approval. The script checks that the reviewed current-boot guard is installed
+and Docker is paused. With `--restart-networkmanager`, it restarts NetworkManager
+while Docker stays paused, waits for a clean 60-second network observation, then
+resumes Docker and validates networking and the application for another minute.
+It does not restart Tailscale unless a separate investigation calls for that.
+Any failed validation after resume pauses Docker again; the marker is retained.
+Without the flag, it requires already healthy networking and also rejects
+saturation in the preceding two minutes.
+
+After receiving explicit operator approval immediately before the restart, run
+in a Lenovo terminal (the sudo password stays in that terminal):
 
 ```bash
+sudo install -o root -g root -m 0755 \
+  /home/ryan/ryanos-recover-paused-docker.sh \
+  /usr/local/sbin/ryanos-recover-paused-docker
 recovery_unit="ryanos-safe-recovery-$(date +%Y%m%d-%H%M%S)"
-sudo systemd-run --unit="$recovery_unit" --no-block /bin/bash -lc '
-set -euo pipefail
-echo "Restarting NetworkManager while Docker remains paused"
-systemctl restart NetworkManager
-nm-online -q --timeout=60
-systemctl restart tailscaled
-
-precheck_since="$(date --iso-8601=seconds)"
-nmcli general status >/dev/null
-sleep 20
-
-if journalctl --since "$precheck_since" --no-pager | grep -Fq "maximum number of pending replies"; then
-  echo "D-Bus saturation persists before Docker resume; leaving Docker paused"
-  exit 1
-fi
-
-echo "Network is healthy; resuming Docker"
-systemctl kill --kill-who=main --signal=SIGCONT docker.service
-systemctl start docker.socket
-timeout 30 docker info >/dev/null
-
-postcheck_since="$(date --iso-8601=seconds)"
-sleep 60
-nmcli general status >/dev/null
-sleep 10
-if journalctl --since "$postcheck_since" --no-pager | grep -Fq "maximum number of pending replies"; then
-  echo "D-Bus saturation returned after Docker resume; pausing Docker again"
-  systemctl kill --kill-who=main --signal=SIGSTOP docker.service
-  exit 1
-fi
-
-echo "Recovery completed successfully"
-'
+sudo systemd-run --unit="$recovery_unit" --no-block \
+  --property=Type=oneshot --property=TimeoutStartSec=10min \
+  /usr/local/sbin/ryanos-recover-paused-docker --restart-networkmanager
 echo "Recovery logs: sudo journalctl -u $recovery_unit -n 100 --no-pager"
 ```
 
-The SSH session may disconnect. The recovery continues under systemd. After
-reconnecting, inspect its result:
+SSH may disconnect; systemd continues recovery. After reconnecting, inspect the
+unit's logs and result:
 
 ```bash
 sudo journalctl -u <recovery-unit-from-command-output> -n 100 --no-pager
+systemctl show <recovery-unit-from-command-output> -p Result -p ExecMainStatus
 ```
 
-If recovery does not end with `Recovery completed successfully`, do not rerun
-it repeatedly. Inspect the evidence under
+If recovery does not end with `Recovery checks passed.` and a successful unit
+result, do not rerun it repeatedly. Inspect the evidence under
 `/var/lib/server-crash-evidence/guard/` and use the local console. If the host
 cannot be recovered safely, obtain approval and perform a controlled reboot.
 If a container is in a confirmed restart loop, disable its restart policy and

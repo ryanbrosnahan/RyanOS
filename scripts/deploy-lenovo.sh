@@ -13,6 +13,8 @@ ANDROID_STUDIO_JBR="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$script_dir/.." && pwd)"
+source "$script_dir/lenovo-deploy-safety.sh"
+remote_safety_functions="$(declare -f ryanos_guard_is_clear ryanos_guarded_run ryanos_docker_preflight)"
 
 cd "$repo_dir"
 
@@ -66,15 +68,8 @@ REMOTE_IMAGE_ARCHIVE="/tmp/ryanos-image-$DEPLOY_SHA.tar.gz"
 # or Docker is unavailable. The guard marker also prevents a Docker client from
 # hanging while a deliberately paused daemon is awaiting review.
 ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
-  if [ -e /run/docker-churn-guard.tripped ]; then
-    echo 'Docker churn guard is tripped. Review its evidence and reset it before deploying.' >&2
-    exit 1
-  fi
-  systemctl is-active --quiet docker.service || {
-    echo 'Docker is not active on the Lenovo.' >&2
-    exit 1
-  }
-  docker info >/dev/null
+  $remote_safety_functions
+  ryanos_docker_preflight
 "
 
 pnpm test
@@ -134,20 +129,14 @@ fi
 scp "${SSH_OPTS[@]}" "$IMAGE_ARCHIVE_PATH" "$REMOTE:$REMOTE_IMAGE_ARCHIVE"
 
 ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
+  $remote_safety_functions
   remote_image_archive='$REMOTE_IMAGE_ARCHIVE'
   cleanup_remote_image() {
     rm -f \"\$remote_image_archive\"
   }
   trap cleanup_remote_image EXIT
 
-  if [ -e /run/docker-churn-guard.tripped ]; then
-    echo 'Docker churn guard tripped while the release was being prepared; deployment stopped safely.' >&2
-    exit 1
-  fi
-  systemctl is-active --quiet docker.service || {
-    echo 'Docker stopped while the release was being prepared; deployment stopped safely.' >&2
-    exit 1
-  }
+  ryanos_docker_preflight
   if [ ! -d '$REMOTE_DIR/.git' ]; then
     echo 'Missing repo at $REMOTE_DIR. Clone git@github.com:ryanbrosnahan/RyanOS.git there first.' >&2
     exit 1
@@ -176,19 +165,20 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
 
   # Preserve the prior application image for a fast code rollback, then load
   # the exact image built and tested on the developer machine.
+  ryanos_docker_preflight
   rollback_tag=\"ryanos-app:rollback-\$(date -u +%Y%m%dT%H%M%SZ)\"
-  if docker image inspect ryanos-app:server >/dev/null 2>&1; then
-    docker image tag ryanos-app:server "\$rollback_tag"
+  if ryanos_guarded_run 15 docker image inspect ryanos-app:server >/dev/null 2>&1; then
+    ryanos_guarded_run 15 docker image tag ryanos-app:server "\$rollback_tag"
   else
     rollback_tag='none'
   fi
   chmod 0600 "\$remote_image_archive"
-  gzip -dc "\$remote_image_archive" | docker image load >/dev/null
-  docker image inspect 'ryanos-app:server-$DEPLOY_SHA' >/dev/null
-  docker image tag 'ryanos-app:server-$DEPLOY_SHA' ryanos-app:server
+  gzip -dc "\$remote_image_archive" | ryanos_guarded_run 600 docker image load >/dev/null
+  ryanos_guarded_run 15 docker image inspect 'ryanos-app:server-$DEPLOY_SHA' >/dev/null
+  ryanos_guarded_run 15 docker image tag 'ryanos-app:server-$DEPLOY_SHA' ryanos-app:server
 
-  docker compose -f '$COMPOSE_FILE' up -d postgres
-  scripts/ensure-postgres-docker-auth.sh '$COMPOSE_FILE'
+  ryanos_guarded_run 120 docker compose -f '$COMPOSE_FILE' up -d postgres
+  ryanos_guarded_run 60 scripts/ensure-postgres-docker-auth.sh '$COMPOSE_FILE'
 
   # The database dump contains encrypted application fields. It and the key
   # copy are still personal data, so keep the deployment backup owner-only.
@@ -196,23 +186,24 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
   backup_dir=\"backups/pre-deploy-$DEPLOY_SHA-\$(date -u +%Y%m%dT%H%M%SZ)\"
   mkdir -p "\$backup_dir"
   chmod 0700 "\$backup_dir"
-  docker compose -f '$COMPOSE_FILE' exec -T postgres sh -c \
+  ryanos_guarded_run 300 docker compose -f '$COMPOSE_FILE' exec -T postgres sh -c \
     'exec pg_dump -Fc -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"' \
     >"\$backup_dir/postgres.dump"
   test -s "\$backup_dir/postgres.dump"
   install -m 0600 secrets/master-key "\$backup_dir/master-key"
 
-  docker compose -f '$COMPOSE_FILE' run --rm migrate
+  ryanos_guarded_run 300 docker compose -f '$COMPOSE_FILE' run --rm migrate
   compose_profile_args=''
   compose_services='api web worker'
   if grep -Eq '^COMPOSE_PROFILES=([^#]*,)?telegram(,|$)' .env; then
     compose_profile_args='--profile telegram'
     compose_services=\"\$compose_services telegram-poller\"
   fi
-  docker compose -f '$COMPOSE_FILE' \$compose_profile_args up -d --no-build --remove-orphans \$compose_services
-  docker compose -f '$COMPOSE_FILE' ps
+  ryanos_guarded_run 180 docker compose -f '$COMPOSE_FILE' \$compose_profile_args up -d --no-build --remove-orphans \$compose_services
+  ryanos_guarded_run 15 docker compose -f '$COMPOSE_FILE' ps
   health_url=\"http://127.0.0.1:\${WEB_PORT:-3100}/api/health\"
   for attempt in \$(seq 1 30); do
+    ryanos_guard_is_clear
     if curl -fsS --max-time 5 \"\$health_url\" >/dev/null; then
       printf 'Deployment %s is healthy. Backup: %s. Rollback image: %s.\n' \
         '$DEPLOY_SHA' \"\$backup_dir\" \"\$rollback_tag\"
@@ -229,15 +220,18 @@ if [ -n "$ANDROID_APK_PATH" ]; then
   scp "${SSH_OPTS[@]}" "$ANDROID_APK_PATH" "$REMOTE:$REMOTE_DIR/releases/android/ryanos-latest.apk"
   scp "${SSH_OPTS[@]}" "$ANDROID_MANIFEST_PATH" "$REMOTE:$REMOTE_DIR/releases/android/manifest.json"
   ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
+    $remote_safety_functions
     cd '$REMOTE_DIR'
     ls -lh releases/android/ryanos-latest.apk releases/android/manifest.json
-    docker compose -f '$COMPOSE_FILE' restart web
+    ryanos_docker_preflight
+    ryanos_guarded_run 120 docker compose -f '$COMPOSE_FILE' restart web
     for attempt in 1 2 3 4 5 6 7 8 9 10; do
-      if curl -fsS http://127.0.0.1:\${WEB_PORT:-3100}/downloads/android/manifest.json >/dev/null; then
+      ryanos_guard_is_clear
+      if curl -fsS --max-time 5 http://127.0.0.1:\${WEB_PORT:-3100}/downloads/android/manifest.json >/dev/null; then
         exit 0
       fi
       sleep 1
     done
-    curl -fsS http://127.0.0.1:\${WEB_PORT:-3100}/downloads/android/manifest.json >/dev/null
+    curl -fsS --max-time 5 http://127.0.0.1:\${WEB_PORT:-3100}/downloads/android/manifest.json >/dev/null
   "
 fi
