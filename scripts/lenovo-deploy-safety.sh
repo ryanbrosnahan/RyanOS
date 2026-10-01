@@ -48,3 +48,25 @@ ryanos_docker_preflight() {
   }
   ryanos_guarded_run 15 docker info >/dev/null
 }
+
+# Resume only the exact interrupted release, with the still-running app as the
+# rollback reference. All checks are read-only and precede deployment changes.
+ryanos_validate_loaded_release() {
+  local release_sha="$1" expected_image="$2" rollback_tag="$3"
+  local actual_image rollback_image running_image
+  [[ "$(git rev-parse HEAD)" == "$release_sha" ]] || {
+    echo 'Remote source differs from the interrupted release.' >&2; return 1;
+  }
+  git diff --quiet && git diff --cached --quiet || {
+    echo 'Remote source has uncommitted changes; inspect before resuming.' >&2; return 1;
+  }
+  actual_image="$(ryanos_guarded_run 15 docker image inspect --format '{{.Id}}' "ryanos-app:server-${release_sha:0:12}")" || return 1
+  [[ "$actual_image" == "$expected_image" ]] || {
+    echo 'Loaded image differs from the locally built and tested image.' >&2; return 1;
+  }
+  rollback_image="$(ryanos_guarded_run 15 docker image inspect --format '{{.Id}}' "$rollback_tag")" || return 1
+  running_image="$(ryanos_guarded_run 15 docker inspect --format '{{.Image}}' ryanos-api)" || return 1
+  [[ -n "$rollback_image" && "$rollback_image" == "$running_image" && "$rollback_image" != "$actual_image" ]] || {
+    echo 'Rollback image does not match the application before deployment.' >&2; return 1;
+  }
+}

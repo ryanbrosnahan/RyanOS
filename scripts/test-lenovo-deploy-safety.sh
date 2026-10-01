@@ -50,4 +50,44 @@ expect_failure 1 ryanos_docker_preflight
 [[ ! -e "$test_dir/should-not-run" ]] || fail 'inactive daemon allowed a client'
 echo 'PASS: inactive Docker fails preflight'
 
+(
+  release=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  source_sha="$release"
+  image='sha256:new-image'
+  rollback='sha256:old-image'
+  running="$rollback"
+  dirty=0
+  git() {
+    if [[ "$1" == rev-parse ]]; then echo "$source_sha"; else return "$dirty"; fi
+  }
+  ryanos_guarded_run() {
+    case "${!#}" in
+      ryanos-app:server-*) [[ "$image" != missing ]] || return 1; echo "$image" ;;
+      ryanos-app:rollback-*) echo "$rollback" ;;
+      ryanos-api) echo "$running" ;;
+      *) fail 'unexpected command during release validation' ;;
+    esac
+  }
+  validate() { ryanos_validate_loaded_release "$release" 'sha256:new-image' ryanos-app:rollback-20261001T033957Z; }
+  validate
+  echo 'PASS: matching interrupted release is accepted'
+  source_sha=wrong
+  expect_failure 1 validate
+  source_sha="$release"
+  dirty=1
+  expect_failure 1 validate
+  dirty=0
+  image=wrong
+  expect_failure 1 validate
+  image=missing
+  expect_failure 1 validate
+  image='sha256:new-image'
+  rollback=wrong
+  expect_failure 1 validate
+  rollback="$image"
+  running="$image"
+  expect_failure 1 validate
+  echo 'PASS: changed source, dirty source, mismatched/missing image, and invalid rollback are rejected'
+)
+
 echo 'All deployment safety tests passed.'

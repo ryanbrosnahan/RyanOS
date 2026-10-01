@@ -10,11 +10,14 @@ ANDROID_APK_PATH=""
 ANDROID_MANIFEST_PATH=""
 IMAGE_ARCHIVE_PATH=""
 ANDROID_STUDIO_JBR="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+RESUME_SHA="${RYANOS_DEPLOY_RESUME_SHA:-}"
+RESUME_IMAGE_ID="${RYANOS_DEPLOY_RESUME_IMAGE_ID:-}"
+RESUME_ROLLBACK_TAG="${RYANOS_DEPLOY_RESUME_ROLLBACK_TAG:-}"
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$script_dir/.." && pwd)"
 source "$script_dir/lenovo-deploy-safety.sh"
-remote_safety_functions="$(declare -f ryanos_guard_is_clear ryanos_guarded_run ryanos_docker_preflight)"
+remote_safety_functions="$(declare -f ryanos_guard_is_clear ryanos_guarded_run ryanos_docker_preflight ryanos_validate_loaded_release)"
 
 cd "$repo_dir"
 
@@ -61,7 +64,19 @@ if ! git merge-base --is-ancestor "origin/$BRANCH" "HEAD"; then
   exit 1
 fi
 
-DEPLOY_SHA="$(git rev-parse --short=12 HEAD)"
+if [[ -n "$RESUME_SHA$RESUME_IMAGE_ID$RESUME_ROLLBACK_TAG" ]]; then
+  if [[ ! "$RESUME_SHA" =~ ^[0-9a-f]{40}$ || ! "$RESUME_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ || ! "$RESUME_ROLLBACK_TAG" =~ ^ryanos-app:rollback-[0-9]{8}T[0-9]{6}Z$ ]]; then
+    echo 'Resume requires the full release SHA, exact previously tested image ID, and original rollback tag.' >&2
+    exit 1
+  fi
+  git merge-base --is-ancestor "$RESUME_SHA" HEAD || {
+    echo 'The interrupted release is not an ancestor of the current branch.' >&2
+    exit 1
+  }
+  echo "Resuming previously built and tested release $RESUME_SHA; retaining its source and image identity."
+fi
+DEPLOY_FULL_SHA="$(git rev-parse "${RESUME_SHA:-HEAD}")"
+DEPLOY_SHA="${DEPLOY_FULL_SHA:0:12}"
 REMOTE_IMAGE_ARCHIVE="/tmp/ryanos-image-$DEPLOY_SHA.tar.gz"
 
 # Refuse before doing expensive local work if the production host is guarded
@@ -72,61 +87,63 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
   ryanos_docker_preflight
 "
 
-pnpm test
-pnpm typecheck
-BETTER_AUTH_URL="${BETTER_AUTH_URL:-https://ryanos.localhost.invalid}" \
-BETTER_AUTH_SECRET="${BETTER_AUTH_SECRET:-local-compose-config-placeholder-secret}" \
-RYANOS_INVITE_CODES="${RYANOS_INVITE_CODES:-local-compose-config-placeholder}" \
-docker compose -f "$COMPOSE_FILE" config >/dev/null
+if [[ -z "$RESUME_SHA" ]]; then
+  pnpm test
+  pnpm typecheck
+  BETTER_AUTH_URL="${BETTER_AUTH_URL:-https://ryanos.localhost.invalid}" \
+  BETTER_AUTH_SECRET="${BETTER_AUTH_SECRET:-local-compose-config-placeholder-secret}" \
+  RYANOS_INVITE_CODES="${RYANOS_INVITE_CODES:-local-compose-config-placeholder}" \
+  docker compose -f "$COMPOSE_FILE" config >/dev/null
 
-# Build on the developer Mac and transfer the finished Linux image. BuildKit
-# network churn on the Lenovo has been associated with host instability, so a
-# production deployment must never build an application image there.
-DOCKER_DEFAULT_PLATFORM=linux/amd64 \
-BETTER_AUTH_URL="${BETTER_AUTH_URL:-https://ryanos.localhost.invalid}" \
-BETTER_AUTH_SECRET="${BETTER_AUTH_SECRET:-local-compose-config-placeholder-secret}" \
-RYANOS_INVITE_CODES="${RYANOS_INVITE_CODES:-local-compose-config-placeholder}" \
-docker compose -f "$COMPOSE_FILE" build api
-docker image tag ryanos-app:server "ryanos-app:server-$DEPLOY_SHA"
-IMAGE_ARCHIVE_PATH="$(mktemp -t ryanos-image.XXXXXX)"
-docker image save ryanos-app:server "ryanos-app:server-$DEPLOY_SHA" | gzip -1 >"$IMAGE_ARCHIVE_PATH"
+  # Build on the developer Mac and transfer the finished Linux image. BuildKit
+  # network churn on the Lenovo has been associated with host instability, so a
+  # production deployment must never build an application image there.
+  DOCKER_DEFAULT_PLATFORM=linux/amd64 \
+  BETTER_AUTH_URL="${BETTER_AUTH_URL:-https://ryanos.localhost.invalid}" \
+  BETTER_AUTH_SECRET="${BETTER_AUTH_SECRET:-local-compose-config-placeholder-secret}" \
+  RYANOS_INVITE_CODES="${RYANOS_INVITE_CODES:-local-compose-config-placeholder}" \
+  docker compose -f "$COMPOSE_FILE" build api
+  docker image tag ryanos-app:server "ryanos-app:server-$DEPLOY_SHA"
+  IMAGE_ARCHIVE_PATH="$(mktemp -t ryanos-image.XXXXXX)"
+  docker image save ryanos-app:server "ryanos-app:server-$DEPLOY_SHA" | gzip -1 >"$IMAGE_ARCHIVE_PATH"
 
-if [ "${RYANOS_DEPLOY_ANDROID_APK:-1}" != "0" ]; then
-  if [ ! -x apps/android/gradlew ]; then
-    echo "Missing Android Gradle wrapper. Set RYANOS_DEPLOY_ANDROID_APK=0 to skip APK publishing." >&2
-    exit 1
+  if [ "${RYANOS_DEPLOY_ANDROID_APK:-1}" != "0" ]; then
+    if [ ! -x apps/android/gradlew ]; then
+      echo "Missing Android Gradle wrapper. Set RYANOS_DEPLOY_ANDROID_APK=0 to skip APK publishing." >&2
+      exit 1
+    fi
+    if [ -z "${JAVA_HOME:-}" ] && [ -x "$ANDROID_STUDIO_JBR/bin/java" ]; then
+      export JAVA_HOME="$ANDROID_STUDIO_JBR"
+    fi
+    (
+      cd apps/android
+      ./gradlew :app:assembleDebug
+    )
+    ANDROID_APK_PATH="$repo_dir/apps/android/app/build/outputs/apk/debug/app-debug.apk"
+    if [ ! -f "$ANDROID_APK_PATH" ]; then
+      echo "Android APK build finished, but $ANDROID_APK_PATH was not found." >&2
+      exit 1
+    fi
+    android_version_code="$(sed -nE 's/^[[:space:]]*versionCode = ([0-9]+).*$/\1/p' apps/android/app/build.gradle.kts | head -n 1)"
+    android_version_name="$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)".*$/\1/p' apps/android/app/build.gradle.kts | head -n 1)"
+    if [ -z "$android_version_code" ] || [ -z "$android_version_name" ]; then
+      echo "Could not read Android versionCode/versionName from apps/android/app/build.gradle.kts." >&2
+      exit 1
+    fi
+    ANDROID_MANIFEST_PATH="$(mktemp)"
+    printf '{\n' > "$ANDROID_MANIFEST_PATH"
+    printf '  "versionCode": %s,\n' "$android_version_code" >> "$ANDROID_MANIFEST_PATH"
+    printf '  "versionName": "%s",\n' "$android_version_name" >> "$ANDROID_MANIFEST_PATH"
+    printf '  "apkUrl": "/downloads/android/ryanos-latest.apk",\n' >> "$ANDROID_MANIFEST_PATH"
+    printf '  "apkSha256": "%s",\n' "$(sha256_file "$ANDROID_APK_PATH")" >> "$ANDROID_MANIFEST_PATH"
+    printf '  "apkSizeBytes": %s,\n' "$(file_size_bytes "$ANDROID_APK_PATH")" >> "$ANDROID_MANIFEST_PATH"
+    printf '  "publishedAt": "%s",\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$ANDROID_MANIFEST_PATH"
+    printf '  "variant": "debug"\n' >> "$ANDROID_MANIFEST_PATH"
+    printf '}\n' >> "$ANDROID_MANIFEST_PATH"
   fi
-  if [ -z "${JAVA_HOME:-}" ] && [ -x "$ANDROID_STUDIO_JBR/bin/java" ]; then
-    export JAVA_HOME="$ANDROID_STUDIO_JBR"
-  fi
-  (
-    cd apps/android
-    ./gradlew :app:assembleDebug
-  )
-  ANDROID_APK_PATH="$repo_dir/apps/android/app/build/outputs/apk/debug/app-debug.apk"
-  if [ ! -f "$ANDROID_APK_PATH" ]; then
-    echo "Android APK build finished, but $ANDROID_APK_PATH was not found." >&2
-    exit 1
-  fi
-  android_version_code="$(sed -nE 's/^[[:space:]]*versionCode = ([0-9]+).*$/\1/p' apps/android/app/build.gradle.kts | head -n 1)"
-  android_version_name="$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)".*$/\1/p' apps/android/app/build.gradle.kts | head -n 1)"
-  if [ -z "$android_version_code" ] || [ -z "$android_version_name" ]; then
-    echo "Could not read Android versionCode/versionName from apps/android/app/build.gradle.kts." >&2
-    exit 1
-  fi
-  ANDROID_MANIFEST_PATH="$(mktemp)"
-  printf '{\n' > "$ANDROID_MANIFEST_PATH"
-  printf '  "versionCode": %s,\n' "$android_version_code" >> "$ANDROID_MANIFEST_PATH"
-  printf '  "versionName": "%s",\n' "$android_version_name" >> "$ANDROID_MANIFEST_PATH"
-  printf '  "apkUrl": "/downloads/android/ryanos-latest.apk",\n' >> "$ANDROID_MANIFEST_PATH"
-  printf '  "apkSha256": "%s",\n' "$(sha256_file "$ANDROID_APK_PATH")" >> "$ANDROID_MANIFEST_PATH"
-  printf '  "apkSizeBytes": %s,\n' "$(file_size_bytes "$ANDROID_APK_PATH")" >> "$ANDROID_MANIFEST_PATH"
-  printf '  "publishedAt": "%s",\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$ANDROID_MANIFEST_PATH"
-  printf '  "variant": "debug"\n' >> "$ANDROID_MANIFEST_PATH"
-  printf '}\n' >> "$ANDROID_MANIFEST_PATH"
+
+  scp "${SSH_OPTS[@]}" "$IMAGE_ARCHIVE_PATH" "$REMOTE:$REMOTE_IMAGE_ARCHIVE"
 fi
-
-scp "${SSH_OPTS[@]}" "$IMAGE_ARCHIVE_PATH" "$REMOTE:$REMOTE_IMAGE_ARCHIVE"
 
 ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
   $remote_safety_functions
@@ -142,9 +159,6 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
     exit 1
   fi
   cd '$REMOTE_DIR'
-  git fetch origin '$BRANCH'
-  git checkout '$BRANCH'
-  git pull --ff-only origin '$BRANCH'
   if [ ! -f .env ]; then
     echo 'Missing $REMOTE_DIR/.env. Copy .env.server.example to .env and fill secrets before deploying.' >&2
     exit 1
@@ -153,27 +167,39 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
     echo 'Missing $REMOTE_DIR/secrets/master-key. Generate or restore it before deploying.' >&2
     exit 1
   fi
-  pnpm install --frozen-lockfile
-  pnpm --filter @ryanos/ai build
-  test -x node_modules/.bin/codex
-  mkdir -p \"\$HOME/.config/systemd/user\"
-  cp ops/systemd/ryanos-codex-bridge.service \"\$HOME/.config/systemd/user/\"
-  systemctl --user daemon-reload
-  systemctl --user restart ryanos-codex-bridge.service
-  systemctl --user is-active --quiet ryanos-codex-bridge.service
-  mkdir -p releases/android
-
-  # Preserve the prior application image for a fast code rollback, then load
-  # the exact image built and tested on the developer machine.
-  ryanos_docker_preflight
-  rollback_tag=\"ryanos-app:rollback-\$(date -u +%Y%m%dT%H%M%SZ)\"
-  if ryanos_guarded_run 15 docker image inspect ryanos-app:server >/dev/null 2>&1; then
-    ryanos_guarded_run 15 docker image tag ryanos-app:server "\$rollback_tag"
+  if [ -n '$RESUME_SHA' ]; then
+    ryanos_validate_loaded_release '$DEPLOY_FULL_SHA' '$RESUME_IMAGE_ID' '$RESUME_ROLLBACK_TAG'
+    rollback_tag='$RESUME_ROLLBACK_TAG'
   else
-    rollback_tag='none'
+    git fetch origin '$BRANCH'
+    git checkout '$BRANCH'
+    git pull --ff-only origin '$BRANCH'
+    test \"\$(git rev-parse HEAD)\" = '$DEPLOY_FULL_SHA' || {
+      echo 'Remote source changed after local build; refusing mismatched deployment.' >&2
+      exit 1
+    }
+    pnpm install --frozen-lockfile
+    pnpm --filter @ryanos/ai build
+    test -x node_modules/.bin/codex
+    mkdir -p \"\$HOME/.config/systemd/user\"
+    cp ops/systemd/ryanos-codex-bridge.service \"\$HOME/.config/systemd/user/\"
+    systemctl --user daemon-reload
+    systemctl --user restart ryanos-codex-bridge.service
+    systemctl --user is-active --quiet ryanos-codex-bridge.service
+    mkdir -p releases/android
+
+    # Preserve the prior application image for a fast code rollback, then load
+    # the exact image built and tested on the developer machine.
+    ryanos_docker_preflight
+    rollback_tag=\"ryanos-app:rollback-\$(date -u +%Y%m%dT%H%M%SZ)\"
+    if ryanos_guarded_run 15 docker image inspect ryanos-app:server >/dev/null 2>&1; then
+      ryanos_guarded_run 15 docker image tag ryanos-app:server "\$rollback_tag"
+    else
+      rollback_tag='none'
+    fi
+    chmod 0600 "\$remote_image_archive"
+    gzip -dc "\$remote_image_archive" | ryanos_guarded_run 600 docker image load >/dev/null
   fi
-  chmod 0600 "\$remote_image_archive"
-  gzip -dc "\$remote_image_archive" | ryanos_guarded_run 600 docker image load >/dev/null
   ryanos_guarded_run 15 docker image inspect 'ryanos-app:server-$DEPLOY_SHA' >/dev/null
   ryanos_guarded_run 15 docker image tag 'ryanos-app:server-$DEPLOY_SHA' ryanos-app:server
 
