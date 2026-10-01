@@ -1,5 +1,7 @@
 "use client";
 
+import { TaskAdherenceReport } from "./adherence-report";
+
 import {
   BookOpen,
   BriefcaseBusiness,
@@ -1308,6 +1310,7 @@ export function ItemsPanel() {
                     ) : null}
                   </div>
                 ) : null}
+                {item.recurrence ? <TaskAdherenceReport itemId={item.id} timezone={timezone} refreshKey={JSON.stringify(item.recurrence.week)} /> : null}
                 {detailsExpanded ? (
                   <div className="pl-0 sm:pl-12">
                     <ItemProgressDetails

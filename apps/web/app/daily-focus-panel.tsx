@@ -1,5 +1,7 @@
 "use client";
 
+import { TaskAdherenceReport } from "./adherence-report";
+
 import {
   Check,
   CheckCircle2,
@@ -479,6 +481,7 @@ export function DailyFocusPanel() {
                       </button>
                     </span>
                   </span>
+                  {item.recurrence ? <TaskAdherenceReport itemId={item.id} timezone={timezone} refreshKey={JSON.stringify(item.recurrence.week)} /> : null}
                   {detailsExpanded ? (
                     <ItemProgressDetails
                       item={item}

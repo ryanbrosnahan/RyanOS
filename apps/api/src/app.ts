@@ -7,6 +7,7 @@ import {
   type ToolResult
 } from "@ryanos/ai";
 import {
+  buildAdherenceReport,
   createCoreToolRegistry,
   InMemoryRyanStore,
   type Area,
@@ -45,6 +46,7 @@ import { createId, nowIso, type JsonObject, type UUID } from "@ryanos/shared";
 import { fromNodeHeaders } from "better-auth/node";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
+import { adherencePdf } from "./adherence-pdf.js";
 import { authModeFromEnv, createRyanOsAuth, type RyanOsAuthMode } from "./auth.js";
 import {
   acceptEmailProposal,
@@ -6216,6 +6218,30 @@ export function buildApp(options: {
           ? undefined
           : await mobileWidgetItemForDashboard(updatedDashboardItem, body.timezone, dateKey)
     };
+  });
+
+  app.get("/v1/items/:itemId/adherence", async (request, reply) => {
+    const params = itemActionParamsSchema.parse(request.params);
+    const parsedQuery = itemDetailsQuerySchema.omit({ date: true }).extend({
+      timezone: z.string().default("America/Chicago").refine((value) => {
+        try { new Intl.DateTimeFormat("en-US", { timeZone: value }); return true; } catch { return false; }
+      }, "Invalid timezone"),
+      format: z.enum(["json", "pdf"]).default("json")
+    }).safeParse(request.query);
+    if (!parsedQuery.success) return reply.code(400).send({ error: "Invalid report parameters", issues: parsedQuery.error.issues });
+    const query = parsedQuery.data;
+    const item = await itemForUser(query.userId, params.itemId);
+    if (!item) return reply.code(404).send({ error: "Item not found" });
+    const policy = await store.findRecurrencePolicyForItem(item.id);
+    if (!policy) return reply.code(404).send({ error: "No active recurrence rule for this task" });
+    const report = buildAdherenceReport({ policy, events: await store.listRecurrenceEvents(policy.id), timezone: query.timezone });
+    reply.header("Cache-Control", "private, no-store");
+    if (query.format === "pdf") {
+      return reply.type("application/pdf")
+        .header("Content-Disposition", `attachment; filename="adherence-${item.id}.pdf"`)
+        .send(await adherencePdf(item.title, report));
+    }
+    return { title: item.title, report };
   });
 
   app.get("/v1/items/:itemId/details", async (request, reply) => {
