@@ -303,3 +303,12 @@ files at `/downloads/android/ryanos-latest.apk` and
 `/downloads/android/manifest.json`, and the Android app uses the manifest for
 its in-app update check. Set `RYANOS_DEPLOY_ANDROID_APK=0` to skip APK
 publishing for a server-only deploy.
+
+After the deployment health check (and Android manifest check when enabled),
+the script removes older RyanOS release tags on Lenovo, retaining the running
+release and the newest rollback image. It then removes unreferenced RyanOS
+release images from the developer Mac. Images still used by any local container
+are skipped, and an unavailable Mac Docker engine does not invalidate a healthy
+Lenovo deployment. Cleanup targets only RyanOS image tags; it never prunes
+volumes, databases, build cache, or images from other projects. If a health
+check fails, the script leaves all images available for recovery.

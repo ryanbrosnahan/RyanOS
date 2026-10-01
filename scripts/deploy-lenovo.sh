@@ -17,7 +17,9 @@ RESUME_ROLLBACK_TAG="${RYANOS_DEPLOY_RESUME_ROLLBACK_TAG:-}"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$script_dir/.." && pwd)"
 source "$script_dir/lenovo-deploy-safety.sh"
+source "$script_dir/ryanos-image-retention.sh"
 remote_safety_functions="$(declare -f ryanos_guard_is_clear ryanos_guarded_run ryanos_docker_preflight ryanos_validate_loaded_release)"
+remote_cleanup_functions="$(declare -f ryanos_image_docker ryanos_retire_images)"
 
 cd "$repo_dir"
 
@@ -260,4 +262,18 @@ if [ -n "$ANDROID_APK_PATH" ]; then
     done
     curl -fsS --max-time 5 http://127.0.0.1:\${WEB_PORT:-3100}/downloads/android/manifest.json >/dev/null
   "
+fi
+
+# Only retire release images after every requested deployment and APK health
+# check has passed. An image still referenced by any container is retained.
+if ! ssh "${SSH_OPTS[@]}" "$REMOTE" "set -euo pipefail
+  $remote_safety_functions
+  $remote_cleanup_functions
+  ryanos_retire_images remote 'ryanos-app:server-$DEPLOY_SHA' apply
+"; then
+  echo 'Deployment succeeded, but Lenovo image cleanup needs review.' >&2
+fi
+
+if ! ryanos_retire_images local "ryanos-app:server-$DEPLOY_SHA" apply; then
+  echo 'Deployment succeeded, but Mac image cleanup needs review.' >&2
 fi
