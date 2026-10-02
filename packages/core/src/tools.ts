@@ -1291,10 +1291,12 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       }
 
       const completedAt = input.completedAt ?? nowIso();
+      const policy = await store.findRecurrencePolicyForItem(best.record.id);
+      // Completion closes an occurrence, not the recurring item itself.
       const item = await store.updateItem(best.record.id, {
-        status: "done",
+        status: policy ? (best.record.status === "done" ? "open" : best.record.status) : "done",
         starredAt: null,
-        completedAt
+        completedAt: policy ? null : completedAt
       });
       const eventInput: Parameters<RyanStore["addItemEvent"]>[0] = {
         userId: input.userId,
@@ -1306,7 +1308,6 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       if (input.sourceMessageId !== undefined) eventInput.sourceMessageId = input.sourceMessageId;
       if (input.idempotencyKey !== undefined) eventInput.idempotencyKey = input.idempotencyKey;
       const event = await store.addItemEvent(eventInput);
-      const policy = await store.findRecurrencePolicyForItem(item.id);
       if (policy) {
         const recurrenceEventInput: Parameters<RyanStore["addRecurrenceEvent"]>[0] = {
           userId: input.userId,

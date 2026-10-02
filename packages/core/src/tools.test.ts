@@ -759,6 +759,31 @@ describe("core tools", () => {
     expect(store.itemEvents.filter((event) => event.eventType === "uncompleted")).toHaveLength(1);
   });
 
+  it.each(["open", "active", "done"] as const)(
+    "keeps a recurring item available after item.complete from %s",
+    async (status) => {
+      const store = new InMemoryRyanStore();
+      const tools = createCoreToolRegistry(store);
+      const item = await store.createItem({ userId: "user-1", title: "Pay the HOA", kind: "task" });
+      await store.updateItem(item.id, { status, completedAt: "2026-08-01T14:00:00.000Z" });
+      await tools.execute("recurrence.setPolicy", {
+        userId: "user-1", itemRef: item.id,
+        policy: { type: "fixed_schedule", cron: "0 9 1 * *", resetFromCompletion: false }
+      });
+      const input = {
+        userId: "user-1", itemRef: item.id,
+        completedAt: "2026-09-07T19:00:00.000Z", idempotencyKey: "hoa-september"
+      };
+      expect((await tools.execute("item.complete", input)).status).toBe("applied");
+      expect(store.items.get(item.id)).toMatchObject({ status: status === "done" ? "open" : status });
+      expect(store.items.get(item.id)?.completedAt).toBeUndefined();
+      expect(store.recurrenceEvents).toHaveLength(1);
+      expect(store.recurrenceEvents[0]).toMatchObject({ eventType: "completed", occurredAt: input.completedAt });
+      expect((await tools.execute("item.complete", input)).status).toBe("replayed");
+      expect(store.recurrenceEvents).toHaveLength(1);
+    }
+  );
+
   it("records a recurrence event and updates next due", async () => {
     const store = new InMemoryRyanStore();
     const tools = createCoreToolRegistry(store);

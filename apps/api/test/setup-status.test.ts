@@ -958,6 +958,45 @@ describe("setup status", () => {
     });
   });
 
+  it("shows the next monthly occurrence after completing the previous payment", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const item = await store.createItem({ userId: "local-owner", title: "Pay the HOA", kind: "task" });
+    store.items.set(item.id, { ...item, createdAt: "2026-06-07T12:00:00.000Z" });
+    await store.upsertRecurrencePolicy({
+      userId: "local-owner", itemId: item.id, type: "fixed_schedule",
+      cron: "0 9 1 * *", resetFromCompletion: false, status: "active", metadata: {}
+    });
+    const app = buildApp({ store });
+    try {
+      const completed = await app.inject({
+        method: "POST", url: "/v1/tools/item.complete/invoke",
+        payload: { input: {
+          userId: "local-owner", itemRef: item.id, completedAt: "2026-09-08T00:00:11.550Z"
+        } }
+      });
+      expect(completed.statusCode).toBe(200);
+      const september = await app.inject({
+        method: "GET", url: "/v1/items?userId=local-owner&date=2026-09-08&timezone=America/Chicago"
+      });
+      expect(september.json().items).toEqual([]);
+      for (const date of ["2026-10-01", "2026-10-02"]) {
+        const october = await app.inject({
+          method: "GET", url: `/v1/items?userId=local-owner&date=${date}&timezone=America/Chicago`
+        });
+        expect(october.json().items).toEqual([expect.objectContaining({
+          id: item.id, status: "open",
+          recurrence: expect.objectContaining({ state: expect.objectContaining({
+            nextDueAt: "2026-10-01T14:00:00.000Z"
+          }) })
+        })]);
+      }
+      expect(store.recurrenceEvents).toHaveLength(1);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("ramps monthly fixed-schedule priority around the due date", async () => {
     vi.stubEnv("DATABASE_URL", "");
     const store = new InMemoryRyanStore();
