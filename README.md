@@ -1,12 +1,120 @@
 # RyanOS
 
-RyanOS is an AI-first, local-first personal operating system for managing tasks,
-projects, recurring responsibilities, opportunities, reminders, decisions, and
-proactive assistant workflows.
+RyanOS is a self-hosted, AI-first personal operating system that turns everyday
+language into tasks, routines, calendar plans, and follow-through. It brings
+email, opportunities, goals, medication schedules, vocabulary, and shopping into
+one persistent workspace, accessible from the web, Telegram, and Android.
 
-The core idea: natural language is interpreted by AI into typed tools, and
-deterministic handlers validate permissions, recurrence, policies, state
-mutation, and audit logging.
+Tell it what happened or what needs doing: “I went to the gym,” “add eggs to my
+shopping list,” or “save this word.” AI interprets the request into typed tools;
+deterministic handlers validate permissions, update state, enforce recurrence
+rules, and record an audit trail.
+
+## The OpenClaw Parallel
+
+Like [OpenClaw](https://github.com/openclaw/openclaw), RyanOS follows the idea of
+a personal AI assistant running on infrastructure you control, reachable through
+chat, and connected to tools that can take action. RyanOS applies that pattern
+to a structured personal workspace: tasks, completion history, recurrence
+policies, opportunity proposals, and calendar plans live in a database and have
+purpose-built interfaces alongside the conversation.
+
+The shared ambition is an assistant that helps you act and follows through over
+time. RyanOS emphasizes the details of daily life: when a routine is actually
+eligible again, which neglected task deserves attention, whether an email needs
+a to-do, and how consistently you have worked toward a goal. RyanOS is an
+independent project; it does not require OpenClaw.
+
+## Integrations and Capabilities
+
+- **Email / Gmail:** scheduled inbox scans identify actionable messages and
+  propose tasks, replies, and follow-ups with source links, confidence scores,
+  due dates, progress notes, and checklists. Accept or reject proposals and tune
+  sender preferences before they become part of your task list.
+- **RFP, grant, and job-search workflows:** ingest structured opportunity reports
+  from external automations, including Codex searches. Review fit ratings,
+  rationale, source links, deadlines, decision dates, and recommended next
+  steps; accepted proposals become actionable work. RFP/grant intake is
+  implemented; job-search results can use the same candidate-report format
+  rather than a dedicated job-board connector.
+- **Goal and habit tracking:** track targets such as “go to the gym five times
+  per week” without requiring a rigid daily schedule. Record and undo individual
+  days, distinguish intended dates from actual completion, and inspect long-term
+  adherence, completion counts, weekly/monthly averages, and downloadable PDF
+  reports. Completing one occurrence keeps the recurring item active.
+- **Medication and complex recurrence tracking:** combine fixed schedules,
+  completion-based intervals, minimum spacing, and target frequencies. Examples
+  include a GLP-1 reminder whose next due date is seven days after the recorded
+  completion, a “not sooner than seven days” rule that flags an early
+  completion, a fixed Monday reminder, or a routine performed five times in a
+  seven-day window. These are tracking examples
+  for a schedule you supply, not dosing recommendations.
+- **Google Calendar:** sync selected calendars, inspect an agenda, create events,
+  and draft a day of task blocks around existing availability and scheduling
+  rules. Review a draft plan before publishing its blocks to Google Calendar.
+- **Automatic task priority ascension:** tasks rise in the dashboard as deadlines
+  approach, become overdue, or recurring goals fall behind. Scores account for
+  base priority, opportunity work, days since completion, and remaining target
+  counts. Upcoming recurring items stay quiet until their attention window;
+  completed targets fall back down. Each score has explanatory signals.
+- **Complex vocabulary tracking:** maintain an editable dictionary for ordinary
+  words, medical and technical terminology, slang, proper nouns, and foreign
+  languages. Save definitions, pronunciation, parts of speech, translations,
+  notes, and tags; retain encounter context and source links, merge duplicates,
+  filter by language/category/tag, and request AI-drafted definitions.
+- **Shopping:** a separate categorized shopping list with natural-language
+  capture, quantities, units, notes, purchase tracking, and reusable staples, available on web and
+  Android.
+- **Android app and home-screen widgets:** a native Material 3 companion with
+  Today, Shopping, Vocabulary, Chat, and Settings. Task, shopping, and vocabulary
+  widgets provide quick access; task widgets support completion and recurring
+  day actions. Local cached payloads and background refresh keep widgets useful
+  between app launches. See [Android setup](./apps/android/README.md).
+- **Telegram and web chat:** use the same assistant pipeline from either surface,
+  with persisted conversations, Telegram account linking, typing feedback, and
+  protection against duplicate message delivery.
+- **Daily focus, projects, and progress:** organize work into areas and projects,
+  star today's focus, track checklists and dated progress notes, and snooze work
+  until it becomes relevant.
+- **Louisiana lottery information:** optional draw-game data and a licensed-retailer
+  finder link for informational queries.
+- **Self-hosted operations:** PostgreSQL-backed state, a background worker,
+  encrypted integration credentials, self-hosted authentication, and an Admin
+  workspace for connection setup, health diagnostics, and AI smoke tests.
+
+## Screenshots
+
+The screenshots below show the running application. Views are cropped to keep
+private account details and unrelated personal items out of the public README.
+
+![Gym goal and long-term adherence report](./docs/screenshots/gym-adherence.jpg)
+
+*Gym tracking combines weekly completion targets with long-term adherence and
+PDF export.*
+
+![GLP-1 recurrence and intended completion dates](./docs/screenshots/glp1-recurrence.jpg)
+
+*Recurring reminders keep actual completions separate from the next intended
+date.*
+
+![Vocabulary dictionary](./docs/screenshots/vocabulary.jpg)
+
+*An editable dictionary with categories, languages, definitions, and encounter
+context.*
+
+![Categorized shopping list](./docs/screenshots/shopping.jpg)
+
+*Shopping has its own workspace, separate from tasks and goals.*
+
+## Architecture and Status
+
+RyanOS has a working web dashboard, Fastify API, PostgreSQL/Drizzle persistence,
+Graphile Worker jobs, and a native Android companion. The TypeScript workspace
+shares typed tools and domain logic across the assistant and application.
+Integration availability depends on the accounts and credentials you configure.
+AI interpretation can use the host Codex bridge; your configured AI provider
+receives the context needed for those requests. Self-hosting the application
+does not make every connected service or model local.
 
 ## Planning Docs
 
@@ -16,29 +124,9 @@ mutation, and audit logging.
 - [DATA_MODEL.md](./DATA_MODEL.md): PostgreSQL/Drizzle data model.
 - [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md): V1 through V2 build plan.
 
-## Current Status
-
-Implementation has started. The repo contains the initial Node/TypeScript
-workspace, Docker/Postgres setup, Drizzle schema and migration, Fastify API
-shell, Graphile Worker shell, Next.js dashboard shell, first typed tool
-contracts, a Postgres-backed store adapter with in-memory fallback, persisted
-inbound/outbound message sessions, and Telegram webhook normalization with redelivery
-idempotency. Telegram assistant responses can be delivered through the Bot API
-once the encrypted bot token is imported. The dashboard includes a setup-status panel and web chat intake
-that posts natural language through the same message pipeline and reloads recent
-persisted chat history, plus a read-only open-item list. Local secret handling
-now supports an external master key plus encrypted `secret_records` for
-integration credentials. Authentication is now wired through self-hosted Better
-Auth tables in the RyanOS database: local development can still use the
-`dev-local` owner flow, while production deployments require a signed-in user.
-The current typed tool surface includes item search, create, update, complete,
-and snooze; recurrence policy/event recording; notification policy persistence;
-and state explain placeholders.
-
 ## Local Dev
 
-Docker is the preferred local path, matching the pattern used in nearby projects
-like `filemytro` and `NoxJury`.
+Docker is the preferred local development path.
 
 1. Copy env: `cp .env.example .env`
 2. Start web, API, and Postgres: `pnpm docker:up`
@@ -138,7 +226,7 @@ While Docker services are running, treat dependencies as Docker-owned. To switch
 back to direct host development, stop the services and run:
 
 ```bash
-pnpm install --force --store-dir /Users/ryan/Library/pnpm/store/v10
+pnpm install --force
 ```
 
 For direct host development, use Node `20.20.0` from `.node-version`, then run:
@@ -163,8 +251,3 @@ separate commercial license.
 
 RyanOS should be described as source-available or Fair Source, not open source,
 until a specific version converts to Apache 2.0 under the future-license grant.
-
-## Next Build Step
-
-Verify the Android build on a machine with JDK 17, then add scheduled
-notification delivery using the encrypted token store.
