@@ -650,6 +650,42 @@ describe("email integration API", () => {
     ]);
   });
 
+  it("repairs legacy email links in proposals, accepted tasks, and existing task responses", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const store = new InMemoryRyanStore();
+    const oldUrl = "https://mail.google.com/mail/u/ryan%40example.com/#inbox/thread-legacy";
+    const fixedUrl = "https://mail.google.com/mail/u/0/?authuser=ryan%40example.com#all/thread-legacy";
+    const source = await store.upsertExternalSource({
+      userId: "local-owner", provider: "gmail", externalId: "msg-legacy", url: oldUrl
+    });
+    const proposal = await store.upsertEmailActionProposal({
+      userId: "local-owner", sourceId: source.id, idempotencyKey: "gmail:legacy",
+      actionType: "task", title: "Reply to legacy email"
+    });
+    const existing = await store.createItem({
+      userId: "local-owner", kind: "task", title: "Existing email task",
+      body: `[Open email](${oldUrl})`
+    });
+    const app = buildApp({ store });
+    try {
+      const proposals = await app.inject({ method: "GET", url: "/v1/email/proposals?userId=local-owner" });
+      expect(proposals.json().proposals[0].source.url).toBe(fixedUrl);
+      const accepted = await app.inject({
+        method: "POST", url: `/v1/email/proposals/${proposal.id}/accept`, payload: { userId: "local-owner" }
+      });
+      expect(accepted.statusCode).toBe(200);
+      expect(accepted.json().item.body).toContain(`[Open email](${fixedUrl})`);
+      const details = await app.inject({ method: "GET", url: `/v1/items/${existing.id}/details?userId=local-owner` });
+      expect(details.statusCode).toBe(200);
+      expect(details.json().item.body).toBe(`[Open email](${fixedUrl})`);
+      const items = await app.inject({ method: "GET", url: "/v1/items?userId=local-owner&includeHidden=true" });
+      expect(items.json().items.find((item: { id: string }) => item.id === existing.id).body).toBe(`[Open email](${fixedUrl})`);
+      expect((await store.getItem(existing.id))?.body).toBe(`[Open email](${oldUrl})`);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("rejects a proposal without creating an item", async () => {
     vi.stubEnv("DATABASE_URL", "");
     const store: RyanStore = new InMemoryRyanStore();

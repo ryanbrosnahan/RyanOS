@@ -64,6 +64,7 @@ import {
   type GmailClientLike
 } from "./email-triage.js";
 import { GogGmailClient } from "./gog-gmail.js";
+import { normalizeGmailLinksInText } from "./gmail-links.js";
 import {
   CalendarConflictError,
   GOOGLE_CALENDAR_PROVIDER,
@@ -4699,6 +4700,7 @@ export function buildApp(options: {
     if (item.completedAt !== undefined) completion.completedAt = item.completedAt;
     const dashboardItem: DashboardItemBase = {
       ...item,
+      ...(item.body === undefined ? {} : { body: normalizeGmailLinksInText(item.body) }),
       starred: item.starredAt !== undefined,
       scope,
       progress: {

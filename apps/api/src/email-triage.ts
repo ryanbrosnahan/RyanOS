@@ -21,6 +21,7 @@ import type {
 import type { JsonObject, UUID } from "@ryanos/shared";
 import { nowIso } from "@ryanos/shared";
 import { z } from "zod";
+import { gmailThreadUrl, normalizeGmailUrl } from "./gmail-links.js";
 import type {
   GogEmailMessage,
   GogEmailThread,
@@ -302,9 +303,9 @@ function sourceTitle(message: GogEmailMessage | GogSearchMessage): string {
 }
 
 function gmailMessageUrl(account: ProviderAccount, message: GogEmailMessage | GogSearchMessage): string {
-  const mailbox = accountEmail(account) ?? "0";
+  const mailbox = accountEmail(account);
   const threadId = message.threadId ?? message.id;
-  return `https://mail.google.com/mail/u/${encodeURIComponent(mailbox)}/#inbox/${encodeURIComponent(threadId)}`;
+  return gmailThreadUrl(threadId, mailbox);
 }
 
 const automatedSenderTokens = new Set([
@@ -1316,7 +1317,7 @@ export async function proposalView(
             id: source.id,
             ...(source.title ? { title: source.title } : {}),
             ...(source.summary ? { summary: source.summary } : {}),
-            ...(source.url ? { url: source.url } : {}),
+            ...(source.url ? { url: normalizeGmailUrl(source.url) } : {}),
             ...(source.occurredAt ? { occurredAt: source.occurredAt } : {}),
             metadata: source.metadata
           }
@@ -1353,7 +1354,7 @@ function itemBodyForProposal(proposal: EmailActionProposal, source: ExternalSour
     proposal.body,
     proposal.rationale ? `Why: ${proposal.rationale}` : undefined,
     source?.title ? `Email: ${source.title}` : undefined,
-    source?.url ? `[Open email](${source.url})` : undefined
+    source?.url ? `[Open email](${normalizeGmailUrl(source.url)})` : undefined
   ].filter((piece): piece is string => typeof piece === "string" && piece.trim().length > 0);
   return pieces.length > 0 ? pieces.join("\n\n") : undefined;
 }
