@@ -31,6 +31,7 @@ import {
 } from "@ryanos/core";
 import {
   createDb,
+  TaskIntegrationStore,
   loadSecretVaultFromEnv,
   PostgresMessageStore,
   PostgresRyanStore,
@@ -46,6 +47,7 @@ import { createId, nowIso, type JsonObject, type UUID } from "@ryanos/shared";
 import { fromNodeHeaders } from "better-auth/node";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
+import { registerTaskIntegrationRoutes } from "./task-integration.js";
 import { adherencePdf } from "./adherence-pdf.js";
 import { authModeFromEnv, createRyanOsAuth, type RyanOsAuthMode } from "./auth.js";
 import {
@@ -1334,6 +1336,7 @@ function quickAddTaskDraftFromCommand(commandText: string): QuickAddTaskDraft | 
 }
 
 function quickAddTaskDrafts(text: string): QuickAddTaskDraft[] {
+  if (/\b(?:do\s+not|don[’\']t|never|without)\b[^.;\n]{0,120}\b(?:add|create|make)\b/i.test(text)) return [];
   const matches = [...text.matchAll(quickAddTaskCommandPattern)];
   if (matches.length === 0) {
     const todoMatch = text.match(/^\s*(?:todo|to-do|task)\s*:\s*(.+)$/i);
@@ -2660,6 +2663,8 @@ export function buildApp(options: {
     return (
       path === "/" ||
       path === "/health" ||
+      // Adapter routes enforce scoped bearer auth; owner review paths remain session-gated.
+      path.startsWith("/v1/task-integration/") ||
       path === "/v1/ai/status" ||
       path === "/v1/tools" ||
       path.startsWith("/auth/") ||
@@ -2790,7 +2795,20 @@ export function buildApp(options: {
       role: user?.role ?? "user",
       ...(session.user?.name ? { displayName: session.user.name } : {})
     };
-    forceRequestUserId(request, userId);
+    // These owner routes consume the trusted session directly and reject extra body fields.
+    if (!/^\/v1\/(?:task-integration-(requests|captures)|task-search)(\/|$)/.test(path)) {
+      forceRequestUserId(request, userId);
+    }
+  });
+
+  registerTaskIntegrationRoutes(app, {
+    searchOwner: (userId, filters) => store.searchTaskRecords(userId, filters),
+    store: database ? new TaskIntegrationStore(database.pool) : undefined,
+    ownerForRequest: request => {
+      const origin = request.headers.origin;
+      return authMode === "required" && (request.method === "GET" || (typeof origin === "string" && corsOrigins.has(origin)))
+        ? (request as RyanOsRequest).ryanAuth?.userId : undefined;
+    }
   });
 
   app.get("/", async () => ({

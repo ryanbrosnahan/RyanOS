@@ -1,3 +1,4 @@
+import { searchRecordMatches, type TaskSearchFilters, type TaskSearchRecord } from "./task-search.js";
 import { createId, nowIso } from "@ryanos/shared";
 import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
@@ -384,6 +385,19 @@ export class InMemoryRyanStore implements RyanStore {
         Math.max(filters.offset ?? 0, 0),
         Math.max(filters.offset ?? 0, 0) + Math.min(Math.max(filters.limit ?? 30, 1), 200)
       );
+  }
+
+  async searchTaskRecords(userId: UUID, filters: TaskSearchFilters): Promise<TaskSearchRecord[]> {
+    const records = [...this.items.values()].filter(item => item.userId === userId).map(item => {
+      const project = item.projectId ? this.projects.get(item.projectId) : undefined;
+      const area = item.areaId ? this.areas.get(item.areaId) : undefined;
+      return { item, project: project?.userId === userId ? { id: project.id, name: project.name, status: project.status } : null,
+        area: area?.userId === userId ? { id: area.id, name: area.name, status: area.status } : null,
+        href: `/tasks/${encodeURIComponent(item.id)}` };
+    }).filter(record => searchRecordMatches(record, filters))
+      .sort((a,b) => b.item.updatedAt.localeCompare(a.item.updatedAt) || a.item.id.localeCompare(b.item.id));
+    const offset = Math.max(filters.offset ?? 0, 0);
+    return records.slice(offset, offset + Math.min(Math.max(filters.limit ?? 20, 1), 50));
   }
 
   async searchItems(

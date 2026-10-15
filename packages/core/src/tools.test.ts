@@ -358,6 +358,28 @@ describe("core tools", () => {
     }
   });
 
+  it("clears an explicitly removed due date without changing status", async () => {
+    const store=new InMemoryRyanStore(); const tools=createCoreToolRegistry(store);
+    const item=await store.createItem({userId:'owner',kind:'task',title:'Remove synthetic deadline',dueAt:'2026-10-28T00:00:00Z'});
+    const result=await tools.execute('item.update',{userId:'owner',itemRef:item.id,patch:{dueAt:null}});
+    expect(result.status).toBe('applied'); expect((await store.getItem(item.id))?.dueAt).toBeUndefined();
+    expect((await store.getItem(item.id))?.status).toBe('open');
+  });
+
+  it("renders searchable descriptions, IDs and state after filtering completed tasks before the limit", async () => {
+    const store=new InMemoryRyanStore(); const tools=createCoreToolRegistry(store);
+    const completed=await store.createItem({userId:'owner',kind:'task',title:'James tax review',body:'POA signature'});
+    await store.updateItem(completed.id,{status:'done'});
+    const open=await store.createItem({userId:'owner',kind:'task',title:'James returns',body:'POA signature'});
+    await store.createItem({userId:'other',kind:'task',title:'James private',body:'POA signature'});
+    const result=await tools.execute('item.search',{userId:'owner',query:'James POA',limit:1});
+    expect((result.data as {matches:{id:string}[]}).matches.map(item=>item.id)).toEqual([open.id]);
+    expect(result.messageForUser).toContain(open.id); expect(result.messageForUser).toContain('POA signature');
+    expect(result.messageForUser).toContain(`/tasks/${open.id}`);
+    const all=await tools.execute('item.search',{userId:'owner',query:'James POA',includeDone:true});
+    expect((all.data as {matches:{id:string}[]}).matches.map(item=>item.id)).toContain(completed.id);
+  });
+
   it("searches and updates an item through typed tool calls", async () => {
     const store = new InMemoryRyanStore();
     const tools = createCoreToolRegistry(store);

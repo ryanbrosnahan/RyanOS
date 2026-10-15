@@ -7,6 +7,7 @@ import {
 import Link from "next/link";
 import { AttentionDebugPanel } from "../admin-diagnostics";
 import { AuthGate } from "../auth-gate";
+import { TaskCompletionRequestsPanel } from "./task-completion-requests-panel";
 import { AdminOperationsPanel } from "./integrations-panel";
 
 const systemStatus = [
@@ -39,6 +40,7 @@ export default function AdminPage() {
 
         <section className="mx-auto max-w-7xl space-y-6 px-5 py-6 sm:px-8 lg:px-10">
           <AdminOperationsPanel />
+          <TaskCompletionRequestsPanel />
 
           <div className="grid gap-6 lg:grid-cols-[0.8fr_1.2fr]">
             <div className="space-y-6">

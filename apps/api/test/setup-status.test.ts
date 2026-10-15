@@ -243,6 +243,34 @@ describe("setup status", () => {
     );
   });
 
+  it("returns actionable task search details through the real chat response", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+    const text='Find synthetic items including completed';
+    const store=new InMemoryRyanStore();
+    const item=await store.createItem({userId:'local-owner',kind:'task',title:'Synthetic reviewed brief',body:'Read this description'});
+    await store.updateItem(item.id,{status:'done'});
+    const app=buildApp({store,ai:new ScriptedAiProvider([{matchText:text,result:{toolCalls:[{name:'item.search',input:{query:'synthetic',includeDone:true}}]}}])});
+    try {
+      const response=await app.inject({method:'POST',url:'/v1/messages',payload:{provider:'web',chatId:'dashboard',userId:'local-owner',text,timestamp:'2026-10-14T00:00:00Z'}});
+      expect(response.statusCode).toBe(200);
+      expect(response.json().response.text).toContain(item.title);
+      expect(response.json().response.text).toContain('Read this description');
+      expect(response.json().response.text).toContain('done');
+      expect(response.json().response.text).toContain(`/tasks/${item.id}`);
+    } finally { await app.close(); }
+  });
+
+  it.each(["Do not create another task", "Please don’t automatically add a task", "Do not ever create a task"])("does not turn negated task creation into fallback writes: %s", async (negative) => {
+    vi.stubEnv("DATABASE_URL", "");
+    const text=`Find James tax returns including completed tasks. ${negative} or change its title, body, status, project, priority, or completion.`;
+    const store=new InMemoryRyanStore();
+    const app=buildApp({store,ai:new ScriptedAiProvider([{matchText:text,result:{toolCalls:[]}}])});
+    try {
+      const response=await app.inject({method:'POST',url:'/v1/messages',payload:{provider:'web',chatId:'dashboard',userId:'local-owner',text,timestamp:'2026-10-14T00:00:00Z'}});
+      expect(response.statusCode).toBe(200); expect([...store.items.values()]).toHaveLength(0);
+    } finally { await app.close(); }
+  });
+
   it("falls back to local task quick-add when AI returns no action", async () => {
     vi.stubEnv("DATABASE_URL", "");
     const text =

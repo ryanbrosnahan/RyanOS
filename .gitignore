@@ -23,3 +23,5 @@ local.properties
 .gradle/
 **/build/
 *.apk
+
+/scripts/task-integration/bin/

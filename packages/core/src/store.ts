@@ -662,6 +662,7 @@ export interface RyanStore {
   createItem(data: ItemCreateData): Promise<Item>;
   updateItem(itemId: UUID, patch: ItemPatch): Promise<Item>;
   listItems(filters: ItemListFilters): Promise<Item[]>;
+  searchTaskRecords(userId: UUID, filters: import("./task-search.js").TaskSearchFilters): Promise<import("./task-search.js").TaskSearchRecord[]>;
   searchItems(userId: UUID, query: string, limit?: number): Promise<Array<SearchMatch<Item>>>;
   getItem(itemId: UUID): Promise<Item | undefined>;
   addItemEvent(event: Omit<ItemEvent, "id" | "createdAt">): Promise<ItemEvent>;

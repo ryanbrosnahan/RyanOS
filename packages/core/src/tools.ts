@@ -654,21 +654,14 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       limit: z.number().int().positive().max(20).default(5)
     }),
     handler: async (input) => {
-      const matches = (await store.searchItems(input.userId, input.query, input.limit)).filter(
-        (match) => input.includeDone || !["done", "cancelled"].includes(match.record.status)
-      );
-      const data = {
-        matches: matches.map((match) => ({
-          id: match.record.id,
-          kind: match.record.kind,
-          title: match.record.title,
-          status: match.record.status,
-          priority: match.record.priority,
-          dueAt: match.record.dueAt,
-          confidence: match.confidence,
-          reason: match.reason
-        }))
-      };
+      const records = await store.searchTaskRecords(input.userId, {
+        query: input.query, limit: input.limit,
+        statuses: input.includeDone ? undefined : ["open", "active", "waiting"]
+      });
+      const data = { matches: records.map(({ item, project, area, href }) => ({
+        ...item, project, area, href, confidence: item.id === input.query ? 1 : 0.82,
+        reason: "Search terms match title, description, project or area"
+      })) };
       const auditLog = await audit(store, {
         userId: input.userId,
         action: "item.search",
@@ -684,7 +677,8 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
         messageForUser:
           data.matches.length === 0
             ? `I did not find an item matching "${input.query}".`
-            : `Found ${data.matches.length} candidate item${data.matches.length === 1 ? "" : "s"}.`
+            : `Found ${data.matches.length} candidate item${data.matches.length === 1 ? "" : "s"}:\n` + data.matches.map(item =>
+              `${item.title} — ${item.status}; project: ${item.project?.name ?? "No project"}; ID: ${item.id}\n${item.body ?? ""}\n${item.href}`).join("\n\n")
       };
     }
   });
@@ -1069,7 +1063,7 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
         bodyAppend: z.string().optional(),
         status: z.enum(["open", "active", "waiting", "done", "cancelled"]).optional(),
         priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
-        dueAt: z.string().optional(),
+        dueAt: z.string().nullable().optional(),
         startAt: z.string().optional(),
         snoozedUntil: z.string().optional(),
         estimateMinutes: z.number().int().positive().optional()

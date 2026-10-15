@@ -4,3 +4,4 @@ export * from "./message-store.js";
 export * from "./ryan-store.js";
 export * from "./secrets.js";
 export * from "./schema.js";
+export * from "./task-integration-store.js";

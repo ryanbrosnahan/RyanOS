@@ -17,3 +17,5 @@ releases/
 .gogcli/
 *.log
 .DS_Store
+
+scripts/task-integration/bin/

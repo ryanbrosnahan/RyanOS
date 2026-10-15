@@ -762,7 +762,6 @@ export function ItemsPanel() {
   }
 
   async function updateDueDate(item: Item, dueDate: string) {
-    if (!dueDate) return;
     const key = `${item.id}:due`;
     setPendingKey(key);
     setError(null);
@@ -776,7 +775,7 @@ export function ItemsPanel() {
           input: {
             itemRef: item.id,
             patch: {
-              dueAt: dateInputToIso(dueDate)
+              dueAt: dueDate ? dateInputToIso(dueDate) : null
             }
           }
         })
@@ -858,6 +857,7 @@ export function ItemsPanel() {
         <div className="flex items-center gap-2">
           <CheckCircle2 className="h-5 w-5 text-sky-700" aria-hidden="true" />
           <h2 className="text-lg font-semibold text-stone-950">Open items</h2>
+          <a href="/tasks" className="text-sm underline">Search all items</a>
         </div>
         <div className="flex items-center gap-2">
           <button

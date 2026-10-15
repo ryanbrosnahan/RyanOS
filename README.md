@@ -168,3 +168,29 @@ until a specific version converts to Apache 2.0 under the future-license grant.
 
 Verify the Android build on a machine with JDK 17, then add scheduled
 notification delivery using the encrypted token store.
+
+## Personal assistant task API — activation pending
+
+The reviewed task integration is **local-Mac API transport**, using the Mac's
+existing Tailscale connection to Lenovo. It is not a cloud connector and cannot
+capture work from cloud projects while the Mac is offline. A personal skill is
+instructions, not a network connection or background listener.
+
+`tasks:search` exposes **Ryan's entire RyanOS item collection** for deduplication,
+including task descriptions, completed/cancelled work, other item kinds such as
+notes/habits, project/area labels, and explicitly requested deleted items. It is
+not limited to a ChatGPT project or items created by the assistant. Provisioning
+requires explicit approval of this scope alongside `tasks:create`, `tasks:read`
+and `completion:request`, for 30 days without automatic renewal.
+
+No live integration credential is included or configured. After deployment and
+specific approval, Ryan personally runs the secure provisioning helper. It
+creates a token directly in this Mac's non-synchronizing Keychain; only its hash
+is sent over existing SSH to Lenovo. Never paste a token into chat, a shell
+argument, a file or browser storage. The sanitized runner reads Keychain through
+an internal pipe, omits browser cookies, and cannot approve completion. Ryan's
+owner panel makes the completion decision; external evidence stays separate.
+
+See [the activation and rollback handoff](docs/TASK_ACTIVATION.md) for exact
+preparation, approvals, testing, provisioning and recovery steps. Nothing should
+be activated merely because these scripts exist.

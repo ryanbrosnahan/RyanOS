@@ -1,3 +1,4 @@
+import { taskSearchQuery, taskSearchRows } from "./task-search.js";
 import { and, asc, count, desc, eq, gt, ilike, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
@@ -1175,6 +1176,11 @@ export class PostgresRyanStore implements RyanStore {
       .offset(Math.max(filters.offset ?? 0, 0));
 
     return rows.map(itemFromRow);
+  }
+
+  async searchTaskRecords(userId: UUID, filters: import("@ryanos/core").TaskSearchFilters) {
+    const result = await this.db.execute(taskSearchQuery(await this.resolveUserId(userId), filters));
+    return taskSearchRows(result.rows);
   }
 
   async searchItems(

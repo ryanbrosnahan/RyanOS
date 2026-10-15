@@ -275,13 +275,13 @@ export function ChatPanel({ variant = "embedded" }: ChatPanelProps = {}) {
           turns.map((turn) => (
             <div
               key={turn.id}
-              className={`max-w-[92%] rounded-md px-3 py-2 text-sm leading-6 ${
+              className={`whitespace-pre-wrap max-w-[92%] rounded-md px-3 py-2 text-sm leading-6 ${
                 turn.role === "user"
                   ? "ml-auto bg-stone-900 text-white"
                   : "bg-white text-stone-800 ring-1 ring-stone-200"
               }`}
             >
-              {turn.text}
+              {turn.text.split(/(\/tasks\/[A-Za-z0-9_-]+)/g).map((part,index) => /^\/tasks\/[A-Za-z0-9_-]+$/.test(part) ? <a className="underline" key={index} href={part}>Open item details</a> : part)}
             </div>
           ))
         )}

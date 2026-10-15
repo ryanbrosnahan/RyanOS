@@ -1011,3 +1011,37 @@ export const searchDocuments = pgTable("search_documents", {
 }, (table) => ({
   targetIdx: uniqueIndex("search_documents_target_idx").on(table.targetType, table.targetId)
 }));
+
+// Provision only after owner approval. Tokens are hashed; no minting API is exposed.
+export const taskIntegrations = pgTable("task_integrations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  name: text("name").notNull(),
+  tokenHash: text("token_hash").notNull().unique(),
+  scopes: jsonb("scopes").$type<string[]>().notNull().default([]),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  ...timestamps
+});
+
+export const taskCaptures = pgTable("task_captures", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  integrationId: uuid("integration_id").notNull().references(() => taskIntegrations.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  sourceId: text("source_id").notNull(),
+  itemId: uuid("item_id").references(() => items.id, { onDelete: "set null" }),
+  suppressedAt: timestamp("suppressed_at", { withTimezone: true }),
+  suppressionReason: text("suppression_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+}, table => ({ sourceIdx: uniqueIndex("task_captures_source_idx").on(table.integrationId, table.sourceId) }));
+
+export const taskCompletionRequests = pgTable("task_completion_requests", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  captureId: uuid("capture_id").notNull().references(() => taskCaptures.id),
+  requestKey: text("request_key").notNull(),
+  itemRevision: integer("item_revision").notNull(),
+  status: text("status").notNull().default("pending"),
+  evidence: jsonb("evidence").notNull().default([]),
+  requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+  decidedAt: timestamp("decided_at", { withTimezone: true })
+}, table => ({ requestIdx: uniqueIndex("task_completion_requests_key_idx").on(table.captureId, table.requestKey) }));
