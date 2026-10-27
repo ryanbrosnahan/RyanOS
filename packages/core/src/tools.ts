@@ -760,7 +760,7 @@ export function createCoreToolRegistry(store: RyanStore): ToolRegistry {
       sideEffect: "state_write",
       confirmation: "not_required",
       retrySafety: "safe_with_idempotency_key",
-      descriptionForModel: "Creates a RyanOS item only; does not contact external systems. Use `kind` for item type, for example `{ \"title\": \"Go to the gym\", \"kind\": \"habit\", \"areaRef\": \"Health\" }`. Use `areaRef` for the broad domain and `projectRef` for a specific silo. When a requested task has concrete substeps, create one parent item and put those steps in `checklistItems` instead of creating separate task items for each step."
+      descriptionForModel: "Creates a RyanOS item only; does not contact external systems. Use `kind` for item type, for example `{ \"title\": \"Go to the gym\", \"kind\": \"habit\", \"areaRef\": \"Health\" }`. Use `areaRef` for the broad domain and `projectRef` for a specific silo. Prefer a best-fit existing area when the context establishes it; do not invent an area just to categorize a task. If omitted, RyanOS applies a local best-fit area using existing projects, task subjects, and prior classifications. When a requested task has concrete substeps, create one parent item and put those steps in `checklistItems` instead of creating separate task items for each step."
     },
     inputSchema: toolEnvelopeSchema.extend({
       userId: userIdSchema,

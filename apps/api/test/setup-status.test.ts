@@ -1663,7 +1663,9 @@ describe("setup status", () => {
   it("creates mobile items and returns a refreshed widget payload", async () => {
     vi.stubEnv("DATABASE_URL", "");
 
-    const app = buildApp();
+    const store = new InMemoryRyanStore();
+    const family = await store.upsertArea({ userId: "local-owner", name: "Family" });
+    const app = buildApp({ store });
     const created = await app.inject({
       method: "POST",
       url: "/v1/mobile/items",
@@ -1679,6 +1681,7 @@ describe("setup status", () => {
     await app.close();
 
     expect(created.statusCode).toBe(200);
+    expect([...store.items.values()][0]?.areaId).toBe(family.id);
     expect(created.json()).toMatchObject({
       result: {
         status: "applied"

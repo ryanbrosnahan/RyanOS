@@ -1,3 +1,4 @@
+import { assignItemArea } from "./item-area.js";
 import { createId, nowIso } from "@ryanos/shared";
 import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
@@ -275,6 +276,7 @@ export class InMemoryRyanStore implements RyanStore {
   }
 
   async createItem(data: ItemCreateData): Promise<Item> {
+    data = await assignItemArea(this, data);
     const timestamp = nowIso();
     const item: Item = {
       id: createId("item"),

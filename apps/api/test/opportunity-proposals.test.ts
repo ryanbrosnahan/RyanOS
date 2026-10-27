@@ -459,6 +459,7 @@ describe("opportunity proposal API", () => {
   it("accepts a proposal into an opportunity and one opportunity action", async () => {
     vi.stubEnv("DATABASE_URL", "");
     const store = new InMemoryRyanStore();
+    const work = await store.upsertArea({ userId: "local-owner", name: "Work" });
     const app = buildApp({ store });
     await app.inject({
       method: "POST",
@@ -500,6 +501,7 @@ describe("opportunity proposal API", () => {
     });
     expect(store.opportunities.size).toBe(1);
     expect(store.items.size).toBe(1);
+    expect([...store.items.values()][0]?.areaId).toBe(work.id);
     expect([...store.items.values()][0]?.body).toContain("## Opportunity");
     expect([...store.items.values()][0]?.body).toContain("[RFI PDF](https://www.jamescitycountyva.gov/DocumentCenter/View/42989)");
     expect([...store.itemProgressNotes.values()]).toEqual([

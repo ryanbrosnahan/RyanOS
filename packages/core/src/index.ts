@@ -6,3 +6,4 @@ export * from "./types.js";
 
 
 export * from "./adherence.js";
+export * from "./item-area.js";

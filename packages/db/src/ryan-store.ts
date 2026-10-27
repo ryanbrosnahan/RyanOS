@@ -1,3 +1,4 @@
+import { assignItemArea } from "@ryanos/core";
 import { and, asc, count, desc, eq, gt, ilike, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { JsonObject, UUID } from "@ryanos/shared";
 import type {
@@ -1076,6 +1077,7 @@ export class PostgresRyanStore implements RyanStore {
 
   async createItem(data: ItemCreateData): Promise<Item> {
     const userId = await this.resolveUserId(data.userId);
+    data = await assignItemArea(this, { ...data, userId });
     const values: typeof schema.items.$inferInsert = {
       userId,
       kind: data.kind,

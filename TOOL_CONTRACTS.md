@@ -164,7 +164,17 @@ Examples:
 
 Validation:
 
-- Resolve `areaRef` and `projectRef` or create as inbox item.
+- Resolve explicit `areaRef` and `projectRef` first. Explicit area choices are never overridden.
+- When the area is omitted, item creation inherits the selected project's area or
+  uses a local best-fit classifier over active user areas, named projects, the
+  task subject/description, and up to 200 recent open/completed items. Exact
+  previous classifications take priority over keyword matches. Ambiguous tasks
+  use an existing Personal/General/Other/Inbox area; without such an area or a
+  clear match, the item remains unassigned. No areas or projects are invented.
+- The same fallback runs in both stores, covering quick-add, chat tools, accepted
+  email/opportunity proposals, and other direct item creation. It does not call
+  an AI provider. Automatic decisions are recorded in `metadata.areaClassification`
+  and can be corrected with `item.classify`.
 - Validate date/time in user's timezone.
 - Use idempotency to avoid duplicate tasks from retried messages.
 

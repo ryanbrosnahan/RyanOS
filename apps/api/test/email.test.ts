@@ -602,7 +602,10 @@ describe("email integration API", () => {
   it("accepts a proposal into one normal RyanOS item", async () => {
     vi.stubEnv("DATABASE_URL", "");
     vi.stubEnv("GOG_KEYRING_PASSWORD", "test-password");
+    const store = new InMemoryRyanStore();
+    const personal = await store.upsertArea({ userId: "local-owner", name: "Personal" });
     const app = buildApp({
+      store,
       ai: proposalAi(),
       emailClient: fakeGmailClient()
     });
@@ -633,6 +636,7 @@ describe("email integration API", () => {
     await app.close();
 
     expect(accepted.statusCode).toBe(200);
+    expect([...store.items.values()][0]?.areaId).toBe(personal.id);
     expect(accepted.json()).toMatchObject({
       proposal: {
         status: "accepted"
