@@ -1290,7 +1290,7 @@ describe("setup status", () => {
     await app.close();
   });
 
-  it("paginates item lists while preserving starred-first ordering", async () => {
+  it("paginates without pulling a high-priority lookahead item into the previous page", async () => {
     vi.stubEnv("DATABASE_URL", "");
     const store = new InMemoryRyanStore();
     const app = buildApp({ store });
@@ -1299,7 +1299,7 @@ describe("setup status", () => {
       userId,
       title: "Alpha task",
       kind: "task",
-      priority: "normal",
+      priority: "urgent",
       dueAt: "2026-07-03T12:00:00.000Z"
     });
     const beta = await store.createItem({

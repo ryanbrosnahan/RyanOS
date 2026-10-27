@@ -6516,7 +6516,7 @@ export function buildApp(options: {
     }
     const items = await store.listItems(filters);
     const dashboardItems = await Promise.all(
-      items.map((item) => itemForDashboard(item, query.timezone, referenceDateKey))
+      items.slice(0, query.limit).map((item) => itemForDashboard(item, query.timezone, referenceDateKey))
     );
     const visibleItems = (query.includeHidden ? dashboardItems : dashboardItems.filter(itemVisibleByDefault))
       .sort(compareDashboardItems);

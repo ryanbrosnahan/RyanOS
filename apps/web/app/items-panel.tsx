@@ -131,6 +131,8 @@ type ItemsResponse = {
   date: string;
   timezone: string;
   items: Item[];
+  hasMore?: boolean;
+  nextOffset?: number;
 };
 
 type TaxonomyResponse = {
@@ -407,6 +409,26 @@ function updateErrorMessage(payload: ToolResultResponse, fallback: string): stri
 
 export function ItemsPanel() {
   const [items, setItems] = useState<Item[]>([]);
+  const [areaFilter, setAreaFilter] = useState("");
+  const [projectFilter, setProjectFilter] = useState("");
+  const [groupBy, setGroupBy] = useState("area");
+  const filteredItems = useMemo(() => items.filter((item) =>
+    (!areaFilter || (areaFilter === "unassigned" ? !item.scope?.area : item.scope?.area?.id === areaFilter)) &&
+    (!projectFilter || (projectFilter === "unassigned" ? !item.scope?.project : item.scope?.project?.id === projectFilter))
+  ), [items, areaFilter, projectFilter]);
+  const itemGroups = useMemo(() => {
+    const groups = new Map<string, { label: string; items: Item[] }>();
+    for (const item of filteredItems) {
+      const scope = groupBy === "area" ? item.scope?.area : item.scope?.project;
+      const key = groupBy === "none" ? "all" : scope?.id ?? "unassigned";
+      const label = groupBy === "none" ? "All items" : scope?.name ?? (groupBy === "area" ? "No area" : "No project");
+      if (!groups.has(key)) groups.set(key, { label, items: [] });
+      groups.get(key)!.items.push(item);
+    }
+    return [...groups.entries()].sort(([a, left], [b, right]) =>
+      a === "unassigned" ? 1 : b === "unassigned" ? -1 : left.label.localeCompare(right.label)
+    );
+  }, [filteredItems, groupBy]);
   const [areas, setAreas] = useState<ScopeLabel[]>([]);
   const [projects, setProjects] = useState<ProjectScopeLabel[]>([]);
   const [dashboardDate, setDashboardDate] = useState<string | null>(null);
@@ -468,7 +490,16 @@ export function ItemsPanel() {
       if (!taxonomyResponse.ok) throw new Error(`Taxonomy returned ${taxonomyResponse.status}`);
       const itemsPayload = (await itemsResponse.json()) as ItemsResponse;
       const taxonomyPayload = (await taxonomyResponse.json()) as TaxonomyResponse;
-      setItems(itemsPayload.items);
+      const allItems = [...itemsPayload.items];
+      let page = itemsPayload;
+      while (page.hasMore && page.nextOffset !== undefined) {
+        params.set("offset", String(page.nextOffset));
+        const response = await apiFetch(apiPath(`/v1/items?${params.toString()}`), { cache: "no-store" });
+        if (!response.ok) throw new Error(`Items returned ${response.status}`);
+        page = (await response.json()) as ItemsResponse;
+        allItems.push(...page.items);
+      }
+      setItems([...new Map(allItems.map((item) => [item.id, item])).values()]);
       setAreas(taxonomyPayload.areas);
       setProjects(taxonomyPayload.projects);
       setDashboardDate(itemsPayload.date);
@@ -994,9 +1025,40 @@ export function ItemsPanel() {
         </div>
       ) : null}
 
-      {items.length > 0 ? (
-        <div className="mt-4 divide-y divide-stone-200">
-          {items.map((item) => {
+      <div className="mt-4 flex flex-wrap gap-3 border-t border-stone-200 pt-4">
+        <label className="flex flex-col gap-1 text-xs font-medium text-stone-700">
+          Filter by area
+          <select value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)} className="h-9 rounded-md border border-stone-300 bg-white px-2 text-sm">
+            <option value="">All areas</option>
+            {areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}
+            <option value="unassigned">No area</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs font-medium text-stone-700">
+          Filter by project
+          <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} className="h-9 rounded-md border border-stone-300 bg-white px-2 text-sm">
+            <option value="">All projects</option>
+            {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            <option value="unassigned">No project</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs font-medium text-stone-700">
+          Group by
+          <select value={groupBy} onChange={(event) => setGroupBy(event.target.value)} className="h-9 rounded-md border border-stone-300 bg-white px-2 text-sm">
+            <option value="area">Area</option>
+            <option value="project">Project</option>
+            <option value="none">No grouping</option>
+          </select>
+        </label>
+        <p className="self-end py-2 text-xs text-stone-500" aria-live="polite">{filteredItems.length} of {items.length} items</p>
+        {areaFilter || projectFilter ? <button type="button" onClick={() => { setAreaFilter(""); setProjectFilter(""); }} className="self-end py-2 text-sm text-sky-700">Clear filters</button> : null}
+      </div>
+      {!loading && items.length > 0 && filteredItems.length === 0 ? <p className="mt-3 text-sm text-stone-600">No items match these filters.</p> : null}
+      {itemGroups.map(([groupId, group]) => (
+        <section key={groupId} className="mt-4">
+          {groupBy !== "none" ? <h3 className="mb-3 text-sm font-semibold text-stone-950">{group.label} <span className="text-stone-500">({group.items.length})</span></h3> : null}
+          <div className="divide-y divide-stone-200">
+          {group.items.map((item) => {
             const due = formatDate(item.dueAt);
             const nextDue = nextRecurrenceDate(item.recurrence);
             const completed = item.status === "done";
@@ -1329,8 +1391,9 @@ export function ItemsPanel() {
               </div>
             );
           })}
-        </div>
-      ) : null}
+          </div>
+        </section>
+      ))}
     </div>
   );
 }
