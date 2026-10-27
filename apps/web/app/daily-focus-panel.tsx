@@ -369,24 +369,16 @@ export function DailyFocusPanel() {
   if (!payload) return null;
 
   return (
-    <section className="overflow-hidden rounded-md border border-stone-300 bg-white shadow-sm">
-      <div className="grid gap-4 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-sm font-medium text-stone-600">
-            <Target className="h-4 w-4 text-sky-700" aria-hidden="true" />
-            <span>{formatPlanDate(payload.date)}</span>
-          </div>
-          <h2 className="mt-1 text-2xl font-semibold tracking-normal text-stone-950">
-            Today's focus
-          </h2>
-        </div>
-
+    <section className="overflow-hidden rounded-md border border-stone-300 bg-white">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+        <h2 className="text-sm font-semibold text-stone-950">Today's focus</h2>
+        <div className="flex items-center gap-1.5 text-xs text-stone-500"><Target className="h-3.5 w-3.5 text-sky-700" aria-hidden="true" /><span>{formatPlanDate(payload.date)}</span></div>
       </div>
 
       {error ? <p className="px-4 pb-3 text-sm leading-6 text-rose-700 sm:px-5">{error}</p> : null}
 
-      <div className="border-t border-stone-200 px-4 py-4 sm:px-5">
-        <div className="grid gap-3 lg:grid-cols-3">
+      <div className="border-t border-stone-200 px-3 py-2">
+        <div className="divide-y divide-stone-200">
           {focusItems.length > 0 ? (
             focusItems.map((item) => {
               const completed = completedForDate(item, payload.date);
@@ -397,25 +389,36 @@ export function DailyFocusPanel() {
               return (
                 <article
                   key={item.id}
-                  className={`flex min-h-28 flex-col rounded-md p-3 text-left ring-1 transition ${
+                  className={`flex flex-col px-1 py-2 text-left transition ${
                     completed
-                      ? "bg-emerald-50 ring-emerald-200"
-                      : "bg-sky-50 ring-sky-200"
+                      ? "bg-emerald-50"
+                      : "bg-white"
                   }`}
                 >
-                  <span className="flex items-start gap-3">
+                  <span className="flex flex-wrap items-start gap-2">
                     <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-amber-700 ring-1 ring-amber-200">
                       <Star className="h-4 w-4 fill-current" aria-hidden="true" />
                     </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="ryanos-clamp-3 block text-sm font-semibold leading-5 text-stone-950">
+                    <span className="min-w-0 basis-[calc(100%-2.5rem)] sm:flex-1 sm:basis-0">
+                      <span className="ryanos-clamp-2 block text-sm font-semibold leading-5 text-stone-950">
                         {item.title}
                       </span>
-                      <span className="mt-1 block text-xs leading-5 text-stone-600">
+                      <span className="block text-xs leading-5 text-stone-500">
                         {itemMeta(item)}
                       </span>
-                      <span className="mt-1 block">
+                      <span className="block">
                         <ItemProgressSummaryLine item={item} />
+                      </span>
+                    </span>
+                    <span className="ml-9 shrink-0 sm:ml-0">
+                      <span
+                        className={`inline-flex rounded-md px-2 py-0.5 text-xs font-medium ring-1 ${
+                          completed
+                            ? "bg-emerald-100 text-emerald-800 ring-emerald-200"
+                            : "bg-white text-stone-700 ring-stone-200"
+                        }`}
+                      >
+                        {focusStatus(item)}
                       </span>
                     </span>
                     <span className="flex shrink-0 items-center gap-1">
@@ -494,17 +497,6 @@ export function DailyFocusPanel() {
                       }}
                     />
                   ) : null}
-                  <span className="mt-auto pt-3">
-                    <span
-                      className={`inline-flex rounded-md px-2 py-1 text-xs font-medium ring-1 ${
-                        completed
-                          ? "bg-emerald-100 text-emerald-800 ring-emerald-200"
-                          : "bg-white text-stone-700 ring-stone-200"
-                      }`}
-                    >
-                      {focusStatus(item)}
-                    </span>
-                  </span>
                 </article>
               );
             })
@@ -516,7 +508,7 @@ export function DailyFocusPanel() {
         </div>
 
         {candidateItems.length > 0 ? (
-          <details className="group mt-4">
+          <details className="group mt-1">
             <summary className="inline-flex h-8 cursor-pointer list-none items-center gap-1 rounded-md border border-stone-300 bg-white px-2.5 text-xs font-medium text-stone-700 hover:bg-stone-50">
               Adjust focus
               <ChevronDown
@@ -549,24 +541,24 @@ export function DailyFocusPanel() {
       </div>
 
       {remainingDueItems.length > 0 ? (
-        <div className="border-t border-stone-200 px-4 py-4 sm:px-5">
+        <div className="border-t border-stone-200 px-3 py-2">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold text-stone-950">Still on deck today</h3>
             <span className="text-xs font-medium text-stone-500">{remainingDueItems.length}</span>
           </div>
-          <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          <div className="mt-1 grid gap-x-4 lg:grid-cols-2">
             {remainingDueItems.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => void toggleStar(item)}
                 disabled={pendingKey === `${item.id}:star`}
-                className="flex min-h-14 min-w-0 items-start justify-between gap-3 rounded-md bg-stone-50 px-3 py-2 text-left ring-1 ring-stone-200 transition hover:bg-stone-100 disabled:cursor-wait disabled:opacity-70"
+                className="flex min-h-9 w-full min-w-0 items-center justify-between gap-3 border-b border-stone-100 px-1 py-1.5 text-left transition hover:bg-stone-100 disabled:cursor-wait disabled:opacity-70"
                 aria-label={`Star ${item.title}`}
               >
-                <span className="min-w-0 flex-1">
+                <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-3">
                   <span className="ryanos-clamp-2 block text-sm font-medium text-stone-950">{item.title}</span>
-                  <span className="mt-1 block truncate text-xs text-stone-600">{itemMeta(item)}</span>
+                  <span className="block truncate text-xs text-stone-500">{itemMeta(item)}</span>
                 </span>
                 <span className="flex shrink-0 items-center gap-2">
                   <span className="text-xs font-medium text-stone-500">{focusStatus(item)}</span>

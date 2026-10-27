@@ -1,5 +1,6 @@
 "use client";
 
+import { TaskScopeNavigation } from "./task-scope-navigation";
 import { TaskAdherenceReport } from "./adherence-report";
 
 import {
@@ -32,7 +33,7 @@ import {
   Users
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { apiFetch, apiPath } from "./api-client";
 import {
   ItemProgressDetails,
@@ -407,8 +408,9 @@ function updateErrorMessage(payload: ToolResultResponse, fallback: string): stri
   return payload.messageForUser ?? payload.clarificationPrompt ?? payload.confirmationPrompt ?? fallback;
 }
 
-export function ItemsPanel() {
+export function ItemsPanel({ overview, footer }: { overview?: ReactNode; footer?: ReactNode }) {
   const [items, setItems] = useState<Item[]>([]);
+  const [showEmptyProjects, setShowEmptyProjects] = useState(false);
   const [areaFilter, setAreaFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState("");
   const [groupBy, setGroupBy] = useState("area");
@@ -464,7 +466,7 @@ export function ItemsPanel() {
     return counts;
   }, [items]);
   const unscopedCount = useMemo(
-    () => items.filter((item) => !item.scope?.area && !item.scope?.project).length,
+    () => items.filter((item) => !item.scope?.area).length,
     [items]
   );
 
@@ -840,7 +842,21 @@ export function ItemsPanel() {
   }, []);
 
   return (
-    <div className="rounded-md border border-stone-300 bg-white p-4 shadow-sm">
+    <div className="grid min-w-0 gap-4 lg:grid-cols-[200px_minmax(0,1fr)] lg:gap-5">
+      <TaskScopeNavigation
+        areas={areas} projects={projects} areaCounts={areaCounts} projectCounts={projectCounts}
+        itemCount={items.length} unassignedCount={unscopedCount}
+        areaFilter={areaFilter} projectFilter={projectFilter} showEmptyProjects={showEmptyProjects}
+        onSelect={(areaId, projectId) => { setAreaFilter(areaId); setProjectFilter(projectId); }}
+        onShowEmptyProjects={setShowEmptyProjects}
+        renderAreaIcon={(area) => {
+          const Icon = scopeIcons[area.icon ?? ""] ?? Folder;
+          return <Icon className={`h-4 w-4 shrink-0 rounded-sm ${scopeTone(area.color, "area")}`} aria-hidden="true" />;
+        }}
+      />
+      <div className="min-w-0 space-y-3">
+      {overview}
+      <section className="min-w-0 rounded-md border border-stone-300 bg-white p-3">
       {deleteConfirmItem ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/30 px-4">
           <div
@@ -885,11 +901,39 @@ export function ItemsPanel() {
           </div>
         </div>
       ) : null}
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <CheckCircle2 className="h-5 w-5 text-sky-700" aria-hidden="true" />
           <h2 className="text-lg font-semibold text-stone-950">Open items</h2>
         </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-2 text-xs font-medium text-stone-700 lg:hidden">
+          Filter by area
+          <select value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)} className="h-8 max-w-44 rounded-md border border-stone-300 bg-white px-2 text-sm">
+            <option value="">All areas</option>
+            {areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}
+            <option value="unassigned">No area</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-xs font-medium text-stone-700 lg:hidden">
+          Filter by project
+          <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} className="h-8 max-w-44 rounded-md border border-stone-300 bg-white px-2 text-sm">
+            <option value="">All projects</option>
+            {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            <option value="unassigned">No project</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-xs font-medium text-stone-700">
+          Group by
+          <select value={groupBy} onChange={(event) => setGroupBy(event.target.value)} className="h-8 max-w-44 rounded-md border border-stone-300 bg-white px-2 text-sm">
+            <option value="area">Area</option>
+            <option value="project">Project</option>
+            <option value="none">No grouping</option>
+          </select>
+        </label>
+        <p className="py-1 text-xs text-stone-500" aria-live="polite">{filteredItems.length} of {items.length} items</p>
+        {areaFilter || projectFilter ? <button type="button" onClick={() => { setAreaFilter(""); setProjectFilter(""); }} className="py-1 text-sm text-sky-700">Clear filters</button> : null}
+      </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -916,7 +960,7 @@ export function ItemsPanel() {
           </button>
         </div>
       </div>
-      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-stone-500">
+      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-stone-500 lg:hidden">
         <span>Auto-refreshes every 30 seconds</span>
         {lastUpdatedAt ? <span>Updated {formatDate(lastUpdatedAt)} {new Date(lastUpdatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span> : null}
       </div>
@@ -974,89 +1018,10 @@ export function ItemsPanel() {
         <p className="mt-3 text-sm leading-6 text-stone-600">No open items.</p>
       ) : null}
 
-      {areas.length > 0 || projects.length > 0 || unscopedCount > 0 ? (
-        <div className="mt-4 border-t border-stone-200 pt-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <FolderKanban className="h-4 w-4 text-sky-700" aria-hidden="true" />
-              <h3 className="text-sm font-semibold text-stone-950">Areas and projects</h3>
-            </div>
-            {unscopedCount > 0 ? (
-              <span className="rounded-md bg-white px-2 py-1 text-xs font-medium text-stone-700 ring-1 ring-stone-200">
-                {unscopedCount} unscoped
-              </span>
-            ) : null}
-          </div>
-
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {areas.map((area) => {
-              const areaProjects = projects.filter((project) => project.areaId === area.id);
-              return (
-                <div key={area.id} className="rounded-md bg-stone-50 px-3 py-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <ScopeChip scope={area} variant="area" />
-                    <span className="text-xs font-medium text-stone-500">
-                      {areaCounts.get(area.id) ?? 0}
-                    </span>
-                  </div>
-                  {areaProjects.length > 0 ? (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {areaProjects.map((project) => (
-                        <span key={project.id} className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-0.5 text-xs text-stone-700 ring-1 ring-stone-200">
-                          <FolderKanban className="h-3 w-3" aria-hidden="true" />
-                          <span>{project.name}</span>
-                          <span className="text-stone-400">{projectCounts.get(project.id) ?? 0}</span>
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-
-          {projects.some((project) => project.areaId === undefined) ? (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {projects.filter((project) => project.areaId === undefined).map((project) => (
-                <ScopeChip key={project.id} scope={project} variant="project" />
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      <div className="mt-4 flex flex-wrap gap-3 border-t border-stone-200 pt-4">
-        <label className="flex flex-col gap-1 text-xs font-medium text-stone-700">
-          Filter by area
-          <select value={areaFilter} onChange={(event) => setAreaFilter(event.target.value)} className="h-9 rounded-md border border-stone-300 bg-white px-2 text-sm">
-            <option value="">All areas</option>
-            {areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}
-            <option value="unassigned">No area</option>
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-stone-700">
-          Filter by project
-          <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} className="h-9 rounded-md border border-stone-300 bg-white px-2 text-sm">
-            <option value="">All projects</option>
-            {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-            <option value="unassigned">No project</option>
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-stone-700">
-          Group by
-          <select value={groupBy} onChange={(event) => setGroupBy(event.target.value)} className="h-9 rounded-md border border-stone-300 bg-white px-2 text-sm">
-            <option value="area">Area</option>
-            <option value="project">Project</option>
-            <option value="none">No grouping</option>
-          </select>
-        </label>
-        <p className="self-end py-2 text-xs text-stone-500" aria-live="polite">{filteredItems.length} of {items.length} items</p>
-        {areaFilter || projectFilter ? <button type="button" onClick={() => { setAreaFilter(""); setProjectFilter(""); }} className="self-end py-2 text-sm text-sky-700">Clear filters</button> : null}
-      </div>
       {!loading && items.length > 0 && filteredItems.length === 0 ? <p className="mt-3 text-sm text-stone-600">No items match these filters.</p> : null}
       {itemGroups.map(([groupId, group]) => (
-        <section key={groupId} className="mt-4">
-          {groupBy !== "none" ? <h3 className="mb-3 text-sm font-semibold text-stone-950">{group.label} <span className="text-stone-500">({group.items.length})</span></h3> : null}
+        <section key={groupId} className="mt-3">
+          {groupBy !== "none" ? <h3 className="mb-1 rounded-md bg-stone-50 px-2 py-1.5 text-sm font-semibold text-stone-950">{group.label} <span className="text-stone-500">({group.items.length})</span></h3> : null}
           <div className="divide-y divide-stone-200">
           {group.items.map((item) => {
             const due = formatDate(item.dueAt);
@@ -1080,11 +1045,11 @@ export function ItemsPanel() {
             const detailsExpanded = expandedDetailItemIds.has(item.id);
             const detailIntent = detailIntents[item.id];
             return (
-              <div key={item.id} className="py-3 first:pt-0 last:pb-0">
-                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="flex min-w-0 flex-1 items-start gap-3">
+              <div key={item.id} className="py-2 first:pt-1 last:pb-1">
+                <div className="flex min-w-0 flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 flex-1 items-start gap-2">
                     {hasRecurrence ? (
-                      <div className="mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-stone-300 bg-stone-50 text-stone-500">
+                      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-stone-300 bg-stone-50 text-stone-500">
                         <RotateCcw className="h-4 w-4" aria-hidden="true" />
                       </div>
                     ) : (
@@ -1092,7 +1057,7 @@ export function ItemsPanel() {
                         type="button"
                         disabled={pendingKey === `${item.id}:task`}
                         onClick={() => void toggleTask(item)}
-                        className={`mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition ${
+                        className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition ${
                           completed
                             ? "border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800"
                             : "border-stone-300 bg-white text-stone-500 hover:bg-stone-100"
@@ -1101,14 +1066,14 @@ export function ItemsPanel() {
                         title={completed ? "Reopen" : "Complete"}
                       >
                         {completed ? (
-                          <CheckCircle2 className="h-6 w-6" aria-hidden="true" />
+                          <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
                         ) : (
-                          <Circle className="h-5 w-5" aria-hidden="true" />
+                          <Circle className="h-4 w-4" aria-hidden="true" />
                         )}
                       </button>
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-start">
+                      <div className="flex min-w-0 flex-col gap-1 sm:flex-row sm:items-start">
                         <div className="flex min-w-0 flex-1 items-start gap-2">
                           <button
                             type="button"
@@ -1131,6 +1096,11 @@ export function ItemsPanel() {
                             }`}
                           >
                             {item.title}
+                            {item.status === "waiting" ? <span className="ml-2 hidden rounded-md bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-900 lg:inline">Waiting</span> : null}
+                            <span className="ml-2 hidden items-center gap-1.5 align-middle lg:inline-flex">
+                              {groupBy !== "area" && item.scope?.area ? <ScopeChip scope={item.scope.area} variant="area" /> : null}
+                              {item.scope?.project ? <ScopeChip scope={item.scope.project} variant="project" /> : null}
+                            </span>
                           </p>
                         </div>
                         <div className="flex shrink-0 items-center gap-1 pl-8 sm:pl-0">
@@ -1198,7 +1168,7 @@ export function ItemsPanel() {
                           </button>
                         </div>
                       </div>
-                      <div className="mt-1 flex min-w-0 flex-wrap gap-1.5">
+                      <div className="mt-0.5 inline-flex min-w-0 flex-wrap gap-1.5 align-middle lg:hidden">
                         {item.scope?.area ? (
                           <ScopeChip scope={item.scope.area} variant="area" />
                         ) : null}
@@ -1211,7 +1181,7 @@ export function ItemsPanel() {
                           </span>
                         ) : null}
                       </div>
-                      <p className="mt-1 text-xs text-stone-600">
+                      <p className="ml-2 inline text-xs text-stone-500 lg:hidden">
                         {item.kind} / {item.priority} / {completed ? "done today" : item.status}
                       </p>
                       <ItemProgressSummaryLine item={item} />
@@ -1337,7 +1307,7 @@ export function ItemsPanel() {
                 </div>
 
                 {item.recurrence ? (
-                  <div className="mt-2 flex items-center gap-2 pl-12">
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2 pl-9">
                     {showRecurrenceDays ? (
                       <div className="flex min-w-0 flex-wrap gap-1.5">
                         {item.recurrence.week.days.map((day) => {
@@ -1374,7 +1344,7 @@ export function ItemsPanel() {
                 ) : null}
                 {item.recurrence ? <TaskAdherenceReport itemId={item.id} timezone={timezone} refreshKey={JSON.stringify(item.recurrence.week)} /> : null}
                 {detailsExpanded ? (
-                  <div className="pl-0 sm:pl-12">
+                  <div className="pl-0 sm:pl-9">
                     <ItemProgressDetails
                       item={item}
                       timezone={timezone}
@@ -1394,6 +1364,9 @@ export function ItemsPanel() {
           </div>
         </section>
       ))}
+      </section>
+      {footer}
+      </div>
     </div>
   );
 }

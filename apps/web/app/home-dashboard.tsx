@@ -25,11 +25,11 @@ export function HomeDashboard() {
   return (
     <>
       <section className="border-b border-stone-300 bg-stone-100">
-        <div className="mx-auto flex max-w-screen-2xl flex-col gap-5 px-5 py-6 sm:px-8 lg:px-10">
-          <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-            <div>
-              <p className="text-sm font-medium text-sky-700">RyanOS</p>
-              <h1 className="mt-1 text-3xl font-semibold tracking-normal text-stone-950">
+        <div className="mx-auto flex max-w-[1800px] flex-col gap-3 px-4 py-3 sm:px-6">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-center gap-3">
+              <p className="text-lg font-semibold text-stone-950">RyanOS</p>
+              <h1 className="border-l border-stone-300 pl-3 text-lg font-medium text-stone-600">
                 Today
               </h1>
             </div>
@@ -72,15 +72,11 @@ export function HomeDashboard() {
         </div>
       </section>
 
-      <section className="mx-auto flex max-w-screen-2xl flex-col gap-6 px-5 py-6 sm:px-8 lg:px-10">
-        <DailyFocusPanel />
-        <CalendarAgendaPanel />
-        <ItemsPanel />
-
-        <div className="grid gap-6 xl:grid-cols-2">
-          <OpportunityProposalsPanel />
-          <EmailProposalsPanel />
-        </div>
+      <section className="mx-auto max-w-[1800px] px-4 py-4 sm:px-6">
+        <ItemsPanel
+          overview={<><DailyFocusPanel /><CalendarAgendaPanel /></>}
+          footer={<div className="grid min-w-0 gap-3 xl:grid-cols-2"><OpportunityProposalsPanel /><EmailProposalsPanel /></div>}
+        />
       </section>
 
       {chatOpen ? (
