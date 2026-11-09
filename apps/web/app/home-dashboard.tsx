@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { MessageSquare, X } from "lucide-react";
+import { ExternalLink, Film, MessageSquare, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ChatPanel } from "./chat-panel";
 import { CalendarAgendaPanel } from "./calendar-agenda-panel";
@@ -12,6 +12,13 @@ import { OpportunityProposalsPanel } from "./opportunity-proposals-panel";
 
 export function HomeDashboard() {
   const [chatOpen, setChatOpen] = useState(false);
+  const [homeReelUrl, setHomeReelUrl] = useState("https://ryan-lenovo-desktop.taile89fa5.ts.net:8443/");
+
+  useEffect(() => {
+    if (["192.168.1.219", "ryan-lenovo-desktop", "ryan-lenovo-desktop.local"].includes(window.location.hostname.toLowerCase())) {
+      setHomeReelUrl("http://192.168.1.219:3210/");
+    }
+  }, []);
 
   useEffect(() => {
     if (!chatOpen) return;
@@ -52,6 +59,18 @@ export function HomeDashboard() {
               >
                 Shopping
               </Link>
+              <a
+                href={homeReelUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Home Reel (opens in a new tab)"
+                title="Browse camera recordings"
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 text-sm font-medium text-emerald-900 hover:bg-emerald-100"
+              >
+                <Film className="h-4 w-4" aria-hidden="true" />
+                Home Reel
+                <ExternalLink className="h-3 w-3" aria-hidden="true" />
+              </a>
               <Link
                 href="/admin"
                 className="inline-flex h-9 items-center justify-center rounded-md border border-stone-300 bg-white px-3 text-sm font-medium text-stone-700 hover:bg-stone-50"
