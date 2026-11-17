@@ -44,6 +44,7 @@ export function HomeDashboard() {
               </h1>
             </div>
             <div className="flex flex-wrap gap-2">
+              <Link href="/shared" className="inline-flex h-9 items-center justify-center rounded-md border border-stone-300 bg-white px-3 text-sm font-medium text-stone-700 hover:bg-stone-50">Shared</Link>
               <Link
                 href="/calendar"
                 className="inline-flex h-9 items-center justify-center rounded-md border border-sky-200 bg-sky-50 px-3 text-sm font-medium text-sky-900 hover:bg-sky-100"

@@ -1,3 +1,4 @@
+import { internalSharedCapturePath, signInternalSharedCaptureRequest } from "./internal-shared-auth.js";
 import { run, type TaskList } from "graphile-worker";
 import { nowIso } from "@ryanos/shared";
 import { readFile } from "node:fs/promises";
@@ -97,6 +98,16 @@ async function readReportSource(source: ReportSource): Promise<Record<string, un
 }
 
 const tasks: TaskList = {
+  "ryanos.shared.capture": async payload => {
+    const body = JSON.stringify(payload);
+    const signed = signInternalSharedCaptureRequest(await loadInternalEmailMasterKey(), body);
+    const response = await fetch(`${apiUrl}${internalSharedCapturePath}`, {
+      method: "POST", signal: AbortSignal.timeout(150_000),
+      headers: { "content-type": "application/json", "x-ryanos-internal-timestamp": signed.timestamp, "x-ryanos-internal-signature": signed.signature },
+      body
+    });
+    if (!response.ok) throw new Error(`Shared capture returned HTTP ${response.status}`);
+  },
   "ryanos.health": async (_payload, helpers) => {
     helpers.logger.info(`RyanOS worker health task ran at ${nowIso()}`);
   },

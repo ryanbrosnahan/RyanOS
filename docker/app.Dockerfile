@@ -8,7 +8,7 @@ ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends bash ca-certificates curl openssl \
+  && apt-get install -y --no-install-recommends bash ca-certificates curl openssl ffmpeg \
   && rm -rf /var/lib/apt/lists/* \
   && npm install -g pnpm@${PNPM_VERSION} \
   && pnpm --version

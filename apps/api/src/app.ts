@@ -1,3 +1,6 @@
+import { PostgresSharedRepository } from "@ryanos/db";
+import { registerSharedRoutes, sharedIntakePath } from "./shared-routes.js";
+import { internalSharedCapturePath } from "./internal-shared-auth.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   createAiProviderFromEnv,
@@ -2671,7 +2674,9 @@ export function buildApp(options: {
       path === "/v1/automation/rfp-reports/ingest" ||
       path === internalEmailScanPath ||
       path === internalCalendarSyncPath ||
-      path === internalLotteryCheckPath
+      path === internalLotteryCheckPath ||
+      path === sharedIntakePath ||
+      path === internalSharedCapturePath
     );
   }
 
@@ -2791,7 +2796,13 @@ export function buildApp(options: {
       role: user?.role ?? "user",
       ...(session.user?.name ? { displayName: session.user.name } : {})
     };
-    forceRequestUserId(request, userId);
+    if (!path.startsWith("/v1/shared")) forceRequestUserId(request, userId);
+  });
+
+  registerSharedRoutes(app, {
+    repository: database ? new PostgresSharedRepository(database.pool) : undefined,
+    userId: (request: RyanOsRequest) => request.ryanAuth?.userId,
+    origins: corsOrigins
   });
 
   app.get("/", async () => ({

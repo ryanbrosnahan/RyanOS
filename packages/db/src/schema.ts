@@ -1011,3 +1011,19 @@ export const searchDocuments = pgTable("search_documents", {
 }, (table) => ({
   targetIdx: uniqueIndex("search_documents_target_idx").on(table.targetType, table.targetId)
 }));
+
+export const sharedContent = pgTable("shared_content", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  shortcode: text("shortcode").notNull(), url: text("url").notNull(),
+  status: text("status").notNull().default("queued"), attempts: integer("attempts").notNull().default(0),
+  generation: integer("generation").notNull().default(0),
+  result: jsonb("result").notNull().default({}), manual: jsonb("manual").notNull().default({}),
+  error: text("error"), review: text("review").notNull().default("unreviewed"), ...timestamps
+}, table => ({ unique: uniqueIndex("shared_content_user_shortcode_idx").on(table.userId, table.shortcode),
+  recent: index("shared_content_user_created_idx").on(table.userId, table.createdAt) }));
+export const sharedIntakeTokens = pgTable("shared_intake_tokens", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: text("token_hash").notNull().unique(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull()
+});
