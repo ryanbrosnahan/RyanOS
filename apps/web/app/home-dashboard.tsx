@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ExternalLink, Film, MessageSquare, Volume2, X } from "lucide-react";
+import { ExternalLink, Film, MessageSquare, Shield, Volume2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { ChatPanel } from "./chat-panel";
 import { CalendarAgendaPanel } from "./calendar-agenda-panel";
@@ -85,6 +85,18 @@ export function HomeDashboard() {
               >
                 <Volume2 className="h-4 w-4" aria-hidden="true" />
                 Home Noise
+                <ExternalLink className="h-3 w-3" aria-hidden="true" />
+              </a>
+              <a
+                href="http://192.168.1.238/admin/"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Pi-hole (opens in a new tab)"
+                title="Pi-hole admin on the home network"
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 text-sm font-medium text-emerald-900 hover:bg-emerald-100"
+              >
+                <Shield className="h-4 w-4" aria-hidden="true" />
+                Pi-hole
                 <ExternalLink className="h-3 w-3" aria-hidden="true" />
               </a>
               <Link
